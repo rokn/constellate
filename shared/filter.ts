@@ -58,14 +58,22 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
   const tops = new Set(f.tops);
   const only = f.paths ? new Set(f.paths) : null;
   const hidden = new Set(f.hidden ?? []);
-  const iso = f.isolate?.length ? f.isolate : null;
-  const isoFiles = new Set(iso?.flatMap((i) => (i.kind === "module" ? (i.paths ?? []) : [])));
+  // Isolated modules and folders: the map shows only those in, minus those out.
   // "." is the files at the root itself, not everything under it.
-  const isoDirs = iso?.filter((i) => i.kind === "dir").map((i) => i.id) ?? [];
   const inDir = (p: string, d: string) => (d === "." ? !p.includes("/") : p.startsWith(`${d}/`));
+  const holds = (items: NonNullable<MapFilter["isolate"]>) => {
+    const files = new Set(items.flatMap((i) => (i.kind === "module" ? (i.paths ?? []) : [])));
+    const dirs = items.filter((i) => i.kind === "dir").map((i) => i.id);
+    return (p: string) => files.has(p) || dirs.some((d) => inDir(p, d));
+  };
+  const ins = (f.isolate ?? []).filter((i) => !i.exclude);
+  const outs = (f.isolate ?? []).filter((i) => i.exclude);
+  const isIn = ins.length ? holds(ins) : null;
+  const isOut = outs.length ? holds(outs) : null;
   const out = new Set<string>();
   for (const file of files) {
-    if (iso && !isoFiles.has(file.path) && !isoDirs.some((d) => inDir(file.path, d))) continue;
+    if (isIn && !isIn(file.path)) continue;
+    if (isOut?.(file.path)) continue;
     if (only && !only.has(file.path)) continue;
     if (hidden.has(file.path)) continue;
     if (langs.size && !langs.has(file.lang)) continue;
@@ -81,7 +89,11 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
 
 /** A short human description, for chips and for the voice. */
 export function describe(f: MapFilter): string {
-  const only = f.isolate?.length ? `only ${f.isolate.map((i) => i.label).join(", ")}` : "";
+  const ins = (f.isolate ?? []).filter((i) => !i.exclude);
+  const outs = (f.isolate ?? []).filter((i) => i.exclude);
+  const only = [ins.length ? `only ${ins.map((i) => i.label).join(", ")}` : "", outs.length ? `not ${outs.map((i) => i.label).join(", ")}` : ""]
+    .filter(Boolean)
+    .join(" · ");
   if (f.label) return [only, f.label, f.hidden?.length ? `${f.hidden.length} hidden` : ""].filter(Boolean).join(" · ");
   const bits = [
     only,

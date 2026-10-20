@@ -164,9 +164,9 @@ export function Space({
   /** The file open in the code panel — gets the course halo. */
   active: string | null;
   onPick: (path: string) => void;
-  /** `isolate`: Shift was held — add it to (or take it out of) what the map is isolated to. */
-  onPickModule: (id: string, isolate?: boolean) => void;
-  onPickDir: (dir: string, isolate?: boolean) => void;
+  /** `how`: Shift was held (isolate it) or Alt (take it out of view); toggles. */
+  onPickModule: (id: string, how?: "isolate" | "exclude") => void;
+  onPickDir: (dir: string, how?: "isolate" | "exclude") => void;
   onPickOverlay: (id: string) => void;
   /** Double-click on a file: focus it (a single click only selects). */
   onFocusFile: (path: string) => void;
@@ -295,8 +295,11 @@ export function Space({
           if (again) handlers.current.onFocusFile(n.id);
           else handlers.current.onPick(n.id);
         }
-        else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), e.shiftKey);
-        else handlers.current.onPickDir(n.id.slice(4), e.shiftKey);
+        else {
+          const how = e.altKey ? "exclude" : e.shiftKey ? "isolate" : undefined;
+          if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), how);
+          else handlers.current.onPickDir(n.id.slice(4), how);
+        }
       })
       // A right-click that isn't a pan hides what's under it.
       .onNodeRightClick((n) => {

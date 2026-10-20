@@ -103,10 +103,11 @@ export function Legend({
   counts: Map<string, number>;
   /** Folder mode passes the map's own territory colours. */
   colors?: Map<string, string>;
-  /** Ids of the rows the map is isolated to. */
-  isolated: Set<string>;
+  /** Rows the map is isolated to ("in") or has taken out of view ("out"). */
+  isolated: Map<string, "in" | "out">;
   onPick: (g: LogicalModule) => void;
-  onIsolate: (g: LogicalModule) => void;
+  /** Toggle showing only this row (with the others in), or with `exclude`, hiding it. */
+  onIsolate: (g: LogicalModule, exclude: boolean) => void;
   onShowAll: () => void;
 }) {
   // Same inputs as the space uses, so a legend dot and its cluster always match.
@@ -116,39 +117,52 @@ export function Legend({
     c.set(OTHER, "#5d6a85");
     return c;
   }, [groups, given]);
-  const any = isolated.size > 0;
+  const ins = [...isolated.values()].filter((v) => v === "in").length;
+  const outs = isolated.size - ins;
   return (
     <div className="glass pointer-events-auto w-[250px] rounded-lg py-1.5">
       <p className="flex items-baseline justify-between px-3 pb-1 text-[11.5px] text-muted">
-        {any ? (
+        {isolated.size ? (
           <>
-            <span>Showing only {isolated.size}</span>
+            <span>{[ins ? `Showing only ${ins}` : "", outs ? `${outs} hidden` : ""].filter(Boolean).join(" · ")}</span>
             <button onClick={onShowAll} className="text-course hover:underline">Show all</button>
           </>
         ) : (
-          <span title="Shift+click a module beacon or folder on the map to isolate it too">Dot: show only this · several at once</span>
+          <span title="Dot: show only this (click more to add them) · Shift+click the dot: hide it. On the map: Shift+click a beacon or folder to isolate it, Alt+click to hide it.">
+            Dot: show only · Shift+dot: hide
+          </span>
         )}
       </p>
       <ul className="max-h-[38vh] overflow-y-auto">
         {groups.map((g) => {
-          const on = isolated.has(g.id);
+          const st = isolated.get(g.id);
           const c = colors.get(g.id);
+          // Out of view: struck through. Not isolated while others are: dimmed.
+          const dim = st === "out" || (ins > 0 && st !== "in");
           return (
-            <li key={g.id} className={`flex items-center ${any && !on ? "opacity-45" : ""}`}>
+            <li key={g.id} className={`flex items-center ${dim ? "opacity-45" : ""}`}>
               <button
-                onClick={() => onIsolate(g)}
-                aria-pressed={on}
-                title={on ? `Stop isolating ${g.label}` : `Show only ${g.label} (click others to add them)`}
+                onClick={(e) => onIsolate(g, e.shiftKey)}
+                aria-pressed={!!st}
+                title={
+                  st === "in" ? `Stop isolating ${g.label} · Shift+click: hide it instead`
+                    : st === "out" ? `Bring ${g.label} back · click: show only it instead`
+                      : `Show only ${g.label} (click others to add them) · Shift+click: hide it`
+                }
                 className="grid h-6 w-7 shrink-0 place-items-center rounded hover:bg-white/10"
               >
-                <span className="h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: c, background: !any || on ? c : "transparent" }} />
+                {st === "out" ? (
+                  <span className="text-[11px] leading-none" style={{ color: c }}>✕</span>
+                ) : (
+                  <span className="h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: c, background: !ins || st === "in" ? c : "transparent" }} />
+                )}
               </button>
               <button
-                onClick={(e) => (e.shiftKey ? onIsolate(g) : onPick(g))}
+                onClick={(e) => (e.shiftKey ? onIsolate(g, false) : e.altKey ? onIsolate(g, true) : onPick(g))}
                 className="flex min-w-0 flex-1 items-baseline gap-2 py-1 pr-3 text-left hover:bg-white/5"
-                title={`${g.summary ? `${g.summary}\n` : ""}Click to fly there · Shift+click to isolate`}
+                title={`${g.summary ? `${g.summary}\n` : ""}Click to fly there · Shift+click to isolate · Alt+click to hide`}
               >
-                <span className={`min-w-0 flex-1 truncate text-[13px] ${on ? "text-text" : ""}`}>{g.label}</span>
+                <span className={`min-w-0 flex-1 truncate text-[13px] ${st === "in" ? "text-text" : ""} ${st === "out" ? "line-through" : ""}`}>{g.label}</span>
                 <span className="text-[11.5px] tabular-nums text-muted">{counts.get(g.id) ?? 0}</span>
               </button>
             </li>
@@ -290,14 +304,19 @@ export function FilterPanel({
       {!!filter.isolate?.length && (
         <div className="rounded-md border border-line px-2.5 py-2">
           <div className="flex items-baseline justify-between">
-            <span className="text-[12.5px] text-muted">Showing only</span>
+            <span className="text-[12.5px] text-muted">Modules and folders</span>
             <button onClick={() => onChange({ ...filter, isolate: undefined })} className="text-[12.5px] text-course hover:underline">
               Show all
             </button>
           </div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {filter.isolate.map((i) => (
-              <span key={`${i.kind}:${i.id}`} className="inline-flex items-center gap-1 rounded-full border border-course/50 bg-course/10 px-2 py-0.5 text-[12px]">
+              <span
+                key={`${i.kind}:${i.id}`}
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[12px] ${i.exclude ? "border-bad/50 bg-bad/10" : "border-course/50 bg-course/10"}`}
+                title={i.exclude ? "Hidden from the map" : "The map shows only these"}
+              >
+                {i.exclude ? <span className="text-bad">not</span> : <span className="text-course">only</span>}
                 {i.label}
                 <button
                   onClick={() => {
@@ -312,7 +331,9 @@ export function FilterPanel({
               </span>
             ))}
           </div>
-          <p className="mt-1 text-[11.5px] text-muted">Add more with the legend's dots, or Shift+click a beacon or folder on the map.</p>
+          <p className="mt-1 text-[11.5px] text-muted">
+            Legend dots: click to show only, Shift+click to hide. On the map: Shift+click a beacon or folder to isolate it, Alt+click to hide it.
+          </p>
         </div>
       )}
 

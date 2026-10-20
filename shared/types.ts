@@ -274,7 +274,14 @@ export type SavedFilter = { name: string; filter: MapFilter };
  * One thing the map is isolated to. A folder is matched by prefix, so files
  * added under it later are included; a module or group carries its files.
  */
-export type Isolated = { kind: "module" | "dir"; id: string; label: string; paths?: string[] };
+export type Isolated = {
+  kind: "module" | "dir";
+  id: string;
+  label: string;
+  paths?: string[];
+  /** Taken out of view instead: the map shows everything else (or the rest of what's isolated). */
+  exclude?: boolean;
+};
 
 export type SessionStatus = "idle" | "scanning" | "analyzing" | "ready" | "error";
 

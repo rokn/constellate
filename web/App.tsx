@@ -243,16 +243,25 @@ export function App() {
     return { kind: "module" as const, groups, counts, colors: undefined };
   }, [grouping, graph, unisolated]);
 
-  /** Add a module or folder to what the map is isolated to, or take it out. */
-  const toggleIsolate = useCallback((item: Isolated) => {
+  /**
+   * Isolate a module or folder (show only it, and the others isolated), or
+   * with `exclude` take it out of view. The same action again undoes it;
+   * the other one switches it over.
+   */
+  const toggleIsolate = useCallback((item: Isolated, exclude = false) => {
     setFilter((f) => {
       const cur = f.isolate ?? [];
-      const has = cur.some((i) => i.kind === item.kind && i.id === item.id);
-      const next = has ? cur.filter((i) => !(i.kind === item.kind && i.id === item.id)) : [...cur, item];
+      const same = (i: Isolated) => i.kind === item.kind && i.id === item.id;
+      const was = cur.find(same);
+      const rest = cur.filter((i) => !same(i));
+      const next = was && !!was.exclude === exclude ? rest : [...rest, { ...item, ...(exclude ? { exclude: true } : {}) }];
       return { ...f, isolate: next.length ? next : undefined };
     });
   }, []);
-  const isolatedIds = useMemo(() => new Set((filter.isolate ?? []).filter((i) => i.kind === legend?.kind).map((i) => i.id)), [filter, legend?.kind]);
+  const isolatedIds = useMemo(
+    () => new Map((filter.isolate ?? []).filter((i) => i.kind === legend?.kind).map((i) => [i.id, i.exclude ? ("out" as const) : ("in" as const)])),
+    [filter, legend?.kind],
+  );
 
   /* ------------------------------ navigation ------------------------------ */
 
@@ -754,11 +763,11 @@ export function App() {
             openFile(p, undefined, undefined, false);
             focusFile(p);
           }}
-          onPickModule={(id, isolate) => {
-            if (!isolate) return focusModule(id);
-            // Shift+click a beacon: isolate that module (or group).
+          onPickModule={(id, how) => {
+            if (!how) return focusModule(id);
+            // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
             const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
-            if (m) toggleIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths });
+            if (m) toggleIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths }, how === "exclude");
           }}
           onOpenImport={(from, line) => openFile(from, line)}
           onHideOverlay={(id) => {
@@ -778,9 +787,9 @@ export function App() {
             const under = graph.files.map((f) => f.path).filter((p) => p.startsWith(`${t.dir}/`) && (!visible || visible.has(p)));
             hide(under, `${t.dir}/ (${under.length} file${under.length === 1 ? "" : "s"})`);
           }}
-          onPickDir={(d, isolate) =>
-            isolate
-              ? toggleIsolate({ kind: "dir", id: d, label: d === "." ? "files at the root" : `${d}/` })
+          onPickDir={(d, how) =>
+            how
+              ? toggleIsolate({ kind: "dir", id: d, label: d === "." ? "files at the root" : `${d}/` }, how === "exclude")
               : focus(graph.files.filter((f) => f.path.startsWith(`${d}/`)).map((f) => f.path), `${d}/`)
           }
           onBackground={() => setPointer(null)}
@@ -930,7 +939,9 @@ export function App() {
             onPick={(g) =>
               legend.kind === "dir" ? focus(graph!.files.filter((f) => (g.id === "." ? !f.path.includes("/") : f.path.startsWith(`${g.id}/`)) && (!visible || visible.has(f.path))).map((f) => f.path), g.label) : focusModule(g.id)
             }
-            onIsolate={(g) => toggleIsolate(legend.kind === "dir" ? { kind: "dir", id: g.id, label: g.label } : { kind: "module", id: g.id, label: g.label, paths: g.paths })}
+            onIsolate={(g, exclude) =>
+              toggleIsolate(legend.kind === "dir" ? { kind: "dir", id: g.id, label: g.label } : { kind: "module", id: g.id, label: g.label, paths: g.paths }, exclude)
+            }
             onShowAll={() => setFilter((f) => ({ ...f, isolate: undefined }))}
           />
         )}
