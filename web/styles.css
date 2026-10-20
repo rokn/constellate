@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+/*
+  Design direction — "the navigation display".
+  You are flying through the codebase, so the chrome borrows the cockpit's
+  moving-map vernacular: a night sky, instrument-weight condensed type, and the
+  display's colour grammar. Cyan is a static route (imports), amber is a
+  runtime link (logical dependencies), and magenta is reserved for the active
+  course — where the navigator is taking you, and the trail you flew. Nothing
+  else is allowed to be magenta, so the course always reads.
+*/
+:root {
+  --night: #060b16;
+  --panel: rgba(10, 17, 33, 0.82);
+  --panel-solid: #0c1426;
+  --panel-2: #111b31;
+  --line: #1d2a45;
+  --text: #e4eaf4;
+  --muted: #7d89a1;
+  --course: #ff4fd8;
+  --static: #5bd6ff;
+  --runtime: #ffb547;
+  --good: #6ee7a8;
+  --bad: #ff6b6b;
+}
+
+@theme inline {
+  --color-night: var(--night);
+  --color-panel: var(--panel);
+  --color-panelsolid: var(--panel-solid);
+  --color-panel2: var(--panel-2);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-course: var(--course);
+  --color-static: var(--static);
+  --color-runtime: var(--runtime);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
+  --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
+  --font-cond: "Barlow Condensed", "Barlow", ui-sans-serif, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--night);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--course) 38%, transparent);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--course);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+/* Glass instrument panels: the map stays visible behind everything. */
+.glass {
+  background: var(--panel);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  border: 1px solid var(--line);
+}
+
+/* The 3D library's hover tooltip. */
+.scene-tooltip {
+  font-family: var(--font-mono) !important;
+  font-size: 11.5px !important;
+  background: var(--panel-solid) !important;
+  border: 1px solid var(--line);
+  padding: 4px 8px !important;
+  border-radius: 4px;
+  color: var(--text) !important;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.working-bar {
+  position: relative;
+  overflow: hidden;
+}
+.working-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--course), transparent);
+  animation: sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--course) 70%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 10px transparent;
+  }
+}
+.pointed {
+  border-color: var(--course) !important;
+  animation: ring 1.2s ease-out 2;
+}
+
+/* Answer prose in the dossier. */
+.prose-nav {
+  line-height: 1.6;
+  font-size: 14.5px;
+}
+.prose-nav p {
+  margin: 0 0 0.7rem;
+}
+.prose-nav ul,
+.prose-nav ol {
+  margin: 0 0 0.7rem;
+  padding-left: 1.2rem;
+}
+.prose-nav ul {
+  list-style: disc;
+}
+.prose-nav ol {
+  list-style: decimal;
+}
+.prose-nav li {
+  margin: 0.2rem 0;
+}
+.prose-nav code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.05em 0.35em;
+}
+.prose-nav strong {
+  color: #fff;
+  font-weight: 600;
+}
+.prose-nav h1,
+.prose-nav h2,
+.prose-nav h3 {
+  font-family: var(--font-cond);
+  font-weight: 600;
+  font-size: 1.15rem;
+  margin: 0.8rem 0 0.4rem;
+}
+.prose-nav table {
+  border-collapse: collapse;
+  margin-bottom: 0.7rem;
+}
+.prose-nav th,
+.prose-nav td {
+  border: 1px solid var(--line);
+  padding: 0.3rem 0.6rem;
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
