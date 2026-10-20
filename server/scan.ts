@@ -164,58 +164,153 @@ function extractImports(lang: string, text: string): Raw[] {
   return out;
 }
 
-const SYMBOL_RES: Record<string, { re: RegExp; kind: string }[]> = {
+/**
+ * Declarations, for the outline, symbol search, and go-to-definition. Each
+ * pattern captures [1] the name; members (methods, fields) are attributed to
+ * the nearest enclosing declaration with less indentation — the class, impl,
+ * or type they belong to. Regexes, not parsers: a declaration missed here
+ * costs one jump target, and it works on any repo.
+ */
+const DECLS: Record<string, { re: RegExp; kind: string; member?: boolean }[]> = {
   ts: [
-    { re: /^export\s+(?:default\s+)?(?:async\s+)?function\*?\s+(\w+)/gm, kind: "function" },
-    { re: /^export\s+(?:default\s+)?(?:abstract\s+)?class\s+(\w+)/gm, kind: "class" },
-    { re: /^export\s+(?:const|let)\s+(\w+)/gm, kind: "const" },
-    { re: /^export\s+(?:type|interface|enum)\s+(\w+)/gm, kind: "type" },
-    { re: /^(?:async\s+)?function\*?\s+(\w+)/gm, kind: "function" },
-    { re: /^class\s+(\w+)/gm, kind: "class" },
+    { re: /^(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?function\*?\s+([\w$]+)/gm, kind: "function" },
+    { re: /^(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?class\s+([\w$]+)/gm, kind: "class" },
+    { re: /^(?:export\s+)?(?:declare\s+)?interface\s+([\w$]+)/gm, kind: "interface" },
+    { re: /^(?:export\s+)?(?:declare\s+)?type\s+([\w$]+)\s*(?:<[^=]*>)?\s*=/gm, kind: "type" },
+    { re: /^(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+([\w$]+)/gm, kind: "enum" },
+    { re: /^(?:export\s+)?(?:declare\s+)?(?:const|let|var)\s+([\w$]+)\s*[:=]/gm, kind: "const" },
+    {
+      re: /^[ \t]+(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)\s+)*(#?[\w$]+)\s*(?:<[^>()]*>)?\s*\([^)]*\)\s*(?::\s*[^{=;]+)?\{/gm,
+      kind: "method",
+      member: true,
+    },
   ],
   python: [
     { re: /^(?:async\s+)?def\s+(\w+)/gm, kind: "function" },
     { re: /^class\s+(\w+)/gm, kind: "class" },
-    { re: /^    (?:async\s+)?def\s+(\w+)/gm, kind: "method" },
+    { re: /^([A-Z][A-Z0-9_]+)\s*(?::[^=]+)?=/gm, kind: "const" },
+    { re: /^[ \t]+(?:async\s+)?def\s+(\w+)/gm, kind: "method", member: true },
   ],
   go: [
-    { re: /^func\s+(?:\([^)]*\)\s*)?(\w+)/gm, kind: "function" },
-    { re: /^type\s+(\w+)\s+(?:struct|interface)/gm, kind: "type" },
+    { re: /^func\s+(\w+)\s*[[(]/gm, kind: "function" },
+    // Methods name their receiver type; that is their container.
+    { re: /^func\s+\(\s*\w*\s*\*?\s*(\w+)(?:\[[^\]]*\])?\s*\)\s*(\w+)\s*[[(]/gm, kind: "method" },
+    { re: /^type\s+(\w+)\b/gm, kind: "type" },
+    { re: /^(?:const|var)\s+(\w+)\b/gm, kind: "const" },
   ],
   rust: [
-    { re: /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)/gm, kind: "function" },
-    { re: /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait)\s+(\w+)/gm, kind: "type" },
-    { re: /^\s*impl(?:<[^>]*>)?\s+(?:[\w:<>]+\s+for\s+)?(\w+)/gm, kind: "impl" },
+    { re: /^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?fn\s+(\w+)/gm, kind: "function" },
+    { re: /^(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait|union)\s+(\w+)/gm, kind: "type" },
+    { re: /^(?:pub(?:\([^)]*\))?\s+)?type\s+(\w+)/gm, kind: "type" },
+    { re: /^(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+(\w+)/gm, kind: "const" },
+    { re: /^(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)/gm, kind: "module" },
+    { re: /^impl(?:<[^>]*>)?\s+(?:[\w:<>, ]+\s+for\s+)?(\w+)/gm, kind: "impl" },
+    { re: /^[ \t]+(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?fn\s+(\w+)/gm, kind: "method", member: true },
   ],
   jvm: [
-    { re: /^\s*(?:public|private|protected|internal)?\s*(?:abstract\s+|final\s+|data\s+|sealed\s+|open\s+)*(?:class|interface|object|enum)\s+(\w+)/gm, kind: "class" },
-    { re: /^\s*(?:public|private|protected|override|suspend|\s)*\s*fun\s+(\w+)/gm, kind: "function" },
+    { re: /^\s*(?:(?:public|private|protected|internal|abstract|final|data|sealed|open|static|inner|enum|annotation)\s+)*(?:class|interface|object|enum|record)\s+(\w+)/gm, kind: "class" },
+    { re: /^\s*(?:(?:public|private|protected|internal|override|suspend|inline|open|abstract|operator|infix|tailrec)\s+)*fun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?(\w+)/gm, kind: "function", member: true },
+    {
+      re: /^[ \t]+(?:(?:public|private|protected|static|final|abstract|synchronized|native|default)\s+)+[\w<>\[\], ?.]+\s+(\w+)\s*\([^;{]*\)\s*(?:throws\s+[\w., ]+)?\s*\{/gm,
+      kind: "method",
+      member: true,
+    },
   ],
   ruby: [
     { re: /^\s*(?:class|module)\s+([\w:]+)/gm, kind: "class" },
-    { re: /^\s*def\s+(?:self\.)?(\w+[?!]?)/gm, kind: "method" },
+    { re: /^\s*def\s+(?:self\.)?(\w+[?!=]?)/gm, kind: "method", member: true },
+  ],
+  c: [
+    { re: /^(?:typedef\s+)?(?:struct|class|enum|union)\s+(\w+)/gm, kind: "type" },
+    { re: /^#define\s+(\w+)/gm, kind: "macro" },
+    { re: /^(?:static\s+|inline\s+|extern\s+|virtual\s+)*[\w:*&<>, ]+?[\s*&](\w+)\s*\([^;{]*\)\s*(?:const\s*)?\{/gm, kind: "function" },
   ],
 };
 
+const NOT_NAMES = new Set(["if", "for", "while", "switch", "catch", "return", "function", "constructor", "else", "do", "try", "new", "with", "super"]);
+
 function symbolFamily(lang: string): string | null {
-  if (["typescript", "tsx", "javascript", "jsx", "vue", "svelte"].includes(lang)) return "ts";
+  if (["typescript", "tsx", "javascript", "jsx", "vue", "svelte", "astro"].includes(lang)) return "ts";
   if (["java", "kotlin", "scala"].includes(lang)) return "jvm";
-  return SYMBOL_RES[lang] ? lang : null;
+  if (["c", "cpp", "objective-c"].includes(lang)) return "c";
+  return DECLS[lang] ? lang : null;
 }
 
-function extractSymbols(lang: string, text: string): Symbol[] {
+const MAX_SYMBOLS = 300;
+
+export function extractSymbols(lang: string, text: string): Symbol[] {
   const fam = symbolFamily(lang);
-  if (!fam) return [];
-  const seen = new Map<string, Symbol>();
-  for (const { re, kind } of SYMBOL_RES[fam]) {
+  if (!fam || !text) return [];
+  // Line starts, for an offset -> line lookup that doesn't rescan the file.
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  const lineAt = (offset: number) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const indentOf = (line: number) => {
+    const s = text.slice(starts[line - 1], starts[line] ?? text.length);
+    return s.length - s.trimStart().length;
+  };
+
+  type Raw = Symbol & { indent: number; member: boolean };
+  const found: Raw[] = [];
+  const seen = new Set<string>();
+  for (const { re, kind, member } of DECLS[fam]) {
     for (const m of text.matchAll(re)) {
-      const name = m[1];
-      if (!name || seen.has(name)) continue;
-      const line = text.slice(0, m.index).split("\n").length;
-      seen.set(name, { name, kind, line });
+      // Go methods capture (receiver, name); everything else captures name.
+      const [name, container] = fam === "go" && kind === "method" ? [m[2], m[1]] : [m[1], undefined];
+      if (!name || NOT_NAMES.has(name)) continue;
+      const line = lineAt(m.index! + (m[0].length - m[0].trimStart().length));
+      const key = `${name}@${line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({ name, kind, line, container, indent: indentOf(line), member: !!member });
     }
   }
-  return [...seen.values()].sort((a, b) => a.line - b.line).slice(0, 60);
+  found.sort((a, b) => a.line - b.line);
+
+  // Grouped Go declarations: `const ( … )`, `var ( … )`, `type ( … )`.
+  if (fam === "go") {
+    for (const block of text.matchAll(/^(const|var|type)\s*\(([\s\S]*?)^\)/gm)) {
+      const base = block.index! + block[0].indexOf("(") + 1;
+      for (const line of block[2].matchAll(/^\t(\w+(?:\s*,\s*\w+)*)\b/gm)) {
+        for (const n of line[1].split(",")) {
+          const name = n.trim();
+          const at = lineAt(base + line.index!);
+          if (name && name !== "_" && !seen.has(`${name}@${at}`)) {
+            seen.add(`${name}@${at}`);
+            found.push({ name, kind: block[1] === "type" ? "type" : "const", line: at, indent: 0, member: false });
+          }
+        }
+      }
+    }
+    found.sort((a, b) => a.line - b.line);
+  }
+
+  // Members belong to the nearest preceding declaration that is less indented.
+  const out: Symbol[] = [];
+  const stack: Raw[] = [];
+  for (const s of found) {
+    while (stack.length && stack[stack.length - 1].indent >= s.indent) stack.pop();
+    if (s.member && !s.container) {
+      const parent = stack[stack.length - 1];
+      // A "method" with nothing around it is a plain function written indented.
+      if (parent && ["class", "interface", "impl", "type", "module"].includes(parent.kind)) s.container = parent.name;
+      else if (!parent && s.kind === "method") s.kind = "function";
+      else if (parent) continue; // a nested helper inside a function: not navigable on its own
+    }
+    if (!s.member || s.kind !== "method" || s.container || s.indent === 0) stack.push(s);
+    out.push({ name: s.name, kind: s.kind, line: s.line, ...(s.container ? { container: s.container } : {}) });
+    if (out.length >= MAX_SYMBOLS) break;
+  }
+  return out;
 }
 
 /* ----------------------------- resolution ----------------------------- */

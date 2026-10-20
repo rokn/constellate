@@ -6,7 +6,13 @@
 
 /* ------------------------------ the map ------------------------------ */
 
-export type Symbol = { name: string; kind: string; line: number };
+export type Symbol = {
+  name: string;
+  kind: string;
+  line: number;
+  /** The class, type or impl a member belongs to. */
+  container?: string;
+};
 
 export type FileInfo = {
   path: string;
