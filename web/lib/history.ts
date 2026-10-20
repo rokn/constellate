@@ -121,7 +121,7 @@ export function summarize(commits: Commit[]) {
   return { add, del, files: files.size, authors: [...authors], commits: commits.length };
 }
 
-const day = (t: number) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const day = (t: number) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 export function describeRange(r: TimeRange, commits: Commit[]): string {
   if (!commits.length) return r.label ?? "an empty range";

@@ -1341,7 +1341,7 @@ function ReplayCaption({
         </span>
         <span className="font-mono text-[12px] text-muted">{commit.worktree ? "uncommitted" : commit.short}</span>
         <span className="ml-auto text-[12px] text-muted">
-          {commit.author} · {new Date(commit.at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+          {commit.author} · {new Date(commit.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
         </span>
       </div>
       <h2 className="mt-1 font-cond text-[22px] font-semibold leading-tight">{commit.subject}</h2>

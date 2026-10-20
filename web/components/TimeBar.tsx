@@ -11,7 +11,7 @@ import { commitsIn, summarize, type Span } from "../lib/history";
 type Bucket = { start: number; commits: Commit[]; churn: number; worktree?: boolean };
 
 const DAY = 86_400_000;
-const fmt = (t: number) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
+const fmt = (t: number) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
 
 export function TimeBar({
   history,
@@ -83,8 +83,8 @@ export function TimeBar({
           <p className="text-[13px] text-text/90">
             {range.label && <span className="text-course">{range.label} · </span>}
             {sum.commits} commit{sum.commits === 1 ? "" : "s"} · {sum.files} files ·{" "}
-            <span className="font-mono text-[12px] text-good">+{sum.add.toLocaleString()}</span>{" "}
-            <span className="font-mono text-[12px] text-bad">−{sum.del.toLocaleString()}</span>
+            <span className="font-mono text-[12px] text-good">+{sum.add.toLocaleString("en-US")}</span>{" "}
+            <span className="font-mono text-[12px] text-bad">−{sum.del.toLocaleString("en-US")}</span>
             {sum.authors.length > 0 && <span className="text-muted"> · {sum.authors.slice(0, 3).join(", ")}{sum.authors.length > 3 ? ` +${sum.authors.length - 3}` : ""}</span>}
           </p>
         ) : (
@@ -182,7 +182,7 @@ export function TimeBar({
                 key={c.sha}
                 onClick={() => onPickCommit(c)}
                 className="shrink-0 rounded-md border border-line bg-panelsolid/60 px-2 py-1 text-left hover:border-course/60"
-                title={`${c.subject}\n${c.author} · ${new Date(c.at).toLocaleString()}`}
+                title={`${c.subject}\n${c.author} · ${new Date(c.at).toLocaleString("en-US")}`}
               >
                 <span className="flex items-baseline gap-2">
                   <span className="font-mono text-[11px] text-muted">{c.worktree ? "now" : c.short}</span>
