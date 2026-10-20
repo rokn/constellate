@@ -99,6 +99,11 @@ export async function readAudio(key: string): Promise<Buffer | null> {
   }
 }
 
+/** A line in a voice, for hearing it before choosing it. Cached like any other. */
+export function previewVoice(settings: StorySettings): Promise<Voiced> {
+  return synthesize("Here's how your stories will sound: a short walk through the code, in step with what's on screen.", settings);
+}
+
 export type VoiceOption = { id: string; name: string; description: string };
 
 let voices: Promise<VoiceOption[]> | null = null;

@@ -342,6 +342,13 @@ export type Story = {
   error?: string;
   /** 1–3 for the repo's intro stories, in order. */
   intro?: number;
+  /** A branch story: what the branch changes relative to its base. */
+  branch?: { name: string; base: string; mergeBase: string; head: string };
+  /**
+   * Voice and style pinned to this story (one made through the API uses the
+   * defaults, whatever the settings say). Unset: the current settings.
+   */
+  voice?: StorySettings;
   context: StoryContext[];
   /** Prepared up front, so playback never waits on a model. */
   visuals: View[];

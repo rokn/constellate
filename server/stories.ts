@@ -1,11 +1,12 @@
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import { z } from "zod";
-import type { Story, StoryBeat, StoryContext, StoryCue, View } from "../shared/types";
+import type { Story, StoryBeat, StoryContext, StoryCue, StorySettings, View } from "../shared/types";
+import { branchDiff, branchFileDiff, fileAt, type BranchDiff } from "./branch";
 import { EdgeShape, NodeShape, expandPaths, graphTools } from "./navigator";
 import { loadFile, slice } from "./repo";
 import { findPath } from "./scan";
-import { getStory, newStory, patchStory, removeStory, session } from "./session";
+import { DEFAULT_STORY_SETTINGS, getStory, newStory, patchStory, removeStory, session } from "./session";
 import { synthesize, ttsAvailable, voiceKey } from "./tts";
 
 /**
@@ -35,13 +36,13 @@ const CUE_KINDS = ["show", "lines", "reveal", "emphasize", "step", "focus", "ope
 
 const VisualShape = z.object({
   id: z.string().describe("Your short id for it, e.g. 'loop' — cues refer to it"),
-  kind: z.enum(["code", "diagram", "custom", "text"]),
+  kind: z.enum(["code", "diagram", "custom", "text", "diff"]),
   title: z.string().optional(),
   // code
-  path: z.string().optional().describe("code: the file"),
+  path: z.string().optional().describe("code / diff: the file"),
   start: z.number().int().optional().describe("code: first line, from what Read showed you"),
   end: z.number().int().optional().describe("code: last line (5–40 lines in all)"),
-  note: z.string().optional().describe("code: one line on what to notice"),
+  note: z.string().optional().describe("code / diff: one line on what to notice"),
   // diagram
   layer: z.enum(["static", "logical"]).optional().describe("diagram: imports (static) or runtime behaviour (logical)"),
   dir: z.enum(["TD", "LR"]).optional(),
@@ -97,9 +98,20 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ");
  * Checks a script against the code and against itself, and turns it into a
  * story. Every problem is reported at once, so the writer fixes them in one go.
  */
-async function compile(a: Publish): Promise<{ errors: string[]; story?: Pick<Story, "title" | "summary" | "context" | "visuals" | "beats"> }> {
+async function compile(a: Publish, branch?: BranchDiff): Promise<{ errors: string[]; story?: Pick<Story, "title" | "summary" | "context" | "visuals" | "beats"> }> {
   const idx = session.idx!;
+  const root = idx.graph.root;
   const errors: string[] = [];
+  // A branch that isn't checked out: its code comes from git, not the working tree.
+  const fromGit = branch && !branch.checkedOut ? branch : undefined;
+  const changed = new Set(branch?.files.map((f) => f.path) ?? []);
+  const langOf = (p: string) => idx.byPath.get(p)?.lang ?? (path.extname(p).slice(1) || "text");
+  const loadCode = async (p: string) => {
+    if (!fromGit) return loadFile(idx, p);
+    const rel = p.replace(/^\.?\//, "");
+    const text = await fileAt(root, fromGit.head, rel);
+    return text === null ? null : { path: rel, text, lines: text.split("\n") };
+  };
 
   const words = a.beats.reduce((n, b) => n + b.say.split(/\s+/).filter(Boolean).length, 0);
   if (words > MAX_WORDS) errors.push(`The script is ${words} words; keep it under ${MAX_WORDS}. Cut, don't compress.`);
@@ -111,14 +123,37 @@ async function compile(a: Publish): Promise<{ errors: string[]; story?: Pick<Sto
   for (const v of a.visuals) {
     if (visuals.some((x) => x.id === v.id)) errors.push(`Two visuals have the id "${v.id}".`);
     if (v.kind === "code") {
-      const file = v.path ? await loadFile(idx, v.path) : null;
+      const file = v.path ? await loadCode(v.path) : null;
       if (!file || !v.start || !v.end) {
-        errors.push(`Code visual "${v.id}" needs a real path, start and end.`);
+        errors.push(`Code visual "${v.id}" needs a real path${fromGit ? " (on the branch)" : ""}, start and end.`);
         continue;
       }
       const cut = slice(file, v.start, v.end);
       ranges.set(v.id, { start: cut.start, end: cut.end });
-      visuals.push({ kind: "code", id: v.id, title: v.title, path: file.path, lang: idx.byPath.get(file.path)?.lang ?? "text", startLine: cut.start, code: cut.code, note: v.note, highlight: [], annotations: [] });
+      visuals.push({ kind: "code", id: v.id, title: v.title, path: file.path, lang: langOf(file.path), startLine: cut.start, code: cut.code, note: v.note, highlight: [], annotations: [] });
+    } else if (v.kind === "diff") {
+      // The real diff, from git: the writer only names the file.
+      const p = v.path?.replace(/^\.?\//, "") ?? "";
+      if (!branch) {
+        errors.push(`Diff visual "${v.id}": diffs are for branch stories.`);
+        continue;
+      }
+      const diff = changed.has(p) ? await branchFileDiff(root, branch, p).catch(() => "") : "";
+      if (!diff.trim()) {
+        errors.push(`Diff visual "${v.id}": ${p || "(no path)"} isn't changed on the branch. Changed files: ${[...changed].slice(0, 30).join(", ")}.`);
+        continue;
+      }
+      visuals.push({
+        kind: "diff",
+        id: v.id,
+        title: v.title,
+        path: p,
+        lang: langOf(p),
+        from: branch.mergeBase,
+        to: branch.head,
+        diff: diff.length > 60_000 ? `${diff.slice(0, 60_000)}\n… (diff truncated)` : diff,
+        note: v.note,
+      });
     } else if (v.kind === "diagram") {
       const nodes = v.nodes ?? [];
       const edges = v.edges ?? [];
@@ -202,7 +237,7 @@ async function compile(a: Publish): Promise<{ errors: string[]; story?: Pick<Sto
           break;
         case "focus": {
           const paths = expandPaths(c.paths ?? []);
-          if (!paths.length) bad("none of those paths are in the repository.");
+          if (!paths.length) bad(`none of those paths are on the map.${fromGit ? " Files that exist only on the branch aren't; focus on the ones they connect to." : ""}`);
           else cues.push({ at, kind: "focus", paths, label: c.label });
           break;
         }
@@ -222,7 +257,9 @@ async function compile(a: Publish): Promise<{ errors: string[]; story?: Pick<Sto
 
   const context: StoryContext[] = [];
   for (const c of a.context) {
-    const p = findPath(idx, c.path);
+    const rel = c.path.replace(/^\.?\//, "");
+    // A file the branch adds counts, even if it isn't on the map.
+    const p = changed.has(rel) ? rel : findPath(idx, c.path);
     if (p) context.push({ path: p, line: c.line, endLine: c.endLine, why: c.why });
     else errors.push(`Context: no file matches "${c.path}".`);
   }
@@ -284,12 +321,16 @@ function progressOf(name: string, input: Record<string, unknown>, root: string):
       return `Outlining ${String(input.path ?? "")}`;
     case "publish_story":
       return "Choreographing the script";
+    case "branch_diff":
+      return input.path ? `Reading the change to ${String(input.path)}` : "Reading the branch's changes";
+    case "read_at":
+      return `Reading ${String(input.path ?? "")} on the branch`;
     default:
       return null;
   }
 }
 
-async function write(storyId: string, prompt: string) {
+async function write(storyId: string, prompt: string, branch?: BranchDiff) {
   const idx = session.idx;
   if (!idx) throw new Error("No repository is open.");
   const controller = new AbortController();
@@ -307,17 +348,18 @@ async function write(storyId: string, prompt: string) {
         "Publish the story: the script with its cues, the prepared visuals, and the context. Call once when you've read enough; fix and call again if it reports problems.",
         PublishShape,
         async (a) => {
-          const { errors, story } = await compile(a as Publish);
+          const { errors, story } = await compile(a as Publish, branch);
           if (!story) return { content: [{ type: "text" as const, text: `Not published — fix these and call publish_story again:\n- ${errors.join("\n- ")}` }], isError: true };
           published = true;
           patchStory(storyId, { ...story, state: "voicing", progress: undefined });
           return { content: [{ type: "text" as const, text: `Published "${story.title}": ${story.beats.length} beats, ${story.visuals.length} visuals. Reply with one short line; you're done.` }] };
         },
       ),
+      ...(branch ? branchTools(branch) : []),
     ],
   });
 
-  const tools = ["deps", "outline", "publish_story"].map((t) => `mcp__story__${t}`);
+  const tools = ["deps", "outline", "publish_story", ...(branch ? ["branch_diff", "read_at"] : [])].map((t) => `mcp__story__${t}`);
   const q = query({
     prompt,
     options: {
@@ -356,11 +398,14 @@ async function write(storyId: string, prompt: string) {
   await voice(storyId);
 }
 
-/** Voices every beat with the current settings. Without a key, the story plays silent with captions. */
+/** A story's own pinned voice, else the current settings. */
+const settingsOf = (s: Story): StorySettings => s.voice ?? session.state.storySettings;
+
+/** Voices every beat with the story's settings. Without a key, the story plays silent with captions. */
 export async function voice(storyId: string) {
   const story = getStory(storyId);
   if (!story?.beats.length) return;
-  const settings = session.state.storySettings;
+  const settings = settingsOf(story);
   if (!ttsAvailable()) {
     patchStory(storyId, { state: "ready", silent: true, beats: story.beats.map((b) => ({ ...b, audio: undefined })) });
     return;
@@ -393,8 +438,8 @@ function failed(storyId: string, err: unknown) {
 
 /* ------------------------------ public api ------------------------------ */
 
-const styleNote = () => {
-  const style = session.state.storySettings.style.trim();
+const styleNote = (settings: StorySettings = session.state.storySettings) => {
+  const style = settings.style.trim();
   return style ? `\nNarration style the reader asked for: ${style}` : "";
 };
 
@@ -440,15 +485,101 @@ export function retryStory(id: string) {
   if (!s) return;
   if (s.beats.length) return void voice(id).catch((err) => failed(id, err));
   patchStory(id, { state: "writing", error: undefined, progress: undefined });
+  if (s.branch) {
+    const { name, base } = s.branch;
+    void branchDiff(session.idx!.graph.root, name, base)
+      .then((d) => write(id, branchPrompt(d, settingsOf(s)), d))
+      .catch((err) => failed(id, err));
+    return;
+  }
   const prompt = [orientation(), "", s.intro ? `Write intro story ${s.intro} of 3 for this codebase, about: ${s.request}` : `Write a story that explains: ${s.request}`, styleNote()].join("\n");
   void write(id, prompt).catch((err) => failed(id, err));
 }
+
+/* -------------------------------- branches ------------------------------- */
+
+/** Reading the branch without checking it out. */
+function branchTools(d: BranchDiff) {
+  const root = session.idx!.graph.root;
+  const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+  return [
+    tool(
+      "branch_diff",
+      `What the branch changes: with no path, its commits and diff stat; with a path, that file's unified diff (merge base → branch tip).`,
+      { path: z.string().optional() },
+      async ({ path: p }) => {
+        if (!p) {
+          return text([`${d.commits.length} commits:`, ...d.commits.slice(0, 60).map((c) => `${c.sha.slice(0, 8)} ${c.subject}`), "", d.stat].join("\n"));
+        }
+        const diff = await branchFileDiff(root, d, p).catch((e) => `Error: ${String(e)}`);
+        return text(diff.trim() ? diff.slice(0, 80_000) : `${p} isn't changed on the branch.`);
+      },
+    ),
+    tool(
+      "read_at",
+      `Read a file as it is on the branch (or at the base, before the branch), with line numbers — use these line numbers for code visuals.`,
+      { path: z.string(), side: z.enum(["branch", "base"]).default("branch"), start: z.number().int().min(1).optional(), end: z.number().int().optional() },
+      async ({ path: p, side, start, end }) => {
+        const t = await fileAt(root, side === "base" ? d.mergeBase : d.head, p);
+        if (t === null) return { ...text(`${p} doesn't exist on the ${side}.`), isError: true };
+        const lines = t.split("\n");
+        const s0 = Math.max(1, start ?? 1);
+        const e0 = Math.min(lines.length, end ?? s0 + 600);
+        return text(lines.slice(s0 - 1, e0).map((l, i) => `${String(s0 + i).padStart(5)}\t${l}`).join("\n"));
+      },
+    ),
+  ];
+}
+
+function branchPrompt(d: BranchDiff, settings: StorySettings): string {
+  const adds = d.files.reduce((n, f) => n + f.add, 0);
+  const dels = d.files.reduce((n, f) => n + f.del, 0);
+  return [
+    orientation(),
+    "",
+    `Write a story that explains what the branch "${d.branch}" changes relative to ${d.base}: what it's for, how the change works, and what someone reviewing it should notice. Explain the change, not the whole codebase — just enough of the surroundings to follow it.`,
+    `It forked from ${d.base} at ${d.mergeBase.slice(0, 10)}: ${d.commits.length} commits, ${d.files.length} files, +${adds}/−${dels}.`,
+    "Commits (newest first):",
+    ...d.commits.slice(0, 40).map((c) => `- ${c.subject}`),
+    d.commits.length > 40 ? `- … ${d.commits.length - 40} more` : "",
+    "",
+    "Diff stat:",
+    d.stat.split("\n").slice(0, 80).join("\n"),
+    "",
+    d.checkedOut
+      ? "The branch is checked out, so Read and Grep show its version of every file. branch_diff shows what it changed."
+      : `The branch is NOT checked out: Read and Grep show ${d.base}'s side. Use read_at for the branch's version of a file (code visuals are cut from it, so take line numbers from read_at) and branch_diff for the changes. Files only on the branch aren't on the map, so camera focus works only on files that also exist here.`,
+    "Show the change itself with diff visuals ({ kind: \"diff\", path }) — the diff is taken from git. Use a code visual for a new piece worth reading whole, and a diagram when the branch changes how parts connect. The context is the changed places that matter most.",
+    styleNote(settings),
+  ]
+    .filter((x) => x !== "")
+    .join("\n");
+}
+
+/**
+ * A story explaining a branch against its base (main by default). `settings`
+ * pins the voice and style — the API passes the defaults, so a story made
+ * from a script sounds the same whatever the settings in the app are.
+ */
+export async function writeBranchStory(branch: string, opts: { base?: string; settings?: StorySettings } = {}): Promise<Story> {
+  const idx = session.idx;
+  if (!idx) throw new Error("No repository is open.");
+  const d = await branchDiff(idx.graph.root, branch, opts.base);
+  if (!d.files.length) throw new Error(`"${d.branch}" has no changes relative to ${d.base}.`);
+  const story = newStory(`What ${d.branch} changes`);
+  patchStory(story.id, { branch: { name: d.branch, base: d.base, mergeBase: d.mergeBase, head: d.head }, voice: opts.settings });
+  void write(story.id, branchPrompt(d, opts.settings ?? session.state.storySettings), d).catch((err) => failed(story.id, err));
+  return getStory(story.id)!;
+}
+
+/** The defaults, with whatever the caller overrides. */
+export const defaultSettings = (o: Partial<StorySettings> = {}): StorySettings => ({ ...DEFAULT_STORY_SETTINGS, ...o });
 
 /** Re-voice with the current settings, if it was voiced differently. */
 export function revoiceIfStale(id: string) {
   const s = getStory(id);
   if (!s || s.state !== "ready" || !ttsAvailable()) return false;
-  if (s.voiceKey === voiceKey(session.state.storySettings) && !s.silent) return false;
+  if (s.voiceKey === voiceKey(settingsOf(s)) && !s.silent) return false;
   void voice(id).catch((err) => failed(id, err));
   return true;
 }
