@@ -109,6 +109,8 @@ export function Legend({
   counts,
   colors: given,
   isolated,
+  links,
+  selected,
   onPick,
   onIsolate,
   onShowAll,
@@ -119,6 +121,10 @@ export function Legend({
   colors?: Map<string, string>;
   /** Rows the map is isolated to ("in") or has taken out of view ("out"). */
   isolated: Map<string, "in" | "out">;
+  /** Import lines between each other row and the selected rows, by direction. */
+  links?: Map<string, { out: number; in: number }>;
+  /** The rows the link counts are about: isolated, or clicked. */
+  selected?: Set<string>;
   onPick: (g: LogicalModule) => void;
   /** Toggle showing only this row (with the others in), or with `exclude`, hiding it. */
   onIsolate: (g: LogicalModule, exclude: boolean) => void;
@@ -176,7 +182,19 @@ export function Legend({
                 className="flex min-w-0 flex-1 items-baseline gap-2 py-1 pr-3 text-left hover:bg-white/5"
                 title={`${g.summary ? `${g.summary}\n` : ""}Click to fly there · Shift+click to isolate · Alt+click to hide`}
               >
-                <span className={`min-w-0 flex-1 truncate text-[13px] ${st === "in" ? "text-text" : ""} ${st === "out" ? "line-through" : ""}`}>{g.label}</span>
+                <span className={`min-w-0 flex-1 truncate text-[13px] ${st === "in" || selected?.has(g.id) ? "text-text" : ""} ${st === "out" ? "line-through" : ""}`}>{g.label}</span>
+                {links && !selected?.has(g.id) && (() => {
+                  const l = links.get(g.id);
+                  const n = (l?.out ?? 0) + (l?.in ?? 0);
+                  return (
+                    <span
+                      className={`text-[11.5px] tabular-nums ${n ? "text-course" : "text-muted/40"}`}
+                      title={n ? `${n} import line${n === 1 ? "" : "s"} with the selected: ${l!.out} from this one into them, ${l!.in} from them into this one` : "No import lines with the selected"}
+                    >
+                      ↔{n}
+                    </span>
+                  );
+                })()}
                 <span className="text-[11.5px] tabular-nums text-muted">{counts.get(g.id) ?? 0}</span>
               </button>
             </li>

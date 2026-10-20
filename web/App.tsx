@@ -299,7 +299,8 @@ export function App() {
       const groups: LogicalModule[] = [...counts.keys()]
         .sort((a, b) => counts.get(b)! - counts.get(a)!)
         .map((t) => ({ id: t, label: t === "." ? "files at the root" : `${t}/`, summary: "", paths: [] }));
-      return { kind: "dir" as const, groups, counts, colors: territoryColors(graph.files.map((f) => f.top)) };
+      const memberOf = new Map(graph.files.map((f) => [f.path, f.top]));
+      return { kind: "dir" as const, groups, counts, memberOf, colors: territoryColors(graph.files.map((f) => f.top)) };
     }
     const groupOf = new Map<string, string>();
     for (const g of grouping.groups) for (const p of g.paths) if (!groupOf.has(p)) groupOf.set(p, g.id);
@@ -316,8 +317,41 @@ export function App() {
       counts.set(OTHER, others.length);
       groups.push({ id: OTHER, label: "Other", summary: "Not part of any group", paths: others });
     }
-    return { kind: "module" as const, groups, counts, colors: undefined };
+    const memberOf = new Map(graph.files.map((f) => [f.path, groupOf.get(f.path) ?? OTHER]));
+    return { kind: "module" as const, groups, counts, memberOf, colors: undefined };
   }, [grouping, graph, unisolated]);
+
+  /** The legend row you last flew to by clicking it (or its beacon), while that's still the focus. */
+  const [pickedRow, setPickedRow] = useState<{ id: string; label: string } | null>(null);
+  useEffect(() => {
+    if (pickedRow && focusLabel !== pickedRow.label) setPickedRow(null);
+  }, [focusLabel, pickedRow]);
+  /**
+   * For every other legend row, how many import lines run between it and the
+   * selected rows (the ones isolated, and the one you clicked) — out of it
+   * into them, and into it from them. Counted without the isolation, so hidden
+   * rows show how tied they are too.
+   */
+  const rowLinks = useMemo(() => {
+    if (!legend || !graph) return null;
+    const selected = new Set([...(filter.isolate ?? []).filter((i) => !i.exclude && i.kind === legend.kind).map((i) => i.id), ...(pickedRow ? [pickedRow.id] : [])]);
+    if (!selected.size) return null;
+    const links = new Map<string, { out: number; in: number }>();
+    const bump = (id: string, k: "out" | "in") => {
+      const e = links.get(id) ?? { out: 0, in: 0 };
+      e[k]++;
+      links.set(id, e);
+    };
+    for (const e of graph.imports) {
+      if (unisolated && (!unisolated.has(e.from) || !unisolated.has(e.to))) continue;
+      const a = legend.memberOf.get(e.from);
+      const b = legend.memberOf.get(e.to);
+      if (!a || !b || a === b) continue;
+      if (selected.has(b) && !selected.has(a)) bump(a, "out");
+      if (selected.has(a) && !selected.has(b)) bump(b, "in");
+    }
+    return { selected, links };
+  }, [legend, graph, filter.isolate, pickedRow, unisolated]);
 
   /**
    * Isolate a module or folder (show only it, and the others isolated), or
@@ -985,7 +1019,11 @@ export function App() {
           }}
           onNoteOnLink={(from, to) => setNoteEdit({ target: { kind: "link", from, to } })}
           onPickModule={(id, how) => {
-            if (!how) return focusModule(id);
+            if (!how) {
+              const m = legend?.groups.find((x) => x.id === id);
+              if (m) setPickedRow({ id: m.id, label: m.label });
+              return focusModule(id);
+            }
             // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
             const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
             if (!m) return;
@@ -1229,9 +1267,14 @@ export function App() {
             counts={legend.counts}
             colors={legend.colors}
             isolated={isolatedIds}
-            onPick={(g) =>
-              legend.kind === "dir" ? focus(graph!.files.filter((f) => (g.id === "." ? !f.path.includes("/") : f.path.startsWith(`${g.id}/`)) && (!visible || visible.has(f.path))).map((f) => f.path), g.label) : focusModule(g.id)
-            }
+            links={rowLinks?.links}
+            selected={rowLinks?.selected}
+            onPick={(g) => {
+              setPickedRow({ id: g.id, label: g.label });
+              if (legend.kind === "dir") {
+                focus(graph!.files.filter((f) => (g.id === "." ? !f.path.includes("/") : f.path.startsWith(`${g.id}/`)) && (!visible || visible.has(f.path))).map((f) => f.path), g.label);
+              } else focusModule(g.id);
+            }}
             onIsolate={(g, exclude) =>
               toggleIsolate(legend.kind === "dir" ? { kind: "dir", id: g.id, label: g.label } : { kind: "module", id: g.id, label: g.label, paths: g.paths }, exclude)
             }
