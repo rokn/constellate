@@ -98,7 +98,11 @@ export function App() {
   // How far to slide the subject right of a docked code panel grows with
   // the panel: a wide panel covers more of the map. (0.32 at the old 600px.)
   const shiftFor = (p: { file: boolean; frame: boolean }) =>
-    p.file && !p.frame ? Math.min(0.6, (panelWidthRef.current / window.innerWidth) * 0.76) : p.frame && !p.file ? -0.3 : 0;
+    p.file && !p.frame
+      ? Math.min(0.6, (panelWidthRef.current / window.innerWidth) * 0.76)
+      : p.frame && !p.file
+        ? -Math.min(0.6, (dossierWidthRef.current / window.innerWidth) * 0.68)
+        : 0;
 
   /* ----------------------------- panel size ------------------------------ */
 
@@ -135,21 +139,39 @@ export function App() {
   }, [minimal]);
 
   /** Drag the panel's right edge to resize it; the width is remembered in this browser. */
-  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+  const DOSSIER_KEY = "codeflight.dossierWidth";
+  const [dossierWidth, setDossierWidth] = useState(() => {
+    try {
+      return Number(localStorage.getItem(DOSSIER_KEY)) || 640;
+    } catch {
+      return 640;
+    }
+  });
+  const dossierWidthRef = useRef(dossierWidth);
+  dossierWidthRef.current = dossierWidth;
+
+  /**
+   * Drag a panel's inner edge to resize it — the code panel docks left (its
+   * right edge moves), the answer panel docks right (its left edge moves).
+   * Widths are remembered in this browser.
+   */
+  const startResize = (side: "left" | "right") => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     const handle = e.currentTarget;
     handle.setPointerCapture(e.pointerId);
-    let last = panelWidthRef.current;
+    const [ref, set, key] = side === "left" ? [panelWidthRef, setPanelWidth, PANEL_KEY] : [dossierWidthRef, setDossierWidth, DOSSIER_KEY];
+    let last = ref.current;
     const move = (ev: PointerEvent) => {
-      last = Math.round(Math.max(360, Math.min(window.innerWidth - 160, ev.clientX - 16)));
-      setPanelWidth(last);
+      const raw = side === "left" ? ev.clientX - 16 : window.innerWidth - ev.clientX - 16;
+      last = Math.round(Math.max(360, Math.min(window.innerWidth - 160, raw)));
+      set(last);
     };
     const up = () => {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
       // The last move, not the last render: React may not have caught up yet.
       try {
-        localStorage.setItem(PANEL_KEY, String(last));
+        localStorage.setItem(key, String(last));
       } catch {
         /* private mode */
       }
@@ -888,7 +910,7 @@ export function App() {
         >
           {!panelFull && (
             <div
-              onPointerDown={startResize}
+              onPointerDown={startResize("left")}
               onDoubleClick={() => setPanelWidth(600)}
               className="group pointer-events-auto absolute -right-2 bottom-4 top-4 z-10 flex w-3 cursor-col-resize items-center justify-center"
               title="Drag to resize · double-click to reset"
@@ -919,7 +941,20 @@ export function App() {
         </div>
       )}
       {activeFrame && (
-        <div className="pointer-events-none absolute bottom-28 right-4 top-4 z-20 w-[min(640px,calc(100%-2rem))] md:w-[min(640px,46vw)]">
+        <div
+          className="pointer-events-none absolute bottom-28 right-4 top-4 z-20"
+          style={{ width: `min(${dossierWidth}px, calc(100% - 2rem))` }}
+        >
+          <div
+            onPointerDown={startResize("right")}
+            onDoubleClick={() => setDossierWidth(640)}
+            className="group pointer-events-auto absolute -left-2 bottom-4 top-4 z-10 flex w-3 cursor-col-resize items-center justify-center"
+            title="Drag to resize · double-click to reset"
+            role="separator"
+            aria-orientation="vertical"
+          >
+            <span className="h-12 w-[3px] rounded-full bg-line transition-colors group-hover:bg-course/70" />
+          </div>
           <Dossier
             frames={frames}
             frameId={activeFrame.id}

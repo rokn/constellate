@@ -107,6 +107,12 @@ export function DiagramView(props: {
   /** Node ids (or "from->to" edge ids) to emphasize; everything else dims. */
   emphasis?: string[];
   onNodeClick?: (nodeId: string) => void;
+  /** Allow scaling up (to 2×), not just down — for a full-screen view. */
+  grow?: boolean;
+  /** Also fit within this height, in pixels. */
+  maxHeight?: number;
+  /** Draw at natural size, unscaled — when something outside handles zoom. */
+  natural?: boolean;
 }) {
   // A new spec is a full remount: measurement and layout state reset naturally
   // instead of being carefully invalidated.
@@ -122,11 +128,17 @@ function Laid({
   tone = "var(--muted)",
   emphasis = [],
   onNodeClick,
+  grow = false,
+  maxHeight,
+  natural = false,
 }: {
   spec: DiagramSpecView;
   tone?: string;
   emphasis?: string[];
   onNodeClick?: (nodeId: string) => void;
+  grow?: boolean;
+  maxHeight?: number;
+  natural?: boolean;
 }) {
   const markerId = useId().replace(/[^a-zA-Z0-9]/g, "");
   const measureRefs = useRef(new Map<string, HTMLDivElement>());
@@ -186,14 +198,23 @@ function Laid({
     );
   }
 
+  // Shrink to fit the width (and height, if bounded); grow too when allowed.
+  const fit = natural
+    ? 1
+    : avail
+      ? Math.min(grow ? 2 : 1, avail / layout.w, maxHeight ? maxHeight / layout.h : Infinity)
+      : 1;
+
   return (
-    <div ref={frame} style={{ height: layout.h * (avail ? Math.min(1, avail / layout.w) : 1) }}>
+    <div ref={frame} style={{ height: layout.h * fit, width: natural ? layout.w : undefined }}>
       <div
-        className="relative mx-auto origin-top-left"
+        className="relative origin-top-left"
         style={{
           width: layout.w,
           height: layout.h,
-          transform: avail && avail < layout.w ? `scale(${avail / layout.w})` : undefined,
+          transform: fit !== 1 ? `scale(${fit})` : undefined,
+          // Centred by hand: a scaled box keeps its unscaled width for layout.
+          marginLeft: !natural && avail ? Math.max(0, (avail - layout.w * fit) / 2) : undefined,
         }}
       >
         {/* Edge underlay */}
