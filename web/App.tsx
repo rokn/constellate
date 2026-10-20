@@ -4,6 +4,7 @@ import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
 import { ChartChanges } from "./components/ChartChanges";
+import { AnswersPanel } from "./components/AnswersPanel";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
@@ -101,6 +102,7 @@ export function App() {
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [storiesOpen, setStoriesOpen] = useState(false);
+  const [answersOpen, setAnswersOpen] = useState(false);
   /** The story playing, the playlist it's in, and whether to start on its own. */
   const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean } | null>(null);
   /** The "what changed since the chart" list under the re-chart prompt. */
@@ -119,11 +121,12 @@ export function App() {
   /** Where a Shift-selection started, and where its moving end is. */
   const anchor = useRef<string | null>(null);
   /** Opening one left-hand panel closes the other; they share the column. */
-  const openPanel = (which: "filter" | "groups" | "notes" | "stories" | null) => {
+  const openPanel = (which: "filter" | "groups" | "notes" | "stories" | "answers" | null) => {
     setFilterOpen(which === "filter");
     setGroupsOpen(which === "groups");
     setNotesOpen(which === "notes");
     setStoriesOpen(which === "stories");
+    setAnswersOpen(which === "answers");
   };
   /**
    * Where you've been, browser-style: `at` is where you are now; back and
@@ -1000,6 +1003,11 @@ export function App() {
       else if (e.key === "f") openPanel(filterOpen ? null : "filter");
       else if (e.key === "g") openPanel(groupsOpen ? null : "groups");
       else if (e.key === "s") openPanel(storiesOpen ? null : "stories");
+      else if (e.key === "a" && frames.length) {
+        // The key press mustn't also land in the search box the panel opens with.
+        e.preventDefault();
+        openPanel(answersOpen ? null : "answers");
+      }
       else if (e.key === ",") setTuneOpen((o) => !o);
       else if (e.key === "h") {
         if (historyOpen) showRange(null);
@@ -1014,7 +1022,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, answersOpen, frames, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -1194,7 +1202,9 @@ export function App() {
               Stories{stories.length ? ` (${stories.length})` : ""}
             </Btn>
             {frames.length > 0 && !frameId && (
-              <Btn onClick={() => showFrame(frames.at(-1)!.id)}>Answers ({frames.length})</Btn>
+              <Btn onClick={() => openPanel(answersOpen ? null : "answers")} hint="a">
+                Answers ({frames.length})
+              </Btn>
             )}
             {status === "error" && (
               <Btn onClick={() => void post("/api/reanalyze")}>Chart again</Btn>
@@ -1286,6 +1296,9 @@ export function App() {
             onClose={() => setFilterOpen(false)}
           />
         )}
+        {answersOpen && (
+          <AnswersPanel frames={frames} current={frameId} onOpen={(id) => showFrame(id)} onClose={() => setAnswersOpen(false)} />
+        )}
         {storiesOpen && state && (
           <StoriesPanel
             stories={stories}
@@ -1339,7 +1352,7 @@ export function App() {
             onClose={() => setGroupsOpen(false)}
           />
         )}
-        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && !storiesOpen && legend && !file && (
+        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && !storiesOpen && !answersOpen && legend && !file && (
           <Legend
             groups={legend.groups}
             counts={legend.counts}
