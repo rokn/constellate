@@ -601,20 +601,18 @@ export function Space({
       const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
       const amount = Math.min(Math.abs(px) / 100, 3) * 0.17 * (tu().zoomSpeed / 1.6);
       const aim = px < 0 && tu().autoAim ? aimFor(e, cam, dir) : null;
-      // Arrived and still scrolling: on through it, down the middle of the view
-      // (the pointer is wherever the target was before the view turned to it).
-      if (aim === "through") dir = forward.clone();
-      else if (aim) {
-        // Turn onto it while closing in, easing to a stop where it's framed.
+      if (aim) {
+        // A gentle pull, not a lock-on: each notch closes in on the target
+        // and turns the view only a part of the way onto it — so it centres
+        // more the further you zoom in. Travel stops at the distance that
+        // frames it; from there the wheel is plain pointer zoom again.
         const to = aim.point.clone().sub(cam);
         const dist = to.length();
         to.normalize();
-        const remaining = dist - aim.stop;
-        const go = Math.min(remaining, Math.max(remaining * amount * 1.6, span * 0.003));
-        // The last step faces it square; the ones before turn part of the way.
-        const turn = Math.min(1, Math.max(0.35, go / remaining));
-        const face = forward.clone().lerp(to, turn).normalize();
-        cam.addScaledVector(to, go);
+        const go = Math.min(dist - aim.stop, Math.max(dist * amount, span * 0.003));
+        const travel = to;
+        const face = forward.clone().lerp(to, Math.min(0.45, amount * 1.2)).normalize();
+        cam.addScaledVector(travel, go);
         dollyGoal.current = { cam, target: cam.clone().addScaledVector(face, Math.max(dist - go, floor * 0.25)), at: performance.now() };
         return;
       }
@@ -669,10 +667,10 @@ export function Space({
       const now = performance.now();
       const held = aimLock && now - aimLock.at < 700 && Math.hypot(e.clientX - aimLock.x, e.clientY - aimLock.y) < 40 ? aimLock : null;
       let pick: { kind: "cluster" | "body"; id: string; label: string; point: THREE.Vector3; stop: number } | null = null;
-      // Reached it already: keep going the way you're facing, past it.
+      // Reached it already: the wheel stays plain pointer zoom while you keep scrolling.
       if (held?.reached) {
         held.at = now;
-        return "through" as const;
+        return null;
       }
       if (held) {
         const c = held.kind === "cluster" ? state.current.clusters.find((x) => x.id === held.id) : null;
@@ -719,11 +717,12 @@ export function Space({
         }
       }
       if (pick && cam.distanceTo(pick.point) < pick.stop * 1.05) {
-        // Arrived. Held: carry on through it; otherwise plain dolly-through.
+        // Close enough: no more aiming at it (or re-aiming at it while you
+        // keep scrolling); the pointer leads from here.
         if (held) {
           held.at = now;
           held.reached = true;
-          return "through" as const;
+          return null;
         }
         aimLock = null;
         return null;
