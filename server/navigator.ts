@@ -1,5 +1,7 @@
 import { createSdkMcpServer, query, tool, type SDKMessage, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import path from "node:path";
 import { z } from "zod";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
@@ -474,7 +476,65 @@ Your final reply is spoken aloud by a voice and shown as a caption: 2–4 short 
 
 Write everything — answers, view titles, notes, diagram labels, visualizations — in English, unless the reader explicitly asks for another language.`;
 
-async function introPrompt(): Promise<string> {
+/** A re-chart: the map as it was charted, and the commit it was charted at. */
+export type Rechart = { previous: Overview; since?: string };
+
+/** Module paths, folded into folders so a big module stays a few lines. */
+function foldPaths(paths: string[]): string {
+  const byDir = new Map<string, number>();
+  for (const p of paths) {
+    const d = path.posix.dirname(p);
+    byDir.set(d, (byDir.get(d) ?? 0) + 1);
+  }
+  const dirs = [...byDir].sort((a, b) => b[1] - a[1]);
+  const shown = dirs.slice(0, 14).map(([d, n]) => `${d}/ (${n})`);
+  return shown.join(", ") + (dirs.length > 14 ? `, +${dirs.length - 14} more folders` : "");
+}
+
+async function rechartNote(r: Rechart): Promise<string[]> {
+  const g = idx().graph;
+  const prev = r.previous;
+  const onMap = new Set(g.files.map((f) => f.path));
+  const placed = new Set(prev.modules.flatMap((m) => m.paths));
+  const unplaced = g.files.filter((f) => !placed.has(f.path) && !f.path.endsWith("_test.go")).map((f) => f.path);
+  const gone = [...placed].filter((p) => !onMap.has(p));
+  let changes = "";
+  if (r.since) {
+    try {
+      const { stdout } = await promisify(execFile)("git", ["diff", "--stat=160", "--no-renames", r.since], { cwd: g.root, maxBuffer: 8 * 1024 * 1024 });
+      const lines = stdout.trim().split("\n");
+      changes = lines.length > 120 ? [...lines.slice(0, 110), `… ${lines.length - 111} more files`, lines.at(-1)].join("\n") : stdout.trim();
+    } catch {
+      /* the charted commit is gone (rebased away): the scan is all there is */
+    }
+  }
+  return [
+    "",
+    "THIS IS A RE-CHART. The reader already knows this map: they've been navigating it, and they keep its modules in their head. The code has changed since it was charted. Your job is to bring the existing chart up to date, not to draw a new one.",
+    "",
+    "The current chart:",
+    `Headline: ${prev.headline}`,
+    "Modules (id — label: summary · where its files are):",
+    ...prev.modules.map((m) => `- ${m.id} — ${m.label}: ${m.summary} · ${foldPaths(m.paths)}`),
+    "Runtime edges:",
+    ...prev.edges.map((e) => `- ${e.from} → ${e.to}: ${e.label}`),
+    "Topics:",
+    ...prev.topics.map((t) => `- ${t.id} — ${t.title}`),
+    "",
+    changes ? `What changed since it was charted (git diff --stat ${r.since!.slice(0, 10)}, including uncommitted work):\n${changes}` : "There's no record of the commit it was charted at; compare the chart with the scan above.",
+    unplaced.length ? `Files on the map now that no module holds (${unplaced.length}): ${foldPaths(unplaced)}` : "",
+    gone.length ? `Files the chart holds that no longer exist (${gone.length}): ${foldPaths(gone)}` : "",
+    "",
+    "How to re-chart:",
+    "- Keep the modules: same ids, same labels, same rough boundaries, so everything the reader knows still holds. Put new files into the module they belong to; drop deleted ones; adjust summaries and edges where the changes made them wrong.",
+    "- Change the organization only where the changes call for it: a big new subsystem that deserves its own module, a module that was removed or absorbed, or a refactor that really moved responsibilities between modules. A handful of new files, renames or growth inside a module are not reasons. This is a judgement, not a rule — but when in doubt, keep what's there.",
+    "- If you do add, merge, split or retire a module, say so in the welcome (\"The approvals code now has its own module…\"), so the reader knows what moved.",
+    "- Keep the topics that still make sense; replace only those the changes made stale, and consider one about what changed if it's significant.",
+    "- Read only what you need to understand the changes — you don't need to re-read the whole codebase.",
+  ].filter((x) => x !== "");
+}
+
+async function introPrompt(rechart?: Rechart): Promise<string> {
   const g = idx().graph;
   const extras: string[] = [];
   for (const name of ["README.md", "readme.md", "README", "CLAUDE.md", "AGENTS.md"]) {
@@ -502,10 +562,16 @@ async function introPrompt(): Promise<string> {
     "",
     ...extras,
     "",
+    ...(rechart ? await rechartNote(rechart) : []),
+    "",
     "Do this:",
-    "1. Read the handful of files that tell you how it hangs together — entry points, the biggest hubs, anything the README points at. Around 6–10 reads; use outline/deps for the rest. Do not use show_* tools in the intro.",
-    "2. Call set_overview exactly once: 4–9 logical modules covering the important code (what you'd draw on a whiteboard, not the folder list), the logical edges between them (how they talk at runtime), and 4–6 topics worth a deep visit with a hook that makes each one sound interesting.",
-    "3. Reply with a spoken welcome of two or three short sentences: what this codebase is and the shape of it. No greeting, no 'welcome'.",
+    rechart
+      ? "1. Read what you need to understand the changes — usually a few files; use outline/deps for the rest. Do not use show_* tools in the intro."
+      : "1. Read the handful of files that tell you how it hangs together — entry points, the biggest hubs, anything the README points at. Around 6–10 reads; use outline/deps for the rest. Do not use show_* tools in the intro.",
+    "2. Call set_overview exactly once" + (rechart ? " with the updated chart (the whole of it, kept modules included)" : "") + ": 4–9 logical modules covering the important code (what you'd draw on a whiteboard, not the folder list), the logical edges between them (how they talk at runtime), and 4–6 topics worth a deep visit with a hook that makes each one sound interesting.",
+    rechart
+      ? "3. Reply with a spoken welcome of two or three short sentences: what changed in the code and, if anything, in the chart. No greeting, no 'welcome'."
+      : "3. Reply with a spoken welcome of two or three short sentences: what this codebase is and the shape of it. No greeting, no 'welcome'.",
   ].join("\n");
 }
 
@@ -643,13 +709,13 @@ async function run(opts: {
 let intro: Promise<void> | null = null;
 let current: { controller: AbortController; frameId: string } | null = null;
 
-export function runIntro(): Promise<void> {
+export function runIntro(rechart?: Rechart): Promise<void> {
   intro = (async () => {
     session.state.busy = true;
     emit();
     const controller = new AbortController();
     try {
-      const res = await run({ prompt: await introPrompt(), frameId: null, mode: "intro", effort: INTRO_EFFORT, signal: controller });
+      const res = await run({ prompt: await introPrompt(rechart), frameId: null, mode: "intro", effort: INTRO_EFFORT, signal: controller });
       if (!session.state.overview) {
         throw new Error(res.error ?? "The navigator finished without charting the map.");
       }

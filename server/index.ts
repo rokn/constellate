@@ -208,8 +208,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       // Re-charts the overview from the current code. Everything you made —
       // groupings, groups, answers, your view — is kept.
       if (!session.state.repo || !session.idx) return json(res, 400, { error: "No repository open." }), true;
-      dropOverview();
-      void runIntro();
+      {
+        // The chart being replaced goes to the navigator, to update rather than redraw.
+        const previous = session.state.overview;
+        const since = session.chartedHead;
+        dropOverview();
+        void runIntro(previous ? { previous, since } : undefined);
+      }
       json(res, 202, { ok: true });
       return true;
     case "POST /api/view": {
