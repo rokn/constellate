@@ -493,7 +493,28 @@ export function Space({
      * The lit import line nearest the pointer on screen, within LINE_HOVER_PX.
      * Lit lines are the focus's neighbourhood, so this is a short loop.
      */
+    /** Whether the pointer is on a body: then the body's tag shows, not a line's. */
+    const onBody = (e: PointerEvent) => {
+      const rect = host.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const camera = g.camera() as THREE.PerspectiveCamera;
+      const perPx = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / rect.height;
+      const v = new THREE.Vector3();
+      for (const [id, o] of objs.current) {
+        const n = nodes.current.get(id);
+        if (n?.x === undefined || !o.group.visible) continue;
+        v.set(n.x, n.y!, n.z!);
+        const dist = v.distanceTo(camera.position);
+        v.project(camera);
+        if (v.z > 1) continue;
+        const r = (o.base * o.mesh.scale.x) / (dist * perPx) + 4;
+        if (Math.hypot(((v.x + 1) / 2) * rect.width - px, ((1 - v.y) / 2) * rect.height - py) < r) return true;
+      }
+      return false;
+    };
     const linkNear = (e: PointerEvent): L | null => {
+      if (onBody(e)) return null;
       const rect = host.getBoundingClientRect();
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
