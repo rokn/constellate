@@ -1086,9 +1086,15 @@ export function App() {
           active={file?.path ?? null}
           onPick={(p) => openFile(p, undefined, undefined, false)}
           notes={notes}
-          onPickNote={(id) => {
+          onPickNote={(id, edit) => {
             const n = notes.find((x) => x.id === id);
-            if (n) setNoteEdit({ target: n.target, note: n });
+            if (!n) return;
+            if (edit) return setNoteEdit({ target: n.target, note: n });
+            // Go to what it's pinned to: the file, or the importing file at the import.
+            const t = n.target;
+            if (t.kind === "file") return openFile(t.path);
+            const edge = graph?.imports.find((e) => e.from === t.from && e.to === t.to);
+            openFile(t.from, edge?.line);
           }}
           onNoteOnLink={(from, to) => setNoteEdit({ target: { kind: "link", from, to } })}
           onPickModule={(id, how) => {

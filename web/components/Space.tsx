@@ -257,7 +257,8 @@ export function Space({
   onPickOverlay: (id: string) => void;
   /** Your notes, drawn as sticky cards on what they're pinned to. */
   notes: Note[];
-  onPickNote: (id: string) => void;
+  /** Click on a note: go to what it's pinned to; with `edit` (Shift), open it to edit. */
+  onPickNote: (id: string, edit: boolean) => void;
   /** Right-click on an import line: write a note on it. */
   onNoteOnLink: (from: string, to: string) => void;
   /** Right-click on a group's beacon: hide that group from view. */
@@ -1831,7 +1832,7 @@ export function Space({
         tipFor.current(
           e,
           `<div style="color:${NOTE_BG};font-weight:600">Note · <span style="opacity:.7;font-weight:400">${esc(where)}</span></div>` +
-            `<div style="white-space:pre-wrap;max-width:340px">${esc(note.text)}</div><span style="opacity:.45">click to edit</span>`,
+            `<div style="white-space:pre-wrap;max-width:340px">${esc(note.text)}</div><span style="opacity:.45">click to go there · Shift+click to edit</span>`,
         ),
       );
       el.addEventListener("pointerleave", (e) => tipFor.current(e, null));
@@ -1839,7 +1840,7 @@ export function Space({
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        handlers.current.onPickNote(note.id);
+        handlers.current.onPickNote(note.id, e.shiftKey);
       });
       el.style.display = "none";
       layer.appendChild(el);
