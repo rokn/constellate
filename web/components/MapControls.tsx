@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { EMPTY_FILTER, describe, isActive } from "../../shared/filter";
-import type { GroupOverlay, Lens, LogicalModule, MapFilter, RepoGraph } from "../../shared/types";
+import type { GroupOverlay, Lens, LogicalModule, MapFilter, RepoGraph, SavedFilter } from "../../shared/types";
 import { territoryColors } from "../lib/colors";
 
 export const OTHER = "__other";
@@ -127,16 +127,35 @@ const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolea
 export function FilterPanel({
   graph,
   filter,
+  saved,
   onChange,
+  onSave,
   onClose,
 }: {
   graph: RepoGraph;
   filter: MapFilter;
+  saved: SavedFilter[];
   onChange: (f: MapFilter) => void;
+  onSave: (list: SavedFilter[]) => void;
   onClose: () => void;
 }) {
   const [include, setInclude] = useState(filter.include.join(", "));
   const [exclude, setExclude] = useState(filter.exclude.join(", "));
+  const [naming, setNaming] = useState<string | null>(null);
+  const same = (a: MapFilter, b: MapFilter) => JSON.stringify({ ...EMPTY_FILTER, ...a }) === JSON.stringify({ ...EMPTY_FILTER, ...b });
+  const current = saved.find((v) => same(v.filter, filter));
+  const apply = (f: MapFilter) => {
+    setInclude(f.include.join(", "));
+    setExclude(f.exclude.join(", "));
+    onChange({ ...EMPTY_FILTER, ...f });
+  };
+  const save = () => {
+    const name = naming?.trim();
+    if (!name) return;
+    // Same name replaces: that's how you update a view.
+    onSave([...saved.filter((v) => v.name !== name), { name, filter }]);
+    setNaming(null);
+  };
 
   const langs = useMemo(
     () => Object.entries(graph.languages).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([l]) => l),
@@ -174,6 +193,59 @@ export function FilterPanel({
             Done
           </button>
         </div>
+      </div>
+
+      <div className="rounded-md border border-line px-2.5 py-2">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[12.5px] text-muted">Saved views</span>
+          {naming === null && isActive(filter) && !current && (
+            <button onClick={() => setNaming(filter.label ?? "")} className="text-[12.5px] text-course hover:underline">
+              Save this filter…
+            </button>
+          )}
+        </div>
+        {naming !== null && (
+          <div className="mt-1.5 flex gap-1.5">
+            <input
+              autoFocus
+              value={naming}
+              onChange={(e) => setNaming(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") save();
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  setNaming(null);
+                }
+              }}
+              placeholder="Name, e.g. Approvals without tests"
+              className="min-w-0 flex-1 rounded-md border border-line bg-panelsolid px-2 py-1 text-[12.5px] focus:border-course/60 focus:outline-none"
+            />
+            <button onClick={save} disabled={!naming.trim()} className="rounded-md bg-course/20 px-2.5 text-[12.5px] text-course disabled:opacity-40">
+              Save
+            </button>
+          </div>
+        )}
+        {saved.length ? (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {saved.map((v) => (
+              <span key={v.name} className="inline-flex items-center">
+                <Chip on={v === current} onClick={() => apply(v === current ? EMPTY_FILTER : v.filter)}>
+                  {v.name}
+                </Chip>
+                <button
+                  onClick={() => onSave(saved.filter((x) => x !== v))}
+                  className="ml-0.5 px-1 text-[11px] text-muted hover:text-bad"
+                  aria-label={`Delete the view ${v.name}`}
+                  title="Delete this view"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          naming === null && <p className="mt-1 text-[12px] text-muted">Set up a filter below, then save it to switch back to it in one click.</p>
+        )}
       </div>
 
       {!!filter.hidden?.length && (

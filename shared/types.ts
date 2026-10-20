@@ -262,7 +262,11 @@ export type ViewSettings = {
   layers?: Partial<Record<Layer, boolean>>;
   lensId?: string;
   filter?: MapFilter;
+  /** Filters you saved under a name, to switch between. */
+  savedFilters?: SavedFilter[];
 };
+
+export type SavedFilter = { name: string; filter: MapFilter };
 
 export type SessionStatus = "idle" | "scanning" | "analyzing" | "ready" | "error";
 

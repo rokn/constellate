@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Frame, Layer, LogicalModule, MapFilter, ScreenContext, Topic, UiCommand, ViewSettings } from "../shared/types";
+import type { Frame, Layer, LogicalModule, MapFilter, SavedFilter, ScreenContext, Topic, UiCommand, ViewSettings } from "../shared/types";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
@@ -67,6 +67,12 @@ export function App() {
     return () => clearTimeout(t);
   }, [toast]);
   const [filter, setFilter] = useState<MapFilter>(EMPTY_FILTER);
+  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
+  /** The saved view the current filter is, if any. */
+  const activeView = useMemo(() => {
+    const key = (f: MapFilter) => JSON.stringify({ ...EMPTY_FILTER, ...f });
+    return savedFilters.find((v) => key(v.filter) === key(filter))?.name;
+  }, [savedFilters, filter]);
   const [filterOpen, setFilterOpen] = useState(false);
   /** "folders", "modules", or the id of a lens the navigator wrote. */
   const [lensId, setLensId] = useState("folders");
@@ -535,10 +541,10 @@ export function App() {
     const root = graph?.root;
     if (!root || viewFor.current !== root) return;
     saveTuning(tuning); // also the starting point for repos with no saved view yet
-    const view: ViewSettings = { tuning, layers, lensId, filter };
+    const view: ViewSettings = { tuning, layers, lensId, filter, savedFilters };
     const t = setTimeout(() => void post("/api/view", { view }), 600);
     return () => clearTimeout(t);
-  }, [graph?.root, tuning, layers, lensId, filter]);
+  }, [graph?.root, tuning, layers, lensId, filter, savedFilters]);
 
   /* ------------------------------ repo changes ----------------------------- */
 
@@ -569,9 +575,11 @@ export function App() {
       const known = saved.lensId === "folders" || saved.lensId === "modules" || stateRef.current?.lenses.some((l) => l.id === saved.lensId);
       setLensId(saved.lensId && known ? saved.lensId : "folders");
       setFilter({ ...EMPTY_FILTER, ...(saved.filter ?? {}) });
+      setSavedFilters(saved.savedFilters ?? []);
     } else {
       setLayers(DEFAULT_LAYERS);
       setFilter(EMPTY_FILTER);
+      setSavedFilters([]);
       setLensId("folders");
     }
     viewFor.current = graph.root;
@@ -818,6 +826,7 @@ export function App() {
             </button>
             {visible && (
               <span className="glass rounded-md px-2.5 py-0.5 text-[12.5px]">
+                {activeView && <b className="mr-1.5 font-semibold text-course">{activeView}</b>}
                 {visible.size.toLocaleString("en-US")} of {graph.files.length.toLocaleString("en-US")} files · {describe(filter)}
                 <button onClick={() => setFilter(EMPTY_FILTER)} className="ml-2 text-muted hover:text-course">
                   Clear
@@ -827,7 +836,14 @@ export function App() {
           </div>
         )}
         {filterOpen && graph && (
-          <FilterPanel graph={graph} filter={filter} onChange={setFilter} onClose={() => setFilterOpen(false)} />
+          <FilterPanel
+            graph={graph}
+            filter={filter}
+            saved={savedFilters}
+            onChange={setFilter}
+            onSave={setSavedFilters}
+            onClose={() => setFilterOpen(false)}
+          />
         )}
         {groupsOpen && graph && (
           <GroupsPanel
