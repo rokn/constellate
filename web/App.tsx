@@ -346,6 +346,12 @@ export function App() {
   }, [state?.activity]);
 
   const voice = useVoice({ screen, onCommand: (c) => runRef.current(c) });
+  // Talking to the navigator means you're past the intro: the voice opens with
+  // the welcome itself, so the title card would only sit on top of the map.
+  const startVoice = useCallback(() => {
+    setIntroDone(true);
+    void voice.start();
+  }, [voice]);
 
   /* ---------------------------- per-repo view ----------------------------- */
 
@@ -467,7 +473,7 @@ export function App() {
       else if (e.key === "g") openPanel(groupsOpen ? null : "groups");
       else if (e.key === ",") setTuneOpen((o) => !o);
       else if (e.key === "v" && voiceAvailable) {
-        if (voice.state === "idle" || voice.state === "error") void voice.start();
+        if (voice.state === "idle" || voice.state === "error") startVoice();
         else voice.stop();
       }
     };
@@ -475,7 +481,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -747,7 +753,7 @@ export function App() {
               caption={voice.caption}
               heard={voice.heard}
               turns={voice.turns}
-              onStart={() => void voice.start()}
+              onStart={startVoice}
               onStop={voice.stop}
             />
           </div>
