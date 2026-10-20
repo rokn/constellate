@@ -191,7 +191,7 @@ read-only code editor doesn't bring up the on-screen keyboard.
 | `/` or `⌘K` | ask, or type a file/symbol/module to jump | just talk |
 | `f` | filter panel | "only show the Go code without tests" |
 | `g` | groups panel | "mark everything under internal/billing" |
-| `Space` | recenter on what's selected — the open file, else the focus, else the whole map | — |
+| `Space` | recenter on what's selected — the open file (press again: the file with its connections, and back), else the focus, else the whole map | — |
 | `,` | tune panel | — |
 | `u` | hide / show the UI | — |
 

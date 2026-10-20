@@ -158,7 +158,6 @@ export function Space({
   onPickModule,
   onPickDir,
   onPickOverlay,
-  onFocusFile,
   onHideOverlay,
   onHide,
   onOpenImport,
@@ -197,8 +196,6 @@ export function Space({
   onPickModule: (id: string, how?: "isolate" | "exclude") => void;
   onPickDir: (dir: string, how?: "isolate" | "exclude") => void;
   onPickOverlay: (id: string) => void;
-  /** Double-click on a file: focus it (a single click only selects). */
-  onFocusFile: (path: string) => void;
   /** Right-click on a group's beacon: hide that group from view. */
   onHideOverlay: (id: string) => void;
   /** Right-click: hide this file, or everything under this folder. */
@@ -256,10 +253,8 @@ export function Space({
       }
     >(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onFocusFile, onHideOverlay, onHide, onOpenImport, onBackground });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onFocusFile, onHideOverlay, onHide, onOpenImport, onBackground };
-  /** The last file clicked, to tell a double-click (focus) from a click (select). */
-  const lastFileClick = useRef<{ id: string; at: number } | null>(null);
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHideOverlay, onHide, onOpenImport, onBackground });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHideOverlay, onHide, onOpenImport, onBackground };
   /** Group membership rings: one sprite per (group, file), drawn around the file. */
   const rings = useRef<{ sprite: THREE.Sprite; path: string; k: number }[]>([]);
   /** The import line under the pointer, lit while hovered. */
@@ -321,13 +316,7 @@ export function Space({
       .d3VelocityDecay(tu().friction)
       .onNodeClick((n, e) => {
         if (beaconJustClicked()) return;
-        if (n.type === "file") {
-          const now = performance.now();
-          const again = lastFileClick.current?.id === n.id && now - lastFileClick.current.at < 400;
-          lastFileClick.current = again ? null : { id: n.id, at: now };
-          if (again) handlers.current.onFocusFile(n.id);
-          else handlers.current.onPick(n.id);
-        }
+        if (n.type === "file") handlers.current.onPick(n.id);
         else {
           const how = e.altKey ? "exclude" : e.shiftKey ? "isolate" : undefined;
           if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), how);

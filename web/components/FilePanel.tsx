@@ -21,7 +21,6 @@ export function FilePanel({
   onNavigate,
   onAsk,
   onHide,
-  onFocus,
   goEditor,
   onReferences,
   onSelection,
@@ -36,8 +35,6 @@ export function FilePanel({
   onNavigate: (path: string, line?: number) => void;
   onAsk: (request: string) => void;
   onHide: () => void;
-  /** Light this file and its import neighbourhood on the map. */
-  onFocus?: () => void;
   /** Use VS Code's editor with gopls for Go files. */
   goEditor?: boolean;
   onReferences?: (name: string, paths: string[]) => void;
@@ -107,15 +104,6 @@ export function FilePanel({
         >
           Explain this file
         </button>
-        {onFocus && (
-          <button
-            onClick={onFocus}
-            title="Light this file and its imports on the map, dim the rest, and fly there (Enter, or double-click it on the map)"
-            className="shrink-0 rounded px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-text"
-          >
-            Focus
-          </button>
-        )}
         <button
           onClick={onHide}
           title="Hide this file from the map (x) — bring it back from Filter"

@@ -355,20 +355,21 @@ export function App() {
     return m;
   }, [graph]);
 
-  /**
-   * Select a file: open it in the code panel, with the halo on its body.
-   * Selecting never changes what's focused — that's focusFile, on purpose.
-   * `fly` takes the camera there (search, links, the navigator); a click on
-   * the map doesn't, since the file is already in view.
-   */
-  const openFile = useCallback((path: string, line?: number, endLine?: number, fly = true) => {
-    setIntroDone(true);
-    setTour(null);
-    setFile({ path, line, endLine });
-    panels.current.file = true;
-    if (fly) space.current?.flyTo(path, shiftFor(panels.current));
-    record({ kind: "file", path, line, endLine });
-  }, []);
+  const openFile = useCallback(
+    (path: string, line?: number, endLine?: number, fly = true) => {
+      setIntroDone(true);
+      setTour(null);
+      setFile({ path, line, endLine });
+      panels.current.file = true;
+      // The open file and its neighbourhood stay lit, with the import routes
+      // between them flowing — the ways out of here are always visible.
+      setEmphasis([path, ...(neighbours.get(path) ?? [])]);
+      setFocusLabel(path.split("/").pop());
+      if (fly) space.current?.flyTo(path, shiftFor(panels.current));
+      record({ kind: "file", path, line, endLine });
+    },
+    [neighbours],
+  );
 
   const focus = useCallback((paths: string[], label?: string) => {
     setIntroDone(true);
@@ -377,16 +378,6 @@ export function App() {
     space.current?.focus(paths, shiftFor(panels.current));
     record({ kind: "focus", paths, label });
   }, []);
-
-  /**
-   * Focus a file — explicitly (double-click, Enter, the panel's Focus): it and
-   * the files it imports or is imported by stay lit, with the import routes
-   * between them flowing, and the rest dims.
-   */
-  const focusFile = useCallback(
-    (path: string) => focus([path, ...(neighbours.get(path) ?? [])], `${path.split("/").pop()} and its imports`),
-    [focus, neighbours],
-  );
 
   const showFrame = useCallback(
     (id: string) => {
@@ -430,12 +421,21 @@ export function App() {
   );
 
   /** Back to what you had selected — the open file, else the focus, else everything. */
+  /** What Space framed last for the selected file: just it, or it with its connections. */
+  const framed = useRef<{ path: string; wide: boolean } | null>(null);
   const recenter = useCallback(() => {
     const shift = shiftFor(panels.current);
-    if (file) space.current?.flyTo(file.path, shift);
-    else if (emphasis.length) space.current?.focus(emphasis, shift);
+    if (file) {
+      // Space flips between the file up close and the file with everything
+      // it imports or is imported by in view; the first press is the file.
+      const wide = framed.current?.path === file.path && !framed.current.wide;
+      framed.current = { path: file.path, wide };
+      const around = [...(neighbours.get(file.path) ?? [])];
+      if (wide && around.length) space.current?.focus([file.path, ...around], shift);
+      else space.current?.flyTo(file.path, shift);
+    } else if (emphasis.length) space.current?.focus(emphasis, shift);
     else space.current?.overview();
-  }, [file, emphasis]);
+  }, [file, emphasis, neighbours]);
 
   const toOverview = useCallback(() => {
     setTour(null);
@@ -868,8 +868,6 @@ export function App() {
           setEmphasis([]);
           setFocusLabel(undefined);
         } else setIntroDone(true);
-      } else if (e.key === "Enter" && file && !(e.target instanceof HTMLButtonElement)) {
-        focusFile(file.path);
       } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && historyOpen && listed.length) {
         // Down is older, as the list reads.
         e.preventDefault();
@@ -906,7 +904,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull, focusFile, playing, range, historyOpen, listed, step, showRange]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -955,10 +953,6 @@ export function App() {
           emphasis={emphasis}
           active={file?.path ?? null}
           onPick={(p) => openFile(p, undefined, undefined, false)}
-          onFocusFile={(p) => {
-            openFile(p, undefined, undefined, false);
-            focusFile(p);
-          }}
           onPickModule={(id, how) => {
             if (!how) return focusModule(id);
             // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
@@ -1249,7 +1243,6 @@ export function App() {
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}
             onHide={() => hide([file.path], file.path.split("/").pop()!)}
-            onFocus={() => focusFile(file.path)}
             goEditor={goplsReady}
             onReferences={(name, paths) => {
               // Light who uses it on the map, without moving the camera off the code.
