@@ -321,6 +321,8 @@ export type ScreenContext = {
   touring?: boolean;
   /** How the map is organized right now, and what the filter leaves. */
   lens?: string;
+  /** The grouping's id, for revising it in place ("modules" for the overview's modules). */
+  lensId?: string;
   filter?: string;
   visibleFiles?: number;
 };

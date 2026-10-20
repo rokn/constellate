@@ -208,6 +208,10 @@ export function App() {
     const lens = lenses.find((l) => l.id === lensId);
     return lens ? { key: lens.id, groups: lens.groups, edges: lens.edges } : null;
   }, [lensId, overview, lenses]);
+  // The grouping on screen was deleted (by you or the navigator): back to folders.
+  useEffect(() => {
+    if (lensId !== "folders" && lensId !== "modules" && graph && !lenses.some((l) => l.id === lensId)) setLensId("folders");
+  }, [lensId, lenses, graph]);
   const lensTitle = lensId === "folders" ? "folders" : lensId === "modules" ? "modules" : lenses.find((l) => l.id === lensId)?.title;
 
   // The legend: each group with how many of the visible files it holds.
@@ -447,10 +451,11 @@ export function App() {
       selection: selection || undefined,
       touring: tour !== null,
       lens: lensTitle,
+      lensId,
       filter: isActive(filter) ? describe(filter) : undefined,
       visibleFiles: visible?.size,
     }),
-    [file, frameId, focusLabel, selection, tour, lensTitle, filter, visible],
+    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible],
   );
 
   const askNavigator = useCallback(
@@ -849,6 +854,10 @@ export function App() {
             onPick={(id) => {
               setTour(null);
               setLensId(id);
+            }}
+            onRemove={(lens) => {
+              void post("/api/lenses", { action: "delete", id: lens.id });
+              setToast({ text: `Deleted the grouping ${lens.title}`, undo: () => void post("/api/lenses", { action: "restore", lens }) });
             }}
             onRequest={(how) =>
               askNavigator(`Regroup the map ${/^(by|around|into)\b/i.test(how) ? how : `by ${how}`}. Publish the grouping with set_lens, then tell me what the clusters show.`)

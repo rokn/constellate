@@ -10,6 +10,9 @@ import { loadFile, slice } from "./repo";
 import { digest, findPath, neighbourhood } from "./scan";
 import {
   addLens,
+  putLens,
+  removeLens,
+  setModules,
   addOverlay,
   addView,
   getFrame,
@@ -52,6 +55,9 @@ const FLIGHT_TOOLS = [
   "show_text",
   "filter_map",
   "set_lens",
+  "get_lens",
+  "revise_lens",
+  "remove_lens",
   "add_groups",
   "set_overview",
 ];
@@ -64,6 +70,17 @@ function idx() {
   if (!session.idx) throw new Error("No repository is open.");
   return session.idx;
 }
+
+/** A grouping by id — a lens, or "modules" for the overview's own modules — in one shape. */
+function lensById(id: string): Lens | null {
+  if (id === "modules") {
+    const o = session.state.overview;
+    return o ? { id: "modules", title: "Modules", description: "The overview's modules", groups: o.modules, edges: o.edges, createdAt: 0 } : null;
+  }
+  return session.state.lenses.find((l) => l.id === id) ?? null;
+}
+const lensList = () =>
+  `Groupings: ${[session.state.overview ? "modules (Modules)" : "", ...session.state.lenses.map((l) => `${l.id} (${l.title})`)].filter(Boolean).join(", ") || "none"}.`;
 
 /** Resolves a list of paths or directory prefixes to scanned files. */
 function expandPaths(paths: string[], cap = 300): string[] {
@@ -381,6 +398,126 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
           return ok(`Map regrouped into ${groups.length} groups covering ${covered} of ${idx().graph.files.length} files; the rest gather in "Other".`);
         },
       ),
+      tool(
+        "get_lens",
+        "What a grouping holds: its groups (id, label, summary, how many files and in which folders) and its edges. Use it before revising a grouping, so you work from what's there rather than from memory. 'modules' is the overview's own modules.",
+        { lensId: z.string().describe("The grouping's id (the screen note says which one is showing), or 'modules'") },
+        async (a) => {
+          const g = lensById(a.lensId);
+          if (!g) return fail(`No grouping "${a.lensId}". ${lensList()}`);
+          return ok(
+            [
+              `${g.title} (${g.id})${g.description ? ` — ${g.description}` : ""}`,
+              "Groups:",
+              ...g.groups.map((x) => `- ${x.id} — ${x.label} (${x.paths.length} files): ${x.summary} · ${foldPaths(x.paths)}`),
+              "Edges:",
+              ...(g.edges.length ? g.edges.map((e) => `- ${e.from} → ${e.to} (${e.kind}): ${e.label}`) : ["(none)"]),
+            ].join("\n"),
+          );
+        },
+      ),
+      tool(
+        "revise_lens",
+        [
+          "Change an existing grouping in place: the reader stays in it and the map just moves the affected files across. Use this — not set_lens — for any change to the organization they have: split or merge a group, move files or folders between groups, add, rename or remove a group, fix an edge.",
+          "Operations apply in order. upsert_group creates a group (give a label) or updates one; its paths, if given, move into it from wherever they were. move puts paths into an existing group. remove_group drops a group; its files go to `to`, or to Other. To split X into A and B: upsert_group A with its paths, upsert_group B with its paths, then remove_group X (anything left in X goes to `to`).",
+          "Paths can be files or folder prefixes ending in '/'. Groups left with no files are dropped, with their edges.",
+        ].join(" "),
+        {
+          lensId: z.string().describe("The grouping's id, or 'modules' for the overview's modules"),
+          title: z.string().optional().describe("New title for the grouping, if it should change"),
+          ops: z
+            .array(
+              z.object({
+                op: z.enum(["upsert_group", "move", "remove_group", "add_edge", "remove_edge"]),
+                id: z.string().optional().describe("upsert_group / remove_group: the group"),
+                label: z.string().optional(),
+                summary: z.string().optional(),
+                paths: z.array(z.string()).optional().describe("upsert_group / move: files or folder prefixes"),
+                to: z.string().optional().describe("move: target group; remove_group: where its files go; add_edge / remove_edge: target group"),
+                from: z.string().optional().describe("add_edge / remove_edge: source group"),
+                kind: z.enum(["calls", "data", "event", "http", "config", "renders", "other"]).optional(),
+              }),
+            )
+            .min(1),
+        },
+        async (a) => {
+          const lens = lensById(a.lensId);
+          if (!lens) return fail(`No grouping "${a.lensId}". ${lensList()}`);
+          const groups = lens.groups.map((g) => ({ ...g, paths: [...g.paths] }));
+          let edges = [...lens.edges];
+          const find = (id?: string) => groups.find((g) => g.id === id);
+          const take = (paths: string[]) => {
+            const set = new Set(paths);
+            for (const g of groups) g.paths = g.paths.filter((p) => !set.has(p));
+          };
+          const notes: string[] = [];
+          for (const op of a.ops) {
+            if (op.op === "upsert_group") {
+              if (!op.id) return fail("upsert_group needs an id.");
+              let g = find(op.id);
+              if (!g) {
+                if (!op.label) return fail(`upsert_group "${op.id}" is new, so it needs a label.`);
+                g = { id: op.id, label: op.label, summary: op.summary ?? "", paths: [] };
+                groups.push(g);
+              }
+              if (op.label) g.label = op.label;
+              if (op.summary !== undefined) g.summary = op.summary;
+              if (op.paths?.length) {
+                const files = expandPaths(op.paths, 3500);
+                if (!files.length) notes.push(`No files matched ${op.paths.join(", ")} for ${op.id}.`);
+                take(files);
+                g.paths.push(...files);
+              }
+            } else if (op.op === "move") {
+              const g = find(op.to);
+              if (!g) return fail(`move: no group "${op.to}" — create it with upsert_group first.`);
+              const files = expandPaths(op.paths ?? [], 3500);
+              if (!files.length) notes.push(`move: no files matched ${(op.paths ?? []).join(", ")}.`);
+              take(files);
+              g.paths.push(...files);
+            } else if (op.op === "remove_group") {
+              const g = find(op.id);
+              if (!g) return fail(`remove_group: no group "${op.id}".`);
+              const dest = op.to ? find(op.to) : undefined;
+              if (op.to && !dest) return fail(`remove_group: no group "${op.to}" to move its files to.`);
+              dest?.paths.push(...g.paths);
+              groups.splice(groups.indexOf(g), 1);
+            } else if (op.op === "add_edge") {
+              if (!find(op.from) || !find(op.to)) return fail(`add_edge: both ends must be groups (${op.from} → ${op.to}).`);
+              edges = [...edges.filter((e) => !(e.from === op.from && e.to === op.to)), { from: op.from!, to: op.to!, label: op.label ?? "", kind: op.kind ?? "other" }];
+            } else {
+              edges = edges.filter((e) => !(e.from === op.from && e.to === op.to));
+            }
+          }
+          const kept = groups.filter((g) => g.paths.length);
+          const dropped = groups.filter((g) => !g.paths.length).map((g) => g.id);
+          if (kept.length < 2) return fail("That would leave fewer than two groups with files; nothing changed.");
+          const ids = new Set(kept.map((g) => g.id));
+          edges = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+          if (lens.id === "modules") setModules(kept, edges);
+          else putLens({ ...lens, ...(a.title ? { title: a.title } : {}), groups: kept, edges });
+          return ok(
+            [
+              `Revised ${a.title ?? lens.title} in place: ${kept.map((g) => `${g.label} (${g.paths.length})`).join(", ")}.`,
+              dropped.length ? `Dropped empty: ${dropped.join(", ")}.` : "",
+              ...notes,
+            ]
+              .filter(Boolean)
+              .join(" "),
+          );
+        },
+      ),
+      tool(
+        "remove_lens",
+        "Delete a grouping the reader no longer wants. If it's the one showing, the map goes back to folders. Only when they ask to remove it — never to replace it with a revised one (revise it instead).",
+        { lensId: z.string() },
+        async (a) => {
+          const lens = removeLens(a.lensId);
+          if (!lens) return fail(`No grouping "${a.lensId}" to remove. ${lensList()}`);
+          return ok(`Removed the grouping "${lens.title}".`);
+        },
+      ),
     );
   }
 
@@ -468,7 +605,9 @@ Grounding: every box, arrow and claim must come from code you actually read. Cod
 
 Static vs logical: static dependencies are the import graph. Logical dependencies are what happens at runtime — HTTP calls between services, events, queues, shared tables, rendering, config switches. When you draw one, say which it is via the diagram's layer.
 
-Shaping the map: when a question is about part of the codebase, filter_map can hide the rest so the reader only flies through what matters. When they want the code organized differently from folders — layers, features, services, data flow — publish a grouping with set_lens; the map regroups itself. To point out a set of files without disturbing the layout — or when they ask to group or mark something but not to reorganize — use add_groups, which draws beacons on top of whatever organization they're in. Both are cheap; use them when they help.
+Shaping the map: when a question is about part of the codebase, filter_map can hide the rest so the reader only flies through what matters. When they want the code organized differently from folders — layers, features, services, data flow — publish a grouping with set_lens; the map regroups itself.
+
+Changing a grouping they already have is not a new grouping. If they're in a grouping (or in Modules) and ask for something that reads as a change to it — split this group, merge those, move these files over, rename it, add a group for X, take Y out — revise it in place with revise_lens (get_lens first, to see what it holds). The screen note says which grouping is showing and its id; "this module", "that group" and the like mean that grouping. Only publish a new grouping with set_lens when they ask for a different way of organizing the code altogether. When it's unclear, prefer the in-place edit: a duplicate grouping with one change is clutter they have to clean up. remove_lens is for when they ask to delete one. To point out a set of files without disturbing the layout — or when they ask to group or mark something but not to reorganize — use add_groups, which draws beacons on top of whatever organization they're in. Both are cheap; use them when they help.
 
 Pick the picture that explains best. A request flowing through layers might be a sequence (show_custom). A lifecycle is a state machine. A config surface is a table. A hot path is a code excerpt with highlighted lines. Use show_custom freely — make it look good: clean, legible, a bit of motion where motion carries meaning, and data-path on anything that stands for code.
 
@@ -580,7 +719,7 @@ function screenNote(screen?: ScreenContext): string {
   const bits = [
     screen.openFile ? `They have ${screen.openFile.path}${screen.openFile.line ? ` open at line ${screen.openFile.line}` : ""} in the code panel.` : "",
     screen.focusLabel ? `The camera is on: ${screen.focusLabel}.` : "",
-    screen.lens ? `The map is organized by ${screen.lens}.` : "",
+    screen.lens ? `The map is organized by ${screen.lens}${screen.lensId && screen.lensId !== "folders" ? ` (grouping id: ${screen.lensId})` : ""}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
     screen.selection ? `They have selected this text — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 2000)}\n"""` : "",
   ].filter(Boolean);
@@ -636,6 +775,12 @@ function narrate(msg: SDKMessage, root: string) {
         break;
       case "set_lens":
         pushActivity({ kind: "tool", detail: `Regrouping the map ${String(input.title ?? "")}`.trim() });
+        break;
+      case "revise_lens":
+        pushActivity({ kind: "tool", detail: "Revising the grouping" });
+        break;
+      case "remove_lens":
+        pushActivity({ kind: "tool", detail: "Removing a grouping" });
         break;
       case "focus":
         pushActivity({ kind: "tool", detail: `Steering to ${String(input.label ?? "the files")}` });

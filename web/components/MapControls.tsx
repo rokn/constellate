@@ -19,6 +19,7 @@ export function OrganizeBar({
   busy,
   onPick,
   onRequest,
+  onRemove,
 }: {
   lensId: string;
   lenses: Lens[];
@@ -26,6 +27,8 @@ export function OrganizeBar({
   busy: boolean;
   onPick: (id: string) => void;
   onRequest: (how: string) => void;
+  /** Delete one of the navigator's groupings (Folders and Modules stay). */
+  onRemove: (lens: Lens) => void;
 }) {
   const [asking, setAsking] = useState(false);
   const [how, setHow] = useState("");
@@ -39,19 +42,30 @@ export function OrganizeBar({
     <div className="pointer-events-auto flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1" role="radiogroup" aria-label="Organize the map by">
         <span className="mr-1 text-[12.5px] text-muted">Organize by</span>
-        {options.map((o) => (
-          <button
-            key={o.id}
-            role="radio"
-            aria-checked={lensId === o.id}
-            onClick={() => onPick(o.id)}
-            className={`rounded-full px-2.5 py-0.5 text-[12.5px] ${
-              lensId === o.id ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"
-            }`}
-          >
-            {o.title}
-          </button>
-        ))}
+        {options.map((o) => {
+          const lens = lenses.find((l) => l.id === o.id);
+          const on = lensId === o.id;
+          return (
+            <span
+              key={o.id}
+              className={`group inline-flex items-center rounded-full text-[12.5px] ${on ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
+            >
+              <button role="radio" aria-checked={on} onClick={() => onPick(o.id)} className={`py-0.5 pl-2.5 ${lens ? "pr-1" : "pr-2.5"}`} title={lens?.description}>
+                {o.title}
+              </button>
+              {lens && (
+                <button
+                  onClick={() => onRemove(lens)}
+                  className="mr-1 rounded-full px-1 text-[11px] text-muted opacity-0 hover:text-bad focus:opacity-100 group-hover:opacity-100"
+                  aria-label={`Delete the grouping ${lens.title}`}
+                  title="Delete this grouping"
+                >
+                  ✕
+                </button>
+              )}
+            </span>
+          );
+        })}
         <button
           onClick={() => setAsking((a) => !a)}
           className="glass rounded-full px-2.5 py-0.5 text-[12.5px] text-muted hover:text-text"

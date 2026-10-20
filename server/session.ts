@@ -102,6 +102,29 @@ export function setOverview(o: Overview) {
   emit();
 }
 
+/** Removes a grouping; returns it, so it can be restored. */
+export function removeLens(id: string): Lens | undefined {
+  const lens = session.state.lenses.find((l) => l.id === id);
+  if (!lens) return undefined;
+  session.state.lenses = session.state.lenses.filter((l) => l.id !== id);
+  emit();
+  return lens;
+}
+
+/** Puts a grouping back, or replaces it in place by id (an edit keeps its id). */
+export function putLens(lens: Lens) {
+  const i = session.state.lenses.findIndex((l) => l.id === lens.id);
+  session.state.lenses = i < 0 ? [...session.state.lenses, lens] : session.state.lenses.map((l, j) => (j === i ? lens : l));
+  emit();
+}
+
+/** Edits the overview's modules in place (the "Modules" organization). */
+export function setModules(modules: Overview["modules"], edges: Overview["edges"]) {
+  if (!session.state.overview) return;
+  session.state.overview = { ...session.state.overview, modules, edges };
+  emit();
+}
+
 /** Adds a lens, replacing one with the same title so a redo doesn't pile up. */
 export function addLens(lens: Lens) {
   session.state.lenses = [...session.state.lenses.filter((l) => l.title !== lens.title), lens];

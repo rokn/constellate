@@ -2,11 +2,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ScreenContext, ViewSettings } from "../shared/types";
+import type { Lens, ScreenContext, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
-import { addOverlay, dropOverview, openRepo, removeOverlay, session, setView, subscribe, updateOverlay } from "./session";
+import { addOverlay, dropOverview, openRepo, putLens, removeLens, removeOverlay, session, setView, subscribe, updateOverlay } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
 
@@ -156,6 +156,19 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       void done.catch((err) => console.error("[ask]", err));
       json(res, 202, { ok: true });
       return true;
+    }
+    case "POST /api/lenses": {
+      // Delete a grouping, or put a deleted one back (undo).
+      const b = await body<{ action?: string; id?: string; lens?: Lens }>(req);
+      if (b.action === "delete" && b.id) {
+        const lens = removeLens(b.id);
+        return json(res, lens ? 200 : 404, lens ? { ok: true, lens } : { error: "No such grouping." }), true;
+      }
+      if (b.action === "restore" && b.lens?.id && Array.isArray(b.lens.groups)) {
+        putLens(b.lens);
+        return json(res, 200, { ok: true }), true;
+      }
+      return json(res, 400, { error: "Unknown action." }), true;
     }
     case "POST /api/overlays": {
       // Groups you mark yourself: from the focus, the filter, or patterns.
