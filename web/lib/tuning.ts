@@ -59,9 +59,13 @@ export type Tuning = {
   autoRotateSpeed: number;
   autoRefit: boolean;
   // Labels
+  /** Folder names (kept as `labelSize` so saved settings carry over). */
   labelSize: number;
+  fileLabelSize: number;
+  beaconLabelSize: number;
   folderLabelDepth: number;
   fileLabelLimit: number;
+  fullPaths: boolean;
   showBeaconLabels: boolean;
   // Background
   starOpacity: number;
@@ -121,8 +125,11 @@ export const DEFAULT_TUNING: Tuning = {
   autoRotateSpeed: 0.35,
   autoRefit: true,
   labelSize: 1,
+  fileLabelSize: 1,
+  beaconLabelSize: 1,
   folderLabelDepth: 1,
   fileLabelLimit: 100,
+  fullPaths: false,
   showBeaconLabels: true,
   starOpacity: 0.55,
   starSize: 2.2,
@@ -132,7 +139,7 @@ export const DEFAULT_TUNING: Tuning = {
 };
 
 /** Knobs whose change means rebuilding the 3D objects rather than nudging them. */
-export const SHAPE_KNOBS: (keyof Tuning)[] = ["nodeSize", "sizeByLines", "sizeByImporters", "beaconSize", "labelSize", "folderLabelDepth"];
+export const SHAPE_KNOBS: (keyof Tuning)[] = ["nodeSize", "sizeByLines", "sizeByImporters", "beaconSize", "labelSize", "fileLabelSize", "beaconLabelSize", "folderLabelDepth", "fullPaths"];
 /** Knobs that change the forces, so the layout is reheated to show the effect. */
 export const FORCE_KNOBS: (keyof Tuning)[] = [
   "repulsion", "folderPull", "folderDistance", "importPull", "importDistance",
@@ -230,9 +237,12 @@ export const SECTIONS: Section[] = [
     id: "labels",
     title: "Labels",
     knobs: [
-      r("labelSize", "Label size", 0.4, 3, 0.05),
+      r("fileLabelSize", "File label size", 0.4, 4, 0.05),
+      r("beaconLabelSize", "Beacon label size", 0.4, 4, 0.05, "Module and group names"),
+      r("labelSize", "Folder label size", 0.4, 3, 0.05),
       r("folderLabelDepth", "Folder label depth", -1, 4, 1, "-1 hides them; 0 is top-level only"),
       r("fileLabelLimit", "File labels in focus", 0, 200, 1, "Name files only when the focus is this small"),
+      t("fullPaths", "Full paths", "Label files with their path from the repo root, not just the file name"),
       t("showBeaconLabels", "Beacon names"),
     ],
   },

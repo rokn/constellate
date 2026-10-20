@@ -668,7 +668,7 @@ export function Space({
         if (best && !(body && body.t < best.t - best.r)) {
           pick = { kind: "cluster", id: best.c.id, label: best.c.label, point: best.point, stop: clusterStop(best.r) };
         } else if (body) {
-          pick = { kind: "body", id: body.id, label: body.id.split("/").pop()!, point: bodyShape(body.id)!.point, stop: bodyStop(body.r) };
+          pick = { kind: "body", id: body.id, label: tu().fullPaths ? body.id : body.id.split("/").pop()!, point: bodyShape(body.id)!.point, stop: bodyStop(body.r) };
         }
       }
       if (pick && cam.distanceTo(pick.point) < pick.stop * 1.05) {
@@ -1016,7 +1016,7 @@ export function Space({
         new THREE.IcosahedronGeometry(base, 1),
         new THREE.MeshBasicMaterial({ color: tint, wireframe: true, transparent: true, opacity: 0.32 }),
       );
-      label = new SpriteText(n.label, (n.id.startsWith("grp:") ? 7.5 : 6) * tu().labelSize, tint);
+      label = new SpriteText(n.label, (n.id.startsWith("grp:") ? 7.5 : 6) * tu().beaconLabelSize, tint);
       label.fontFace = FONT_COND;
       label.fontWeight = "600";
       label.position.y = base + 7;
@@ -1067,7 +1067,7 @@ export function Space({
       const wantLabel =
         id === act || (emph.size > 0 && emph.has(id) && (emph.size <= tu().fileLabelLimit || labelled.current.has(id)));
       if (wantLabel && !o.fileLabel) {
-        const t = new SpriteText(id.split("/").pop()!, 2.6 * tu().labelSize, "#e4eaf4");
+        const t = new SpriteText(tu().fullPaths ? id : id.split("/").pop()!, 2.6 * tu().fileLabelSize, "#e4eaf4");
         t.fontFace = FONT_MONO;
         t.position.y = o.base + 3;
         o.group.add(t);
@@ -1421,7 +1421,7 @@ export function Space({
         new THREE.OctahedronGeometry(7, 0),
         new THREE.MeshBasicMaterial({ color: ov.color, wireframe: true, transparent: true, opacity: 0.85 }),
       );
-      const label = new SpriteText(ov.label, 6.5 * tu().labelSize, ov.color);
+      const label = new SpriteText(ov.label, 6.5 * tu().beaconLabelSize, ov.color);
       label.fontFace = FONT_COND;
       label.fontWeight = "600";
       label.position.y = 14;
@@ -1449,7 +1449,7 @@ export function Space({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlays]);
+  }, [overlays, tuning.beaconLabelSize]);
 
   /* ------------------------------- flight ------------------------------- */
 
