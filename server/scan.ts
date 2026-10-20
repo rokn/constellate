@@ -92,11 +92,16 @@ async function gitInfo(root: string) {
 
 /* ----------------------------- extraction ----------------------------- */
 
-type Raw = { spec: string; kind: "rel" | "abs" | "py" | "go" | "rust" | "jvm" | "include" };
+type Raw = {
+  spec: string;
+  kind: "rel" | "abs" | "py" | "go" | "rust" | "jvm" | "include";
+  /** Go: the name the importer uses for the package, when it renames it (or `_` / `.`). */
+  alias?: string;
+};
 
 function extractImports(lang: string, text: string): Raw[] {
   const out: Raw[] = [];
-  const push = (spec: string, kind: Raw["kind"]) => spec && out.push({ spec, kind });
+  const push = (spec: string, kind: Raw["kind"], alias?: string) => spec && out.push({ spec, kind, alias });
 
   switch (lang) {
     case "typescript": case "tsx": case "javascript": case "jsx":
@@ -128,9 +133,11 @@ function extractImports(lang: string, text: string): Raw[] {
       }
       break;
     case "go": {
-      const block = text.match(/import\s*\(([\s\S]*?)\)/);
-      if (block) for (const m of block[1].matchAll(/"([^"]+)"/g)) push(m[1], "go");
-      for (const m of text.matchAll(/^import\s+(?:\w+\s+)?"([^"]+)"/gm)) push(m[1], "go");
+      // Keep the alias: `m "x/pkg/models"` means usages read `m.Thing`.
+      for (const block of text.matchAll(/^import\s*\(([\s\S]*?)^\)/gm)) {
+        for (const m of block[1].matchAll(/^\s*(?:([\w.]+)\s+)?"([^"]+)"/gm)) push(m[2], "go", m[1]);
+      }
+      for (const m of text.matchAll(/^import\s+(?:([\w.]+)\s+)?"([^"]+)"/gm)) push(m[2], "go", m[1]);
       break;
     }
     case "rust":
@@ -298,11 +305,62 @@ type Ctx = {
   aliases: Aliases;
   /** Every go.mod in the repo, longest module path first, so nested modules win. */
   goModules: { name: string; dir: string }[];
-  /** Go package directory -> the file that stands for the package. */
-  goPackages: Map<string, string>;
+  /** Go package directory -> its name, the file that stands for it, and where each exported name is declared. */
+  goPackages: Map<string, GoPackage>;
   /** For suffix lookups (python, jvm, includes): path-without-ext -> path. */
   byStem: Map<string, string[]>;
 };
+
+type GoPackage = { name: string; rep: string; decls: Map<string, string> };
+
+/** The repo directory a Go import path names, or null for anything outside the repo. */
+function goPackageDir(raw: Raw, ctx: Ctx): string | null {
+  const mod = ctx.goModules.find((m) => raw.spec === m.name || raw.spec.startsWith(`${m.name}/`));
+  if (!mod) return null;
+  const dir = path.posix.normalize(path.posix.join(mod.dir, raw.spec.slice(mod.name.length)));
+  return dir === "" ? "." : dir;
+}
+
+/**
+ * Exported package-level names a Go file declares: funcs (not methods —
+ * those are reached through their type), types, consts and vars, including
+ * inside grouped `const ( … )` / `var ( … )` / `type ( … )` blocks.
+ */
+function goDecls(text: string): string[] {
+  const names: string[] = [];
+  for (const m of text.matchAll(/^func\s+([A-Z]\w*)\s*[[(]/gm)) names.push(m[1]);
+  for (const m of text.matchAll(/^(?:type|const|var)\s+([A-Z]\w*)\b/gm)) names.push(m[1]);
+  for (const block of text.matchAll(/^(?:type|const|var)\s*\(([\s\S]*?)^\)/gm)) {
+    // One declaration per line, at one tab of indent; `A, B = …` declares both.
+    for (const line of block[1].matchAll(/^\t([A-Z]\w*(?:\s*,\s*[A-Z]\w*)*)\b/gm)) {
+      for (const n of line[1].split(",")) names.push(n.trim());
+    }
+  }
+  return names;
+}
+
+/**
+ * Which files of a Go package an importer actually uses. A Go import names a
+ * whole package, so pointing it at one file made that file a false hub; this
+ * follows the importer's `pkg.Name` references to the files that declare them.
+ * Blank and dot imports, and packages where nothing resolves, fall back to the
+ * package's stand-in file.
+ */
+function goTargets(raw: Raw, text: string, ctx: Ctx): string[] | null {
+  const dir = goPackageDir(raw, ctx);
+  if (!dir) return null;
+  const pkg = ctx.goPackages.get(dir);
+  if (!pkg) return null;
+  const alias = raw.alias ?? pkg.name;
+  if (alias === "_" || alias === ".") return [pkg.rep];
+  const used = new Set<string>();
+  const esc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const m of text.matchAll(new RegExp(`\\b${esc}\\.([A-Z]\\w*)`, "g"))) {
+    const file = pkg.decls.get(m[1]);
+    if (file) used.add(file);
+  }
+  return used.size ? [...used] : [pkg.rep];
+}
 
 function bySuffix(ctx: Ctx, stem: string): string | null {
   const hits = ctx.byStem.get(stem.split("/").pop()!) ?? [];
@@ -347,11 +405,8 @@ function resolve(from: string, raw: Raw, ctx: Ctx): string | null {
       return null;
     }
     case "go": {
-      const mod = ctx.goModules.find((m) => raw.spec === m.name || raw.spec.startsWith(`${m.name}/`));
-      if (!mod) return null;
-      // A Go import names a package — a directory — not a file.
-      const pkgDir = path.posix.normalize(path.posix.join(mod.dir, raw.spec.slice(mod.name.length)));
-      return ctx.goPackages.get(pkgDir === "" ? "." : pkgDir) ?? null;
+      const dir = goPackageDir(raw, ctx);
+      return dir ? ctx.goPackages.get(dir)?.rep ?? null : null;
     }
     case "rust": {
       if (raw.spec.startsWith("mod:")) {
@@ -464,9 +519,10 @@ export async function scanRepo(
     byStem.set(key, [...(byStem.get(key) ?? []), f]);
   }
 
-  // The file that stands for each Go package: the one named after the
-  // package, else doc.go, else the biggest — the place a reader starts.
-  const goPackages = new Map<string, string>();
+  // Each Go package: its declared name, the file that stands for it (named
+  // after the package, else doc.go, else the biggest), and which file declares
+  // each exported name — so imports can be followed to the files really used.
+  const goPackages = new Map<string, GoPackage>();
   const byGoDir = new Map<string, FileInfo[]>();
   for (const f of files) {
     if (f.lang !== "go" || f.path.endsWith("_test.go")) continue;
@@ -479,7 +535,10 @@ export async function scanRepo(
       list.find((f) => path.posix.basename(f.path) === `${name}.go`) ??
       list.find((f) => path.posix.basename(f.path) === "doc.go") ??
       [...list].sort((a, b) => b.loc - a.loc)[0];
-    goPackages.set(d, pick.path);
+    const decls = new Map<string, string>();
+    for (const f of list) for (const n of goDecls(texts.get(f.path) ?? "")) if (!decls.has(n)) decls.set(n, f.path);
+    const declared = texts.get(pick.path)?.match(/^package\s+(\w+)/m)?.[1] ?? name;
+    goPackages.set(d, { name: declared, rep: pick.path, decls });
   }
 
   const ctx: Ctx = { files: fileSet, aliases: await loadAliases(abs, fileSet), goModules, goPackages, byStem };
@@ -500,14 +559,17 @@ export async function scanRepo(
     if (!text) continue;
     const ext = new Set<string>();
     for (const raw of extractImports(file.lang, text)) {
-      const to = resolve(file.path, raw, ctx);
-      if (to && to !== file.path) {
+      const resolved = raw.kind === "go" ? goTargets(raw, text, ctx) : resolve(file.path, raw, ctx);
+      const tos = resolved === null ? [] : Array.isArray(resolved) ? resolved : [resolved];
+      for (const to of tos) {
+        if (to === file.path) continue;
         const key = `${file.path}>${to}`;
         if (!edges.has(key)) {
           edges.add(key);
           imports.push({ from: file.path, to });
         }
-      } else if (!to && (raw.kind === "abs" || raw.kind === "py" || raw.kind === "go")) {
+      }
+      if (!tos.length && (raw.kind === "abs" || raw.kind === "py" || raw.kind === "go")) {
         const pkg =
           raw.kind === "py" ? raw.spec.split(".")[0]
             // Go: host/owner/repo is the dependency; a dotless first segment is the standard library.
