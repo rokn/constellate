@@ -1985,6 +1985,8 @@ export function Space({
   const focusIds = (ids: string[], shift = 0) => {
     const c = centroid(ids);
     if (!c) return;
+    // A deliberate framing supersedes the automatic reframe after a rebuild.
+    clearTimeout(refit.current);
     let r = 0;
     for (const id of ids) {
       const n = nodes.current.get(id);
@@ -2018,6 +2020,7 @@ export function Space({
     overview() {
       const g = fg.current;
       if (!g) return;
+      clearTimeout(refit.current);
       fitView(tu().flySeconds * 900, 70);
       setTimeout(
         unlessTouched(() => {

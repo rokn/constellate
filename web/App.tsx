@@ -407,7 +407,8 @@ export function App() {
       clearTimeout(soloFocus.current);
       // Only what the rest of the filter shows.
       const shown = unisolated ? paths.filter((p) => unisolated.has(p)) : paths;
-      soloFocus.current = setTimeout(() => focusRef.current(shown, item.label), 700);
+      soloAt.current = performance.now();
+      soloFocus.current = setTimeout(() => focusRef.current(shown, item.label), 120);
     }
     setFilter((f) => {
       const cur = f.isolate ?? [];
@@ -419,6 +420,29 @@ export function App() {
     });
   }, [filter.isolate, graph, unisolated]);
   const soloFocus = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** When a double-click last isolated something: it frames itself, so the general re-frame stays out. */
+  const soloAt = useRef(0);
+
+  // Isolating or hiding modules changes what's on the map: frame what's left
+  // straight away (everything, when the isolation is cleared). The bodies
+  // that stay keep their places, so there's no need to wait for the layout.
+  const isoKey = JSON.stringify((filter.isolate ?? []).map((i) => `${i.exclude ? "-" : "+"}${i.kind}:${i.id}`));
+  const lastIsoKey = useRef(isoKey);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  useEffect(() => {
+    if (lastIsoKey.current === isoKey) return;
+    lastIsoKey.current = isoKey;
+    if (performance.now() - soloAt.current < 1000) return;
+    const t = setTimeout(() => {
+      const shown = visibleRef.current;
+      if (!filter.isolate?.length || !shown) space.current?.overview();
+      else if (shown.size) space.current?.focus([...shown], shiftFor(panels.current));
+    }, 120);
+    return () => clearTimeout(t);
+    // Only a change in what's isolated or hidden re-frames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isoKey]);
   const isolatedIds = useMemo(
     () => new Map((filter.isolate ?? []).filter((i) => i.kind === legend?.kind).map((i) => [i.id, i.exclude ? ("out" as const) : ("in" as const)])),
     [filter, legend?.kind],
