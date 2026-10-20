@@ -87,7 +87,7 @@ const lensList = () =>
   `Groupings: ${[session.state.overview ? "modules (Modules)" : "", ...session.state.lenses.map((l) => `${l.id} (${l.title})`)].filter(Boolean).join(", ") || "none"}.`;
 
 /** Resolves a list of paths or directory prefixes to scanned files. */
-function expandPaths(paths: string[], cap = 300): string[] {
+export function expandPaths(paths: string[], cap = 300): string[] {
   const files = idx().graph.files.map((f) => f.path);
   const out = new Set<string>();
   for (const raw of paths) {
@@ -107,30 +107,22 @@ function expandPaths(paths: string[], cap = 300): string[] {
 
 /* ------------------------------ the tools ------------------------------ */
 
-const NodeShape = z.object({
+export const NodeShape = z.object({
   id: z.string().describe("Short stable id, e.g. 'auth'"),
   label: z.string().describe("A short plain phrase — not a file path"),
   detail: z.string().optional().describe("Optional one-line detail"),
   path: z.string().optional().describe("The file this box stands for, if any; clicking flies there"),
 });
-const EdgeShape = z.object({
+export const EdgeShape = z.object({
   from: z.string(),
   to: z.string(),
   label: z.string().optional().describe("What travels this edge: the call, value or event"),
 });
 
-function flightServer(frameId: string | null, mode: "intro" | "ask") {
-  const needFrame = () => {
-    if (!frameId) throw new Error("Views can only be shown while answering a request.");
-    return frameId;
-  };
-  const show = (view: View) => {
-    addView(needFrame(), view);
-    return ok(`On screen as view ${view.id}.`);
-  };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool has its own schema
-  const tools: SdkMcpToolDefinition<any>[] = [
+/** Instant questions to the static graph — what imports what, a file's shape. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool has its own schema
+export function graphTools(): SdkMcpToolDefinition<any>[] {
+  return [
     tool(
       "deps",
       "Static dependencies from the import graph: what a file imports, what imports it, or both, up to N hops. Instant — prefer it over grepping for imports.",
@@ -173,6 +165,22 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
         );
       },
     ),
+  ];
+}
+
+function flightServer(frameId: string | null, mode: "intro" | "ask") {
+  const needFrame = () => {
+    if (!frameId) throw new Error("Views can only be shown while answering a request.");
+    return frameId;
+  };
+  const show = (view: View) => {
+    addView(needFrame(), view);
+    return ok(`On screen as view ${view.id}.`);
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool has its own schema
+  const tools: SdkMcpToolDefinition<any>[] = [
+    ...graphTools(),
     tool(
       "focus",
       "Fly the reader's camera to a set of files (or directory prefixes ending in '/'), dimming everything else. Call it early with the files your answer is about, so they travel while you work.",

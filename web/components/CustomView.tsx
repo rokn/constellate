@@ -30,9 +30,14 @@ const BRIDGE = `
     e.preventDefault();
     send({type:"open",path:el.getAttribute("data-path"),line:Number(el.getAttribute("data-line"))||undefined});
   });
+  // Stories drive an animation in step with the narration.
+  window.addEventListener("message",function(e){
+    if(!e.data||!e.data.__codeflight||e.data.type!=="step")return;
+    try{if(typeof window.onStoryStep==="function")window.onStoryStep(e.data.step)}catch(err){console.error(err)}
+  });
   var h=function(){send({type:"height",value:Math.ceil(document.documentElement.scrollHeight)})};
   new ResizeObserver(h).observe(document.documentElement);
-  window.addEventListener("load",h);h();
+  window.addEventListener("load",function(){h();send({type:"loaded"})});h();
 })();
 <\/script>`;
 
@@ -54,10 +59,13 @@ function documentFor(html: string) {
 export function CustomView({
   html,
   height,
+  step,
   onOpen,
 }: {
   html: string;
   height?: number;
+  /** A story's animation step: sent to the page's window.onStoryStep. */
+  step?: number;
   onOpen: (path: string, line?: number) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
@@ -65,6 +73,12 @@ export function CustomView({
   const doc = useMemo(() => documentFor(html), [html]);
   const openRef = useRef(onOpen);
   openRef.current = onOpen;
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  const sendStep = () => {
+    if (stepRef.current !== undefined) frame.current?.contentWindow?.postMessage({ __codeflight: 1, type: "step", step: stepRef.current }, "*");
+  };
+  useEffect(sendStep, [step]);
 
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -72,6 +86,9 @@ export function CustomView({
       if (e.source !== frame.current?.contentWindow || !e.data?.__codeflight) return;
       if (e.data.type === "height" && typeof e.data.value === "number") {
         setH(Math.min(1400, Math.max(height ?? 160, e.data.value)));
+      } else if (e.data.type === "loaded") {
+        // The page's own scripts have run: give it the step it should be at.
+        sendStep();
       } else if (e.data.type === "open" && typeof e.data.path === "string") {
         openRef.current(e.data.path, e.data.line);
       }

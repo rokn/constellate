@@ -16,6 +16,8 @@ import { Dossier, type Pointer } from "./components/Dossier";
 import { FilePanel } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
+import { StoryPlayer } from "./components/StoryPlayer";
+import { StoriesPanel } from "./components/StoriesPanel";
 
 const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true };
 
@@ -33,6 +35,8 @@ export function App() {
   const status = state?.status ?? "idle";
   const graph = useGraph(state?.graphVersion, status !== "idle" && status !== "scanning");
   const [voiceAvailable, setVoiceAvailable] = useState(false);
+  /** Inworld TTS is configured: stories are voiced, not just captioned. */
+  const [ttsAvailable, setTtsAvailable] = useState(false);
   // gopls on the server: Go files then open in VS Code's editor with real navigation.
   const [goplsReady, setGoplsReady] = useState(false);
   useEffect(() => {
@@ -41,7 +45,16 @@ export function App() {
       .then((s: { go?: { available?: boolean } }) => setGoplsReady(!!s.go?.available))
       .catch(() => setGoplsReady(false));
   }, [state?.repo?.root]);
-  useEffect(() => void config().then((c) => setVoiceAvailable(c.voice)).catch(() => {}), []);
+  useEffect(
+    () =>
+      void config()
+        .then((c) => {
+          setVoiceAvailable(c.voice);
+          setTtsAvailable(c.tts);
+        })
+        .catch(() => {}),
+    [],
+  );
 
   const space = useRef<SpaceHandle>(null);
   // Map labels are painted to canvas once, so the faces have to be loaded first.
@@ -87,6 +100,9 @@ export function App() {
   const [tuneOpen, setTuneOpen] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [storiesOpen, setStoriesOpen] = useState(false);
+  /** The story playing, the playlist it's in, and whether to start on its own. */
+  const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean } | null>(null);
   /** The "what changed since the chart" list under the re-chart prompt. */
   const [changesOpen, setChangesOpen] = useState(false);
   /** The note being written or edited, and what it's pinned to. */
@@ -103,10 +119,11 @@ export function App() {
   /** Where a Shift-selection started, and where its moving end is. */
   const anchor = useRef<string | null>(null);
   /** Opening one left-hand panel closes the other; they share the column. */
-  const openPanel = (which: "filter" | "groups" | "notes" | null) => {
+  const openPanel = (which: "filter" | "groups" | "notes" | "stories" | null) => {
     setFilterOpen(which === "filter");
     setGroupsOpen(which === "groups");
     setNotesOpen(which === "notes");
+    setStoriesOpen(which === "stories");
   };
   /**
    * Where you've been, browser-style: `at` is where you are now; back and
@@ -541,8 +558,9 @@ export function App() {
   );
 
   useEffect(() => {
-    panels.current = { file: !!file, frame: !!frameId };
-  }, [file, frameId]);
+    // The story's stage docks where answers do.
+    panels.current = { file: !!file, frame: !!frameId || !!story };
+  }, [file, frameId, story]);
   useEffect(() => {
     if (!file) setPanelFull(false);
   }, [file]);
@@ -662,6 +680,38 @@ export function App() {
     },
     [focus, askNavigator],
   );
+
+  /* -------------------------------- stories ------------------------------- */
+
+  const stories = useMemo(() => state?.stories ?? [], [state?.stories]);
+  const introStories = useMemo(() => stories.filter((s) => s.intro).sort((a, b) => a.intro! - b.intro!), [stories]);
+
+  /** Play a story (in a playlist, for the intro). One voiced with other settings is voiced again first. */
+  const playStory = useCallback((id: string, queue: string[] = [], autoplay = true) => {
+    setIntroDone(true);
+    setTour(null);
+    setFrameId(null);
+    panels.current.frame = true;
+    void post("/api/stories", { action: "voice", id });
+    setStory({ id, queue, autoplay });
+    // The stage needs the room; Stories is a key (s) away.
+    setStoriesOpen(false);
+  }, []);
+  const playIntro = useCallback(() => {
+    const ids = introStories.filter((s) => s.state !== "error").map((s) => s.id);
+    if (ids.length) playStory(ids[0], ids);
+  }, [introStories, playStory]);
+
+  // A story you just asked for opens as it's being written, and plays once it's voiced.
+  const storiesSeen = useRef(new Set<string>());
+  useEffect(() => {
+    const fresh = stories.filter((s) => !s.intro && s.createdAt >= loadedAt.current && !storiesSeen.current.has(s.id));
+    for (const s of fresh) storiesSeen.current.add(s.id);
+    if (fresh.length) playStory(fresh.at(-1)!.id);
+    // A story that was deleted closes.
+    if (story && !stories.some((s) => s.id === story.id)) setStory(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stories]);
 
   // A frame born after this page loaded is the answer to something just
   // asked: open it. Frames restored from an earlier session are older than the
@@ -949,6 +999,7 @@ export function App() {
       else if (e.key === "t" && overview) setTour(0);
       else if (e.key === "f") openPanel(filterOpen ? null : "filter");
       else if (e.key === "g") openPanel(groupsOpen ? null : "groups");
+      else if (e.key === "s") openPanel(storiesOpen ? null : "stories");
       else if (e.key === ",") setTuneOpen((o) => !o);
       else if (e.key === "h") {
         if (historyOpen) showRange(null);
@@ -963,7 +1014,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -1091,7 +1142,16 @@ export function App() {
         </div>
       )}
 
-      {showIntro && <Intro state={state} graph={graph} onTour={() => (setIntroDone(true), setTour(0))} onExplore={() => setIntroDone(true)} />}
+      {showIntro && (
+        <Intro
+          state={state}
+          graph={graph}
+          intro={introStories}
+          onPlayIntro={playIntro}
+          onTour={() => (setIntroDone(true), setTour(0))}
+          onExplore={() => setIntroDone(true)}
+        />
+      )}
 
       {/* Instruments */}
       <div className={`${minimal ? "hidden " : ""}pointer-events-none absolute left-4 top-4 z-10 flex flex-col gap-2`}>
@@ -1130,6 +1190,9 @@ export function App() {
             <Btn onClick={back} hint="[ or mouse back">Back</Btn>
             <Btn onClick={forward} hint="] or mouse forward">Forward</Btn>
             {overview && <Btn onClick={() => setTour(0)} hint="t">Tour</Btn>}
+            <Btn onClick={() => openPanel(storiesOpen ? null : "stories")} hint="s">
+              Stories{stories.length ? ` (${stories.length})` : ""}
+            </Btn>
             {frames.length > 0 && !frameId && (
               <Btn onClick={() => showFrame(frames.at(-1)!.id)}>Answers ({frames.length})</Btn>
             )}
@@ -1223,6 +1286,21 @@ export function App() {
             onClose={() => setFilterOpen(false)}
           />
         )}
+        {storiesOpen && state && (
+          <StoriesPanel
+            stories={stories}
+            settings={state.storySettings}
+            charted={!!overview}
+            onPlay={(id) => {
+              const s = stories.find((x) => x.id === id);
+              // An intro story plays on into the ones after it.
+              const queue = s?.intro ? introStories.filter((x) => x.state !== "error").map((x) => x.id) : [];
+              playStory(id, queue);
+            }}
+            onPlayIntro={playIntro}
+            onClose={() => setStoriesOpen(false)}
+          />
+        )}
         {notesOpen && (
           <NotesPanel
             notes={notes}
@@ -1261,7 +1339,7 @@ export function App() {
             onClose={() => setGroupsOpen(false)}
           />
         )}
-        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && legend && !file && (
+        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && !storiesOpen && legend && !file && (
           <Legend
             groups={legend.groups}
             counts={legend.counts}
@@ -1312,7 +1390,7 @@ export function App() {
         )}
       </div>
 
-      {!minimal && focusLabel && emphasis.length > 0 && tour === null && (
+      {!minimal && focusLabel && emphasis.length > 0 && tour === null && !story && (
         <div className="pointer-events-none absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center">
           <button
             onClick={() => {
@@ -1360,7 +1438,8 @@ export function App() {
       {/* Panels */}
       {file && (
         <div
-          className={panelFull ? "pointer-events-none absolute inset-4 z-40" : "pointer-events-none absolute bottom-28 left-4 top-28 z-20"}
+          // A story's transport sits low in the middle; the code panel stops above it.
+          className={panelFull ? "pointer-events-none absolute inset-4 z-40" : `pointer-events-none absolute left-4 top-28 z-20 ${story ? "bottom-[264px]" : "bottom-28"}`}
           style={panelFull ? undefined : { width: `min(${panelWidth}px, calc(100% - 2rem))` }}
         >
           {!panelFull && (
@@ -1401,7 +1480,7 @@ export function App() {
           />
         </div>
       )}
-      {activeFrame && (
+      {activeFrame && !story && (
         <div
           className="pointer-events-none absolute bottom-28 right-4 top-4 z-20"
           style={{ width: `min(${dossierWidth}px, calc(100% - 2rem))` }}
@@ -1429,6 +1508,30 @@ export function App() {
         </div>
       )}
 
+      {story && (() => {
+        const s = stories.find((x) => x.id === story.id);
+        if (!s) return null;
+        // Voiced with other settings (or not at all): the server is voicing it again, so wait for that.
+        // (The key is server/tts.ts's voiceKey.)
+        const ss = state.storySettings;
+        const stale = ttsAvailable && s.state === "ready" && (s.silent || s.voiceKey !== `${ss.ttsModel}|${ss.voiceId}|${ss.rate}`);
+        return (
+          <StoryPlayer
+            story={stale ? { ...s, state: "voicing", progress: "Voicing with the new settings" } : s}
+            queue={story.queue.map((id) => stories.find((x) => x.id === id)).filter((x): x is NonNullable<typeof x> => !!x)}
+            autoplay={story.autoplay}
+            onFocus={(paths, label) => {
+              // Fly to what the filter shows of it, unless it hides all of it.
+              const shown = visible ? paths.filter((p) => visible.has(p)) : paths;
+              focus(shown.length ? shown : paths, label);
+            }}
+            onOpenFile={(p, l, e) => openFile(p, l, e)}
+            onPick={(id, autoplay) => playStory(id, story.queue, autoplay)}
+            onClose={() => setStory(null)}
+          />
+        );
+      })()}
+
       {!minimal && tuneOpen && (
         <div className="pointer-events-none absolute bottom-28 right-4 top-4 z-40 w-[min(360px,calc(100%-2rem))]">
           <TuningPanel tuning={tuning} onChange={setTuning} onRelayout={() => space.current?.relayout()} onClose={() => setTuneOpen(false)} />
@@ -1437,7 +1540,7 @@ export function App() {
 
       {/* Bottom deck */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex flex-col items-center gap-3 px-4 pb-4">
-        {!minimal && tour !== null && modules[tour] && (
+        {!minimal && !story && tour !== null && modules[tour] && (
           <TourCaption
             module={modules[tour]}
             index={tour}
@@ -1489,7 +1592,7 @@ export function App() {
         {historyOpen && gitHistory && !gitHistory.available && (
           <p className="glass pointer-events-auto rounded-lg px-3 py-2 text-[13px] text-muted">This folder isn’t a git repository, so there’s no history to show.</p>
         )}
-        {showDestinations && !historyOpen && <Destinations topics={overview!.topics} onPick={goTopic} />}
+        {showDestinations && !historyOpen && !story && <Destinations topics={overview!.topics} onPick={goTopic} />}
         <div className="flex w-full items-end justify-between gap-4">
           <div className="flex min-w-0 flex-1 items-end justify-end gap-3">
             {!minimal && (

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Activity, LogicalModule, Overview, RepoGraph, SessionState, Topic } from "../../shared/types";
+import type { Activity, LogicalModule, Overview, RepoGraph, SessionState, Story, Topic } from "../../shared/types";
 import type { Turn, VoiceState } from "../lib/useVoice";
 
 /* -------------------------------- landing -------------------------------- */
@@ -82,14 +82,20 @@ export function Landing({ onOpen, error }: { onOpen: (path: string) => void; err
 export function Intro({
   state,
   graph,
+  intro,
+  onPlayIntro,
   onTour,
   onExplore,
 }: {
   state: SessionState;
   graph: RepoGraph | null;
+  /** The repo's three intro stories, as far as they've been written. */
+  intro: Story[];
+  onPlayIntro: () => void;
   onTour: () => void;
   onExplore: () => void;
 }) {
+  const introReady = intro.filter((s) => s.state === "ready").length;
   const o = state.overview;
   const reading = [...state.activity].reverse().find((a) => a.kind === "read" || a.kind === "search" || a.kind === "tool");
   const langs = graph
@@ -138,7 +144,20 @@ export function Intro({
             <p className="font-cond text-[26px] font-medium leading-snug text-text">{o.headline}</p>
             {o.welcome && <p className="mt-3 max-w-[60ch] text-[15px] leading-relaxed text-muted">{o.welcome}</p>}
             <div className="mt-6 flex flex-wrap gap-3">
-              <button onClick={onTour} className="rounded-lg bg-course px-4 py-2 font-cond text-[17px] font-semibold text-night hover:brightness-110">
+              {intro.length > 0 && (
+                <button
+                  onClick={onPlayIntro}
+                  disabled={!introReady}
+                  title={intro.map((s) => s.title).join(" · ")}
+                  className="rounded-lg bg-course px-4 py-2 font-cond text-[17px] font-semibold text-night hover:brightness-110 disabled:opacity-60"
+                >
+                  {introReady ? `Watch the intro · ${intro.length} stories` : "Writing the intro stories…"}
+                </button>
+              )}
+              <button
+                onClick={onTour}
+                className={intro.length ? "glass rounded-lg px-4 py-2 font-cond text-[17px] font-medium hover:border-muted" : "rounded-lg bg-course px-4 py-2 font-cond text-[17px] font-semibold text-night hover:brightness-110"}
+              >
                 Take the tour
               </button>
               <button onClick={onExplore} className="glass rounded-lg px-4 py-2 font-cond text-[17px] font-medium hover:border-muted">

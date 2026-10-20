@@ -33,7 +33,49 @@ Voice is optional: put `INWORLD_API_KEY` in `.env` (see `.env.example`).
    read — and publishes the overview: a headline, 4–9 logical modules (amber beacons tethered
    to their files), the runtime links between them (amber arcs), and topics worth a visit.
    The overview is cached per commit in `.cache/`, so reopening is instant.
-3. **Explore.** Take the tour, pick a destination, click anything, or ask.
+3. **Intro stories (a minute or two more, in the background).** Three narrated stories on
+   the most interesting parts are written at once — *Watch the intro* plays them in order.
+4. **Explore.** Take the tour, pick a destination, click anything, or ask.
+
+## Stories
+
+A **story** (`s`) is a narrated walkthrough of one part of the code, about a minute long.
+The navigator reads first, then writes four things at once:
+
+- **the script** — a few short beats the voice says, with pauses where you should look;
+- **the visuals**, prepared up front — verbatim code excerpts (cut server-side by line
+  range, like `show_code`), diagrams that **draw themselves in** node by node as the
+  narration names them, and custom animated visualizations stepped in time with it
+  (`window.onStoryStep(n)`);
+- **the choreography** — each cue anchored to a phrase of the script: show this
+  excerpt, spotlight these lines, reveal these boxes, fly the map to these files;
+- **the context** — the places in the code the story is about, each with why.
+
+Inworld voices each beat with word timestamps, so a cue fires on the word it was anchored
+to and the caption lights the word being said. Everything is ready before it plays:
+watching never waits on a model. Without `INWORLD_API_KEY`, stories play silently on
+estimated timings, with captions.
+
+**Intro.** A freshly charted repo gets three intro stories, written in parallel (each
+told what the other two cover). A repo charted before stories existed can write them
+from the Stories panel.
+
+**Playback.** Space plays and pauses, ← / → move between beats (back from mid-beat goes to
+its start), Shift+← / → skip five seconds, `-` / `=` change speed (0.75×–2×, kept in
+this browser), Esc closes. The bar is cut into beats — click or drag anywhere, hover for
+the line; a beat's pause shows as a lighter tail. *Stop after each beat* waits for you
+between beats. Seeking anywhere rebuilds the stage exactly as playing to that point
+would: the stage is a pure function of the position, not a log of cues applied.
+
+**Voice & style** (in the Stories panel): the Inworld voice, its pace, and a line on
+narration style the writer follows (“dry and precise, like a staff engineer at a
+whiteboard”). These are yours, not the repo's (`.cache/story-settings.json`); a story
+voiced with other settings is voiced again the next time it plays. Audio is cached by
+what was said and how, in `.cache/audio/`.
+
+Ask for one in the panel (“the story of how a request is served”); it opens while it's
+being written and plays when it's voiced. Stories write in their own agent session, so
+you can keep asking the navigator meanwhile.
 
 ## Go: VS Code's editor with gopls
 
@@ -125,7 +167,7 @@ reheat the layout so you watch it respond.
 ## What's saved, per repo
 
 Everything lives in `.cache/<hash of the repo path>.json`: the overview, groupings, groups,
-answers, and your view — knobs, layers, organize-by choice and filter — so each repo opens
+answers, stories, and your view — knobs, layers, organize-by choice and filter — so each repo opens
 the way you left it. A repo you haven't opened before starts from the knobs you last used.
 When the repo's commit moves on, nothing is discarded: the map is marked stale and offers to
 re-chart the overview, which replaces only the overview.
@@ -193,6 +235,7 @@ read-only code editor doesn't bring up the on-screen keyboard.
 | `g` | groups panel | "mark everything under internal/billing" |
 | `Space` | recenter on what's selected — the open file (press again: the file with its connections, and back), else the focus, else the whole map | — |
 | `,` | tune panel | — |
+| `s` | stories: play, write one, voice & style | — |
 | `u` | hide / show the UI | — |
 
 | `h` | history: the map at each commit, ↑ ↓ to step | "show me what changed this week", "play it" |
@@ -217,6 +260,8 @@ shared/filter.ts     map filters (globs, tests, docs, languages) — shared by b
 server/session.ts    the session singleton, mutations, command queue, per-commit cache
 server/navigator.ts  Claude Agent SDK: intro, asks, the flight MCP tools
 server/voice.ts      Inworld realtime bridge and its navigation tools
+server/stories.ts    story writing (its own agent session), script checks, voicing
+server/tts.ts        Inworld text-to-speech with word timings, audio cache, voice list
 server/repo.ts       contained file reads and verbatim slicing
 server/history.ts    git log with per-file status and churn, range diffs, the map at a commit
 shared/types.ts      every shape that crosses a process or model boundary
@@ -229,6 +274,8 @@ web/components/MapControls.tsx organize-by switcher, filter, groups panel, legen
 web/components/TuningPanel.tsx every map knob, with presets (web/lib/tuning.ts)
 web/components/CommitList.tsx the history list; maps at commits, deltas, coupling live in web/lib/history.ts
 web/components/DiffView.tsx   unified diffs rendered with both line numbers and syntax colour
+web/components/StoryPlayer.tsx the stage and transport; timeline in web/lib/story.ts, clock in web/lib/useStoryPlayer.ts
+web/components/StoriesPanel.tsx the story list, new-story box, voice & style
 ```
 
 ## Known limits

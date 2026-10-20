@@ -12,6 +12,8 @@ import type {
   NoteTarget,
   Overview,
   SessionState,
+  Story,
+  StorySettings,
   ViewSettings,
   UiCommand,
   View,
@@ -31,7 +33,9 @@ const run = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // Overridable so a second server (a test run, another worktree) can work on
 // the same repo without writing over the main session's saved state.
-const CACHE_DIR = process.env.CODEFLIGHT_CACHE_DIR ?? path.join(HERE, "..", ".cache");
+export const CACHE_DIR = process.env.CODEFLIGHT_CACHE_DIR ?? path.join(HERE, "..", ".cache");
+
+export const DEFAULT_STORY_SETTINGS: StorySettings = { voiceId: "Elliot", ttsModel: "inworld-tts-2", rate: 1, style: "" };
 
 const MAX_ACTIVITY = 60;
 const MAX_COMMANDS = 30;
@@ -56,6 +60,8 @@ export const session: Session = {
     overlays: [],
     notes: [],
     frames: [],
+    stories: [],
+    storySettings: DEFAULT_STORY_SETTINGS,
     activity: [],
     commands: [],
     busy: false,
@@ -225,6 +231,64 @@ export function getFrame(id: string) {
   return session.state.frames.find((f) => f.id === id);
 }
 
+/* ------------------------------- stories ------------------------------- */
+
+let storySeq = 0;
+
+export function newStory(request: string, intro?: number): Story {
+  const story: Story = {
+    id: `s${Date.now().toString(36)}${(storySeq++).toString(36)}`,
+    title: request.slice(0, 80),
+    summary: "",
+    request,
+    state: "writing",
+    intro,
+    context: [],
+    visuals: [],
+    beats: [],
+    createdAt: Date.now(),
+  };
+  session.state.stories = [...session.state.stories, story];
+  emit();
+  return story;
+}
+
+export function patchStory(id: string, patch: Partial<Story>) {
+  session.state.stories = session.state.stories.map((s) => (s.id === id ? { ...s, ...patch } : s));
+  emit();
+}
+
+export function getStory(id: string) {
+  return session.state.stories.find((s) => s.id === id);
+}
+
+export function removeStory(id: string): Story | undefined {
+  const story = getStory(id);
+  session.state.stories = session.state.stories.filter((s) => s.id !== id);
+  emit();
+  return story;
+}
+
+/** Story settings are yours, not the repo's: one file beside the per-repo caches. */
+const SETTINGS_FILE = path.join(CACHE_DIR, "story-settings.json");
+
+export async function loadStorySettings() {
+  try {
+    const saved = JSON.parse(await readFile(SETTINGS_FILE, "utf8")) as Partial<StorySettings>;
+    session.state.storySettings = { ...DEFAULT_STORY_SETTINGS, ...saved };
+    emit();
+  } catch {
+    /* none saved yet */
+  }
+}
+
+export async function setStorySettings(patch: Partial<StorySettings>) {
+  session.state.storySettings = { ...session.state.storySettings, ...patch };
+  emit();
+  await mkdir(CACHE_DIR, { recursive: true });
+  await writeFile(SETTINGS_FILE, JSON.stringify(session.state.storySettings, null, 2));
+}
+
 let viewSeq = 0;
 /** Ids are assigned here — asking a model for unique ids invites collisions. */
 const VIEW_PREFIX: Record<View["kind"], string> = { text: "t", code: "c", diagram: "d", diff: "f", custom: "x" };
@@ -272,6 +336,8 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     overlays: [],
     notes: [],
     frames: [],
+    stories: [],
+    storySettings: session.state.storySettings,
     activity: [],
     commands: [],
     busy: false,
@@ -305,6 +371,10 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     session.state.view = cached.view;
     session.state.frames = (cached.frames ?? []).map((f) =>
       f.state === "working" ? { ...f, state: "error", error: "Interrupted by a restart." } : f,
+    );
+    // A story caught mid-write by a restart has nothing to resume from.
+    session.state.stories = (cached.stories ?? []).map((s) =>
+      s.state === "writing" || s.state === "voicing" ? { ...s, state: s.beats.length ? "ready" : "error", error: s.beats.length ? undefined : "Interrupted by a restart." } : s,
     );
     session.agentSessionId = cached.agentSessionId;
     if (cached.overview && !opts.rechart) {
@@ -391,6 +461,7 @@ type Cached = {
   overlays?: GroupOverlay[];
   notes?: Note[];
   frames: Frame[];
+  stories?: Story[];
   agentSessionId?: string;
 };
 
@@ -412,7 +483,7 @@ async function persist() {
   // Nothing to keep until something has been made; and never write while a
   // repo is still being opened, or an empty state would overwrite a saved one.
   if (!s.repo || !session.idx || s.status === "scanning") return;
-  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.frames.length && !s.view) return;
+  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.frames.length && !s.stories.length && !s.view) return;
   const body: Cached = {
     head: session.chartedHead,
     overview: s.overview,
@@ -421,6 +492,7 @@ async function persist() {
     overlays: s.overlays,
     notes: s.notes,
     frames: s.frames,
+    stories: s.stories,
     agentSessionId: session.agentSessionId,
   };
   try {
