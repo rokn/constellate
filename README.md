@@ -147,14 +147,15 @@ theme's colours are injected as CSS variables, and any element with `data-path`
 | `Space` | recenter on what's selected — the open file, else the focus, else the whole map | — |
 | `,` | tune panel | — |
 | `o` | overview | "zoom out" |
-| `[` | back along your course | "go back" |
+| `[` / `]`, mouse back / forward | back and forward through what you've opened | "go back" |
 | `t` | guided tour of the modules | "give me the tour" |
 | `i` / `l` | imports / runtime layer | "show the imports" |
 | `v` | voice on/off | — |
 | `Esc` | close the top thing | — |
 
 Mouse: left-drag orbits, middle- or right-drag pans, and the wheel zooms toward the
-pointer. Click a body to open the file (its imports and importers stay lit); click a
+pointer. Hover an import line for what it carries — which file imports which, on what
+line, and the names it takes — and click it to open the import. Click a body to open the file (its imports and importers stay lit); click a
 beacon to focus a module or group; click a directory point to focus everything under it.
 
 ## Layout

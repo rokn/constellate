@@ -37,7 +37,31 @@ type N = {
   z?: number;
 };
 type LinkType = "import" | "contains" | "member" | "logical";
-type L = { source: string | N; target: string | N; type: LinkType; label?: string };
+type L = {
+  source: string | N;
+  target: string | N;
+  type: LinkType;
+  label?: string;
+  /** Import links: what travels them, and where the import is written. */
+  names?: string[];
+  line?: number;
+};
+
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+/** The hover tag on an import line: who imports whom, where, and what. */
+function importTag(l: L): string {
+  const from = typeof l.source === "string" ? l.source : l.source.id;
+  const to = typeof l.target === "string" ? l.target : l.target.id;
+  const names = l.names ?? [];
+  const shown = names.slice(0, 10).map(esc).join(", ");
+  return [
+    `<b>${esc(from.split("/").pop()!)}</b>${l.line ? `<span style="opacity:.55">:${l.line}</span>` : ""} → <b>${esc(to.split("/").pop()!)}</b>`,
+    `<span style="opacity:.55">${esc(from)} → ${esc(to)}</span>`,
+    names.length ? `<span style="color:#5bd6ff">${shown}${names.length > 10 ? ` +${names.length - 10} more` : ""}</span>` : `<span style="opacity:.55">side-effect import</span>`,
+    `<span style="opacity:.45">click to open the import</span>`,
+  ].join("<br/>");
+}
 
 type Obj = { group: THREE.Group; mesh: THREE.Mesh; base: number; label?: SpriteText; fileLabel?: SpriteText };
 
@@ -92,6 +116,7 @@ export function Space({
   onPickDir,
   onPickOverlay,
   onHide,
+  onOpenImport,
   onBackground,
 }: {
   ref: Ref<SpaceHandle>;
@@ -115,6 +140,8 @@ export function Space({
   onPickOverlay: (id: string) => void;
   /** Right-click: hide this file, or everything under this folder. */
   onHide: (target: { file: string } | { dir: string }) => void;
+  /** Click on an import line: open the importing file at its import. */
+  onOpenImport: (from: string, line?: number) => void;
   onBackground: () => void;
 }) {
   const el = useRef<HTMLDivElement>(null);
@@ -150,8 +177,12 @@ export function Space({
   const overlayObjs = useRef(
     new Map<string, { beacon: THREE.Group; mesh: THREE.Mesh; hit: THREE.Mesh; spokes: THREE.LineSegments; members: string[] }>(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHide, onBackground });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHide, onBackground };
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHide, onOpenImport, onBackground });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHide, onOpenImport, onBackground };
+  /** The import line under the pointer, lit while hovered. */
+  const hoverLink = useRef<L | null>(null);
+  /** When the focus is larger than the label limit, the files that still get names. */
+  const labelled = useRef(new Set<string>());
 
   /* ------------------------------- boot -------------------------------- */
 
@@ -199,6 +230,17 @@ export function Space({
       // anywhere else, and the library's drag-end path fakes a touch pointerup
       // that crashes the orbit controls.
       .enableNodeDrag(false)
+      // Import lines are a pixel wide; give the pointer some slack.
+      .linkHoverPrecision(4)
+      .onLinkHover((l) => {
+        const next = l && l.type === "import" ? l : null;
+        if (next === hoverLink.current) return;
+        hoverLink.current = next;
+        applyAll();
+      })
+      .onLinkClick((l) => {
+        if (l.type === "import") handlers.current.onOpenImport(endId(l.source), l.line);
+      })
       .onBackgroundClick(() => handlers.current.onBackground());
 
     setForces();
@@ -460,8 +502,11 @@ export function Space({
 
     if (n.type === "file") {
       mat.opacity = lit ? tu().bodyOpacity : tu().dimOpacity;
-      // Names appear on the bodies you're looking at, never on all of them.
-      const wantLabel = (emph.size > 0 && emph.has(id) && emph.size <= tu().fileLabelLimit) || id === act;
+      // Names appear on the bodies you're looking at, never on all of them:
+      // a focus within the limit is named in full; a bigger one gets names on
+      // its most-imported files, up to the limit, rather than none at all.
+      const wantLabel =
+        id === act || (emph.size > 0 && emph.has(id) && (emph.size <= tu().fileLabelLimit || labelled.current.has(id)));
       if (wantLabel && !o.fileLabel) {
         const t = new SpriteText(id.split("/").pop()!, 2.6 * tu().labelSize, "#e4eaf4");
         t.fontFace = FONT_MONO;
@@ -490,7 +535,17 @@ export function Space({
     }
   }
 
+  /** The files that keep a name when the focus outgrows the label limit. */
+  function pickLabelled() {
+    const { emphasis: emph } = state.current;
+    const limit = tu().fileLabelLimit;
+    if (emph.size <= limit) return (labelled.current = new Set());
+    const ranked = [...emph].sort((a, b) => (state.current.inDegree.get(b) ?? 0) - (state.current.inDegree.get(a) ?? 0));
+    labelled.current = new Set(ranked.slice(0, limit));
+  }
+
   function applyAll() {
+    pickLabelled();
     for (const id of objs.current.keys()) applyOne(id);
     const g = fg.current;
     if (!g) return;
@@ -506,13 +561,20 @@ export function Space({
       .linkColor((l) =>
         // While focused, the runtime arcs step back to a dim ember so the
         // constellation you flew to is the brightest thing in view.
-        l.type === "logical" ? (emph.size ? "#4a3510" : RUNTIME)
+        l === hoverLink.current ? "#eafcff"
+        : l.type === "logical" ? (emph.size ? "#4a3510" : RUNTIME)
           : l.type === "import" ? (both(l) ? STATIC : mix("#060b16", STATIC, tu().importBrightness * (emph.size ? 0.35 : 0.9)))
             : mix("#060b16", "#3a4f7a", tu().folderLinkBrightness * (emph.size ? 0.4 : 1)),
       )
-      .linkWidth((l) => (l.type === "logical" ? tu().runtimeWidth : l.type === "import" && both(l) ? tu().importWidth : 0))
+      .linkWidth((l) =>
+        l === hoverLink.current ? 1.4
+          : l.type === "logical" ? tu().runtimeWidth
+            : l.type === "import" && both(l) ? tu().importWidth : 0,
+      )
       .linkDirectionalParticles((l) =>
-        l.type === "logical" ? (emph.size ? 0 : tu().particles) : l.type === "import" && both(l) ? Math.min(2, tu().particles) : 0,
+        l === hoverLink.current ? 4
+          : l.type === "logical" ? (emph.size ? 0 : tu().particles)
+            : l.type === "import" && both(l) ? Math.min(2, tu().particles) : 0,
       );
   }
 
@@ -608,7 +670,7 @@ export function Space({
     }
 
     for (const e of graph.imports) {
-      if (next.has(e.from) && next.has(e.to)) links.push({ source: e.from, target: e.to, type: "import" });
+      if (next.has(e.from) && next.has(e.to)) links.push({ source: e.from, target: e.to, type: "import", names: e.names, line: e.line });
     }
 
     // Same nodes and links as last time: nothing to rebuild. Feeding the
@@ -637,7 +699,7 @@ export function Space({
     }
     nodes.current = next;
     g.graphData({ nodes: [...next.values()], links });
-    g.linkLabel((l) => (l.type === "logical" && l.label ? l.label : ""));
+    g.linkLabel((l) => (l.type === "import" ? importTag(l) : l.type === "logical" && l.label ? l.label : ""));
     applyAll();
 
     // A filter or regrouping changes the map's shape; once it has mostly

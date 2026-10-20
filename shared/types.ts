@@ -26,7 +26,14 @@ export type FileInfo = {
 };
 
 /** A resolved, in-repo import: `from` imports `to`. */
-export type ImportEdge = { from: string; to: string };
+export type ImportEdge = {
+  from: string;
+  to: string;
+  /** What `from` takes from `to`: the imported names, or for Go the names it uses. */
+  names?: string[];
+  /** The line in `from` where the import is written. */
+  line?: number;
+};
 
 /**
  * The static map of the repository: produced in seconds by server/scan.ts,

@@ -116,7 +116,7 @@ export const DEFAULT_TUNING: Tuning = {
   autoRefit: true,
   labelSize: 1,
   folderLabelDepth: 1,
-  fileLabelLimit: 36,
+  fileLabelLimit: 100,
   showBeaconLabels: true,
   starOpacity: 0.55,
   starSize: 2.2,
@@ -274,7 +274,10 @@ const KEY = "codeflight.tuning";
 export function loadTuning(): Tuning {
   try {
     // Merged over the defaults, so a knob added later doesn't come back undefined.
-    return { ...DEFAULT_TUNING, ...(JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<Tuning>) };
+    const t = { ...DEFAULT_TUNING, ...(JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<Tuning>) };
+    // 36 was the old default; a saved 36 means "never changed".
+    if (t.fileLabelLimit === 36) t.fileLabelLimit = DEFAULT_TUNING.fileLabelLimit;
+    return t;
   } catch {
     return DEFAULT_TUNING;
   }

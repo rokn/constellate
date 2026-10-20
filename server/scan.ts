@@ -97,20 +97,59 @@ type Raw = {
   kind: "rel" | "abs" | "py" | "go" | "rust" | "jvm" | "include";
   /** Go: the name the importer uses for the package, when it renames it (or `_` / `.`). */
   alias?: string;
+  /** The names the import statement brings in, where the syntax says (TS/JS, Python). */
+  names?: string[];
+  /** Offset of the import statement in the file, for its line number. */
+  at?: number;
 };
+
+/** `{ a, b as c }`, `Def`, `* as ns` → the names, as a reader would say them. */
+function tsNames(clause: string | undefined): string[] {
+  if (!clause) return [];
+  const out: string[] = [];
+  const brace = clause.match(/\{([^}]*)\}/);
+  if (brace) {
+    for (const part of brace[1].split(",")) {
+      const n = part.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim();
+      if (n) out.push(n);
+    }
+  }
+  for (const r of clause.replace(/\{[^}]*\}/, "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (r.startsWith("*")) out.push(r.replace(/\s+/g, " "));
+    else if (/^[\w$]+$/.test(r)) out.push(`${r} (default)`);
+  }
+  return out;
+}
+
+/** Offset → 1-based line, without rescanning the file per lookup. */
+function lineIndex(text: string) {
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  return (offset: number) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+}
 
 function extractImports(lang: string, text: string): Raw[] {
   const out: Raw[] = [];
-  const push = (spec: string, kind: Raw["kind"], alias?: string) => spec && out.push({ spec, kind, alias });
+  const push = (spec: string, kind: Raw["kind"], alias?: string, names?: string[], at?: number) =>
+    spec && out.push({ spec, kind, alias, names, at });
 
   switch (lang) {
     case "typescript": case "tsx": case "javascript": case "jsx":
     case "vue": case "svelte": case "astro": {
       const re =
-        /(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+?\s+from\s+)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|require\(\s*["']([^"']+)["']\s*\)/g;
+        /(?:import|export)\s+(?:type\s+)?(?:([\w*{}\s,$]+?)\s+from\s+)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|require\(\s*["']([^"']+)["']\s*\)/g;
       for (const m of text.matchAll(re)) {
-        const s = m[1] ?? m[2] ?? m[3];
-        push(s, s.startsWith(".") ? "rel" : "abs");
+        const s = m[2] ?? m[3] ?? m[4];
+        push(s, s.startsWith(".") ? "rel" : "abs", undefined, tsNames(m[1]), m.index);
       }
       break;
     }
@@ -121,23 +160,24 @@ function extractImports(lang: string, text: string): Raw[] {
       break;
     case "python":
       for (const m of text.matchAll(/^\s*from\s+([.\w]+)\s+import\s+([\w*, ()]+)/gm)) {
-        push(m[1], "py");
+        const names = m[2].replace(/[()]/g, "").split(",").map((x) => x.trim().split(/\s+/)[0]).filter(Boolean);
+        push(m[1], "py", undefined, names, m.index);
         // `from pkg import mod` may name submodules; try each as pkg.mod.
-        for (const name of m[2].replace(/[()]/g, "").split(",")) {
-          const n = name.trim().split(/\s+/)[0];
-          if (n && n !== "*") push(`${m[1]}${m[1].endsWith(".") ? "" : "."}${n}`, "py");
+        for (const n of names) {
+          if (n !== "*") push(`${m[1]}${m[1].endsWith(".") ? "" : "."}${n}`, "py", undefined, [n], m.index);
         }
       }
       for (const m of text.matchAll(/^\s*import\s+([\w.]+(?:\s*,\s*[\w.]+)*)/gm)) {
-        for (const s of m[1].split(",")) push(s.trim(), "py");
+        for (const s of m[1].split(",")) push(s.trim(), "py", undefined, [], m.index);
       }
       break;
     case "go": {
       // Keep the alias: `m "x/pkg/models"` means usages read `m.Thing`.
       for (const block of text.matchAll(/^import\s*\(([\s\S]*?)^\)/gm)) {
-        for (const m of block[1].matchAll(/^\s*(?:([\w.]+)\s+)?"([^"]+)"/gm)) push(m[2], "go", m[1]);
+        const base = block.index! + block[0].indexOf("(") + 1;
+        for (const m of block[1].matchAll(/^\s*(?:([\w.]+)\s+)?"([^"]+)"/gm)) push(m[2], "go", m[1], undefined, base + m.index! + 1);
       }
-      for (const m of text.matchAll(/^import\s+(?:([\w.]+)\s+)?"([^"]+)"/gm)) push(m[2], "go", m[1]);
+      for (const m of text.matchAll(/^import\s+(?:([\w.]+)\s+)?"([^"]+)"/gm)) push(m[2], "go", m[1], undefined, m.index);
       break;
     }
     case "rust":
@@ -441,20 +481,24 @@ function goDecls(text: string): string[] {
  * Blank and dot imports, and packages where nothing resolves, fall back to the
  * package's stand-in file.
  */
-function goTargets(raw: Raw, text: string, ctx: Ctx): string[] | null {
+function goTargets(raw: Raw, text: string, ctx: Ctx): Map<string, string[]> | null {
   const dir = goPackageDir(raw, ctx);
   if (!dir) return null;
   const pkg = ctx.goPackages.get(dir);
   if (!pkg) return null;
   const alias = raw.alias ?? pkg.name;
-  if (alias === "_" || alias === ".") return [pkg.rep];
-  const used = new Set<string>();
+  if (alias === "_" || alias === ".") return new Map([[pkg.rep, [alias === "_" ? "(side effects only)" : "(dot import)"]]]);
+  // Which declaring file each used name lives in — and the names, for the edge's tag.
+  const used = new Map<string, Set<string>>();
   const esc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const m of text.matchAll(new RegExp(`\\b${esc}\\.([A-Z]\\w*)`, "g"))) {
     const file = pkg.decls.get(m[1]);
-    if (file) used.add(file);
+    if (!file) continue;
+    if (!used.has(file)) used.set(file, new Set());
+    used.get(file)!.add(m[1]);
   }
-  return used.size ? [...used] : [pkg.rep];
+  if (!used.size) return new Map([[pkg.rep, []]]);
+  return new Map([...used].map(([f, names]) => [f, [...names]]));
 }
 
 function bySuffix(ctx: Ctx, stem: string): string | null {
@@ -637,7 +681,7 @@ export async function scanRepo(
   }
 
   const ctx: Ctx = { files: fileSet, aliases: await loadAliases(abs, fileSet), goModules, goPackages, byStem };
-  const edges = new Set<string>();
+  const edges = new Map<string, ImportEdge>();
   const imports: ImportEdge[] = [];
   const externalCounts = new Map<string, number>();
   // A name that is also a directory or module here is the repo importing
@@ -653,15 +697,28 @@ export async function scanRepo(
     const text = texts.get(file.path);
     if (!text) continue;
     const ext = new Set<string>();
+    const lineOf = lineIndex(text);
     for (const raw of extractImports(file.lang, text)) {
-      const resolved = raw.kind === "go" ? goTargets(raw, text, ctx) : resolve(file.path, raw, ctx);
-      const tos = resolved === null ? [] : Array.isArray(resolved) ? resolved : [resolved];
-      for (const to of tos) {
+      let targets: [string, string[]][] = [];
+      if (raw.kind === "go") targets = [...(goTargets(raw, text, ctx) ?? new Map())];
+      else {
+        const to = resolve(file.path, raw, ctx);
+        if (to) targets = [[to, raw.names ?? []]];
+      }
+      const tos = targets.map(([t]) => t);
+      for (const [to, names] of targets) {
         if (to === file.path) continue;
         const key = `${file.path}>${to}`;
-        if (!edges.has(key)) {
-          edges.add(key);
-          imports.push({ from: file.path, to });
+        const line = raw.at !== undefined ? lineOf(raw.at) : undefined;
+        const existing = edges.get(key);
+        if (existing) {
+          // Two statements reaching the same file: one edge, all the names.
+          existing.names = [...new Set([...(existing.names ?? []), ...names])].slice(0, 40);
+          if (line && (!existing.line || line < existing.line)) existing.line = line;
+        } else {
+          const edge: ImportEdge = { from: file.path, to, ...(names.length ? { names: names.slice(0, 40) } : {}), ...(line ? { line } : {}) };
+          edges.set(key, edge);
+          imports.push(edge);
         }
       }
       if (!tos.length && (raw.kind === "abs" || raw.kind === "py" || raw.kind === "go")) {

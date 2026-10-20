@@ -80,7 +80,13 @@ export function App() {
     setFilterOpen(which === "filter");
     setGroupsOpen(which === "groups");
   };
-  const history = useRef<Stop[]>([]);
+  /**
+   * Where you've been, browser-style: `at` is where you are now; back and
+   * forward move it, and going somewhere new drops anything ahead of it.
+   */
+  const history = useRef<{ stops: Stop[]; at: number }>({ stops: [], at: -1 });
+  /** Set while back/forward re-applies a stop, so the move isn't recorded as new. */
+  const traveling = useRef(false);
 
   /**
    * Where the camera should put its subject, given the panels about to be
@@ -135,8 +141,14 @@ export function App() {
   /* ------------------------------ navigation ------------------------------ */
 
   const record = (s: Stop) => {
-    history.current.push(s);
-    if (history.current.length > 80) history.current.shift();
+    if (traveling.current) return;
+    const h = history.current;
+    // Re-opening where you already are isn't a new place.
+    if (h.at >= 0 && JSON.stringify(h.stops[h.at]) === JSON.stringify(s)) return;
+    h.stops = h.stops.slice(0, h.at + 1);
+    h.stops.push(s);
+    if (h.stops.length > 100) h.stops.shift();
+    h.at = h.stops.length - 1;
   };
 
   // Direct neighbours in the import graph, for lighting up where you can go next.
@@ -235,14 +247,44 @@ export function App() {
     record({ kind: "overview" });
   }, []);
 
-  const back = useCallback(() => {
-    history.current.pop(); // where we are now
-    const prev = history.current.pop();
-    if (!prev || prev.kind === "overview") return toOverview();
-    if (prev.kind === "file") openFile(prev.path, prev.line, prev.endLine);
-    else if (prev.kind === "focus") focus(prev.paths, prev.label);
-    else showFrame(prev.frameId);
-  }, [toOverview, openFile, focus, showFrame]);
+  /** Move through the history by `delta` stops and re-apply where that lands. */
+  const travel = useCallback(
+    (delta: number) => {
+      const h = history.current;
+      const i = h.at + delta;
+      if (i < 0 || i >= h.stops.length) return;
+      h.at = i;
+      const stop = h.stops[i];
+      traveling.current = true;
+      try {
+        if (stop.kind === "overview") toOverview();
+        else if (stop.kind === "file") openFile(stop.path, stop.line, stop.endLine);
+        else if (stop.kind === "focus") focus(stop.paths, stop.label);
+        else showFrame(stop.frameId);
+      } finally {
+        traveling.current = false;
+      }
+    },
+    [toOverview, openFile, focus, showFrame],
+  );
+  const back = useCallback(() => travel(-1), [travel]);
+  const forward = useCallback(() => travel(1), [travel]);
+
+  // The mouse's back/forward buttons move through what you've opened. The
+  // browser would otherwise take them as "leave this page".
+  useEffect(() => {
+    const onMouse = (e: MouseEvent) => {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      if (e.type === "mouseup") (e.button === 3 ? back : forward)();
+    };
+    window.addEventListener("mousedown", onMouse, true);
+    window.addEventListener("mouseup", onMouse, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouse, true);
+      window.removeEventListener("mouseup", onMouse, true);
+    };
+  }, [back, forward]);
 
   // A beacon is a module in folder view and a group under a lens; either way,
   // focusing it means flying to its files.
@@ -418,7 +460,7 @@ export function App() {
     warped.current = graph.root;
     rememberRepo(graph.root);
     clearFileCache();
-    history.current = [];
+    history.current = { stops: [], at: -1 };
     setFile(null);
     setFrameId(null);
     setEmphasis([]);
@@ -428,7 +470,12 @@ export function App() {
     // were last using rather than resetting them.
     const saved = stateRef.current?.view;
     if (saved) {
-      if (saved.tuning) setTuning({ ...DEFAULT_TUNING, ...(saved.tuning as Partial<Tuning>) });
+      if (saved.tuning) {
+        const t = { ...DEFAULT_TUNING, ...(saved.tuning as Partial<Tuning>) };
+        // 36 was the old default; a saved 36 means "never changed", so it moves to the new one.
+        if (t.fileLabelLimit === 36) t.fileLabelLimit = DEFAULT_TUNING.fileLabelLimit;
+        setTuning(t);
+      }
       setLayers({ ...DEFAULT_LAYERS, ...(saved.layers ?? {}) });
       const known = saved.lensId === "folders" || saved.lensId === "modules" || stateRef.current?.lenses.some((l) => l.id === saved.lensId);
       setLensId(saved.lensId && known ? saved.lensId : "folders");
@@ -510,6 +557,7 @@ export function App() {
         else if (emphasis.length) hide(emphasis, `${emphasis.length} file${emphasis.length === 1 ? "" : "s"}`);
       } else if (e.key === "o") toOverview();
       else if (e.key === "[" || e.key === "Backspace") back();
+      else if (e.key === "]") forward();
       else if (e.key === "i") setLayers((l) => ({ ...l, imports: !l.imports }));
       else if (e.key === "l") setLayers((l) => ({ ...l, logical: !l.logical }));
       else if (e.key === "t" && overview) setTour(0);
@@ -525,7 +573,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -569,6 +617,7 @@ export function App() {
           active={file?.path ?? null}
           onPick={(p) => openFile(p)}
           onPickModule={focusModule}
+          onOpenImport={(from, line) => openFile(from, line)}
           onPickOverlay={(id) => {
             const g = overlays.find((o) => o.id === id);
             if (g) focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label);
@@ -616,7 +665,8 @@ export function App() {
           <div className="pointer-events-auto flex flex-wrap gap-1.5 text-[13px]">
             <Btn onClick={recenter} hint="Space">Recenter</Btn>
             <Btn onClick={toOverview} hint="o">Overview</Btn>
-            <Btn onClick={back} hint="[">Back</Btn>
+            <Btn onClick={back} hint="[ or mouse back">Back</Btn>
+            <Btn onClick={forward} hint="] or mouse forward">Forward</Btn>
             {overview && <Btn onClick={() => setTour(0)} hint="t">Tour</Btn>}
             {frames.length > 0 && !frameId && (
               <Btn onClick={() => showFrame(frames.at(-1)!.id)}>Answers ({frames.length})</Btn>

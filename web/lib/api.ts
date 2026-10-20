@@ -9,6 +9,8 @@ export type FileData = {
   externals: string[];
   imports: string[];
   importers: string[];
+  importLinks?: { path: string; names: string[]; line?: number }[];
+  importerLinks?: { path: string; names: string[]; line?: number }[];
 };
 
 /**

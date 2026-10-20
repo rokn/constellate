@@ -116,6 +116,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         externals: info?.externals ?? [],
         imports: session.idx.out.get(file.path) ?? [],
         importers: session.idx.in.get(file.path) ?? [],
+        // The same links with what travels them, for the panel's hover tags.
+        importLinks: session.idx.graph.imports.filter((e) => e.from === file.path).map((e) => ({ path: e.to, names: e.names ?? [], line: e.line })),
+        importerLinks: session.idx.graph.imports.filter((e) => e.to === file.path).map((e) => ({ path: e.from, names: e.names ?? [], line: e.line })),
       });
       return true;
     }
