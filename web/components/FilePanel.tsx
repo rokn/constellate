@@ -93,7 +93,10 @@ export function FilePanel({
       <header className="flex items-start gap-3 border-b border-line px-4 py-3">
         <div className="min-w-0 flex-1">
           <p className="truncate font-mono text-[12px] text-muted">{segs.slice(0, -1).join("/") || "/"}</p>
-          <h2 className="truncate font-cond text-[21px] font-semibold leading-tight">{segs.at(-1)}</h2>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <h2 className="truncate font-cond text-[21px] font-semibold leading-tight">{segs.at(-1)}</h2>
+            <CopyName path={path} />
+          </div>
           {file && (
             <p className="mt-0.5 text-[12.5px] text-muted">
               {file.lang}, {file.text.split("\n").length} lines
@@ -259,5 +262,45 @@ function Links({
         {paths.length > 14 && <span className="text-muted">and {paths.length - 14} more</span>}
       </div>
     </div>
+  );
+}
+
+/** Puts text on the clipboard — also over plain http on the LAN, where the Clipboard API isn't available. */
+async function copyText(text: string) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) return await navigator.clipboard.writeText(text);
+  } catch {
+    /* fall through to the old way */
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  Object.assign(ta.style, { position: "fixed", opacity: "0", pointerEvents: "none" });
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  ta.remove();
+}
+
+/** Copies the file's path from the repo root; Shift copies just its name. */
+function CopyName({ path }: { path: string }) {
+  const [copied, setCopied] = useState<string | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(null), 1300);
+    return () => clearTimeout(t);
+  }, [copied]);
+  return (
+    <button
+      onClick={(e) => {
+        const text = e.shiftKey ? path.split("/").pop()! : path;
+        void copyText(text).then(() => setCopied(e.shiftKey ? "name" : "path"));
+      }}
+      title={`Copy ${path} (Shift: just the file name)`}
+      aria-label="Copy the file path"
+      className="shrink-0 rounded px-1.5 py-0.5 text-[12px] text-muted hover:bg-white/5 hover:text-text"
+    >
+      {copied ? <span className="text-good">Copied {copied}</span> : "Copy"}
+    </button>
   );
 }
