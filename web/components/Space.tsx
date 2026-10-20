@@ -233,7 +233,15 @@ export function Space({
    */
   const beaconClickAt = useRef(0);
   /** Where the dolly-through wheel is easing the camera to, if anywhere. */
-  const dollyGoal = useRef<{ cam: THREE.Vector3; target: THREE.Vector3 } | null>(null);
+  const dollyGoal = useRef<{ cam: THREE.Vector3; target: THREE.Vector3; at: number } | null>(null);
+  /**
+   * A camera flight in progress. Ours rather than the library's, because the
+   * library's can't be stopped: a drag that starts mid-flight would have the
+   * camera dragged back to the flight's path every frame.
+   */
+  const camAnim = useRef<{ fromCam: THREE.Vector3; fromTarget: THREE.Vector3; toCam: THREE.Vector3; toTarget: THREE.Vector3; t0: number; ms: number } | null>(null);
+  /** When you last moved the camera yourself. Automatic moves scheduled before that are dropped. */
+  const userCamAt = useRef(0);
   const beaconJustClicked = () => performance.now() - beaconClickAt.current < 250;
   /** When the focus is larger than the label limit, the files that still get names. */
   const labelled = useRef(new Set<string>());
@@ -425,7 +433,7 @@ export function Space({
     let down: { x: number; y: number } | null = null;
     const onDown = (e: PointerEvent) => {
       down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
-      dollyGoal.current = null;
+      takeCamera();
     };
     const onUp = (e: PointerEvent) => {
       const start = down;
@@ -509,7 +517,13 @@ export function Space({
       return best;
     };
     const onWheel = (e: WheelEvent) => {
-      if (!tu().dollyThrough || flight) return;
+      if (flight) return;
+      // Scrolling is taking the camera, whichever zoom does the work.
+      const chaining = !!dollyGoal.current;
+      const goalBefore = dollyGoal.current;
+      takeCamera();
+      dollyGoal.current = chaining ? goalBefore : null;
+      if (!tu().dollyThrough) return;
       e.preventDefault();
       e.stopPropagation();
       controls.autoRotate = false;
@@ -553,7 +567,7 @@ export function Space({
         if (cam.clone().addScaledVector(dir, step).length() > span * 8) return;
       }
       cam.addScaledVector(dir, step);
-      dollyGoal.current = { cam, target: cam.clone().addScaledVector(forward, Math.max(ahead, floor * 0.25)) };
+      dollyGoal.current = { cam, target: cam.clone().addScaledVector(forward, Math.max(ahead, floor * 0.25)), at: performance.now() };
     };
     host.addEventListener("wheel", onWheel, { capture: true, passive: false });
 
@@ -601,7 +615,7 @@ export function Space({
     };
     const startFlight = (e: PointerEvent) => {
       const camera = g.camera();
-      dollyGoal.current = null;
+      takeCamera();
       controls.autoRotate = false;
       controls.enabled = false;
       const f = camera.getWorldDirection(new THREE.Vector3());
@@ -715,14 +729,27 @@ export function Space({
       const now = performance.now();
       if (flight) flyStep(now);
       else {
+        const anim = camAnim.current;
         const goal = dollyGoal.current;
-        if (goal) {
+        if (anim) {
+          const camera = g.camera();
+          const k = Math.min(1, (now - anim.t0) / anim.ms);
+          // Quadratic out, the target turning faster than the camera travels.
+          const ease = (x: number) => 1 - (1 - x) * (1 - x);
+          camera.position.lerpVectors(anim.fromCam, anim.toCam, ease(k));
+          controls.target.lerpVectors(anim.fromTarget, anim.toTarget, ease(Math.min(1, k * 3)));
+          if (k >= 1) camAnim.current = null;
+        } else if (goal) {
           const camera = g.camera();
           camera.position.lerp(goal.cam, 0.22);
           controls.target.lerp(goal.target, 0.22);
-          if (camera.position.distanceToSquared(goal.cam) < 0.01) {
-            camera.position.copy(goal.cam);
-            controls.target.copy(goal.target);
+          // Settled, or (if something keeps nudging it) given up on after a
+          // second, so a stale goal can never hold the camera.
+          if (camera.position.distanceToSquared(goal.cam) < 0.01 || now - goal.at > 1000) {
+            if (now - goal.at <= 1000) {
+              camera.position.copy(goal.cam);
+              controls.target.copy(goal.target);
+            }
             dollyGoal.current = null;
           }
         }
@@ -1126,9 +1153,10 @@ export function Space({
     // (The first build is framed by the warp instead.)
     clearTimeout(refit.current);
     if (built.current && state.current.emphasis.size === 0 && tu().autoRefit) {
-      refit.current = setTimeout(() => {
-        if (state.current.emphasis.size === 0) fg.current?.zoomToFit(1200, 90);
-      }, 2200);
+      refit.current = setTimeout(
+        unlessTouched(() => state.current.emphasis.size === 0 && fitView(1200, 90)),
+        2200,
+      );
     }
     built.current = true;
     // centroid reads refs only.
@@ -1227,7 +1255,10 @@ export function Space({
       // looking at something in particular.
       clearTimeout(refit.current);
       if (tuning.autoRefit && state.current.emphasis.size === 0) {
-        refit.current = setTimeout(() => state.current.emphasis.size === 0 && g.zoomToFit(1200, 90), 2500);
+        refit.current = setTimeout(
+          unlessTouched(() => state.current.emphasis.size === 0 && fitView(1200, 90)),
+          2500,
+        );
       }
     }
     applyAll();
@@ -1306,6 +1337,50 @@ export function Space({
    * sideways (as a fraction of the distance): positive puts the target right
    * of centre, clear of a panel docked on the left.
    */
+  /** You're moving the camera: stop any flight or glide, and drop pending automatic reframes. */
+  function takeCamera() {
+    camAnim.current = null;
+    dollyGoal.current = null;
+    userCamAt.current = performance.now();
+    clearTimeout(refit.current);
+  }
+
+  function animateCamera(pos: THREE.Vector3, look: THREE.Vector3, ms: number) {
+    const g = fg.current;
+    const ctl = controls();
+    if (!g || !ctl) return;
+    dollyGoal.current = null;
+    if (ms <= 0) {
+      camAnim.current = null;
+      g.camera().position.copy(pos);
+      ctl.target.copy(look);
+      return;
+    }
+    camAnim.current = { fromCam: g.camera().position.clone(), fromTarget: ctl.target.clone(), toCam: pos.clone(), toTarget: look.clone(), t0: performance.now(), ms };
+  }
+
+  /** Frame the whole map, as a flight you can interrupt. */
+  function fitView(ms: number, padding: number) {
+    const g = fg.current;
+    const ctl = controls();
+    if (!g || !ctl) return;
+    // Let the library work out the framing, take its answer, put the camera back, then fly there ourselves.
+    const camera = g.camera();
+    const [cam, target, q] = [camera.position.clone(), ctl.target.clone(), camera.quaternion.clone()];
+    g.zoomToFit(0, padding);
+    const to = { cam: camera.position.clone(), target: controls()!.target.clone() };
+    camera.position.copy(cam);
+    controls()!.target.copy(target);
+    camera.quaternion.copy(q);
+    animateCamera(to.cam, to.target, ms);
+  }
+
+  /** Run an automatic camera move later — unless you've taken the camera in the meantime. */
+  const unlessTouched = (fn: () => void) => {
+    const at = performance.now();
+    return () => userCamAt.current < at && fn();
+  };
+
   const flyToPoint = (c: { x: number; y: number; z: number }, rawDistance: number, shift = 0, ms = tu().flySeconds * 1000) => {
     const distance = rawDistance * tu().focusDistance;
     const g = fg.current;
@@ -1319,8 +1394,7 @@ export function Space({
     const pos = look.clone().addScaledVector(dir, distance);
     const ctl = controls();
     if (ctl) ctl.autoRotate = false;
-    dollyGoal.current = null;
-    g.cameraPosition({ x: pos.x, y: pos.y, z: pos.z }, { x: look.x, y: look.y, z: look.z }, ms);
+    animateCamera(pos, look, ms);
   };
 
   const focusIds = (ids: string[], shift = 0) => {
@@ -1350,11 +1424,14 @@ export function Space({
     overview() {
       const g = fg.current;
       if (!g) return;
-      g.zoomToFit(tu().flySeconds * 900, 70);
-      setTimeout(() => {
-        const ctl = controls();
-        if (ctl) ctl.autoRotate = tu().autoRotate;
-      }, 1500);
+      fitView(tu().flySeconds * 900, 70);
+      setTimeout(
+        unlessTouched(() => {
+          const ctl = controls();
+          if (ctl) ctl.autoRotate = tu().autoRotate;
+        }),
+        1500,
+      );
     },
     pulse(path) {
       if (objs.current.has(path)) pulses.current.set(path, performance.now());
@@ -1367,13 +1444,19 @@ export function Space({
       if (!g) return;
       // Start in deep space and fall into the map.
       g.cameraPosition({ x: 0, y: 300, z: 5200 }, { x: 0, y: 0, z: 0 }, 0);
-      setTimeout(() => {
-        g.zoomToFit(2600, 80);
-        setTimeout(() => {
-          const ctl = controls();
-          if (ctl) ctl.autoRotate = tu().autoRotate;
-        }, 2700);
-      }, 350);
+      setTimeout(
+        unlessTouched(() => {
+          fitView(2600, 80);
+          setTimeout(
+            unlessTouched(() => {
+              const ctl = controls();
+              if (ctl) ctl.autoRotate = tu().autoRotate;
+            }),
+            2700,
+          );
+        }),
+        350,
+      );
     },
   }));
 
