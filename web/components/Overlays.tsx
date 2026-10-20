@@ -110,7 +110,7 @@ export function Intro({
         {graph && (
           <div className="rise mt-5 max-w-[420px]" style={{ animationDelay: "200ms" }}>
             <p className="text-[15px] text-text/90">
-              {graph.totals.files.toLocaleString()} files, {graph.totals.loc.toLocaleString()} lines, {graph.imports.length.toLocaleString()} imports
+              {graph.totals.files.toLocaleString("en-US")} files, {graph.totals.loc.toLocaleString("en-US")} lines, {graph.imports.length.toLocaleString("en-US")} imports
               {graph.branch ? ` on ${graph.branch}` : ""}
             </p>
             <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-line">

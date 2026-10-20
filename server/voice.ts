@@ -51,8 +51,8 @@ const TOOLS = [
     lines: { type: "array", items: { type: "number" }, description: "File line numbers within a code excerpt" },
   }, ["viewId"]),
   fn("clear_highlight", "Remove any highlight."),
-  fn("set_layer", "Show or hide a layer of the map: 'imports' (static import lines), 'logical' (modules and runtime links), 'labels'.", {
-    layer: { type: "string", enum: ["imports", "logical", "labels"] },
+  fn("set_layer", "Show or hide a layer of the map: 'imports' (static import lines), 'logical' (modules and runtime links), 'labels', 'folders' (folder points and lines), 'beacons' (module and group beacons).", {
+    layer: { type: "string", enum: ["imports", "logical", "labels", "folders", "beacons"] },
     on: { type: "boolean" },
   }, ["layer", "on"]),
   fn("start_tour", "Play the guided fly-through of the logical modules."),
@@ -124,6 +124,8 @@ function instructions(screen: ScreenContext): string {
   const frame = s.frames.find((f) => f.id === screen.frameId) ?? s.frames.at(-1);
 
   return [
+    "Speak English by default. Switch language only if the user explicitly asks you to, and stay in English otherwise — even if they mix in words from another language.",
+    "",
     "You are the navigator's voice in Codeflight. The user is flying through a codebase rendered as a 3D map of files and dependencies, and you are sitting next to them, talking them through it. Short, natural, spoken sentences. Never read code character by character, never list bullet points, never introduce yourself.",
     "",
     "You move the screen instantly with your tools: fly_to and open_file for files, focus_module for parts of the map, overview to pull back, back to retrace, set_layer for map layers, start_tour for the guided fly-through.",
@@ -182,7 +184,9 @@ function sessionUpdate(text: string, v: VoiceSettings) {
       output_modalities: ["audio"],
       audio: {
         input: {
-          transcription: { model: "assemblyai/u3-rt-pro" },
+          // English by default rather than auto-detected, so a stray accent or
+          // a word in another language doesn't flip the conversation.
+          transcription: { model: "assemblyai/u3-rt-pro", language: "en" },
           turn_detection: { type: "semantic_vad", eagerness: v.eagerness, create_response: true, interrupt_response: v.interrupt },
         },
         output: { model: v.ttsModel, voice: v.voiceId, ...(v.speed !== 1 ? { speed: v.speed } : {}) },
@@ -340,8 +344,8 @@ function bridge(client: WebSocket) {
         return { ok: true };
       case "set_layer": {
         const layer = str("layer");
-        if (layer !== "imports" && layer !== "logical" && layer !== "labels") return { ok: false, error: "Unknown layer." };
-        command({ cmd: "set_layer", layer, on: args.on !== false });
+        if (!["imports", "logical", "labels", "folders", "beacons"].includes(layer)) return { ok: false, error: "Unknown layer." };
+        command({ cmd: "set_layer", layer: layer as "imports", on: args.on !== false });
         return { ok: true };
       }
       case "start_tour":

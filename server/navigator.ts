@@ -454,7 +454,9 @@ Shaping the map: when a question is about part of the codebase, filter_map can h
 
 Pick the picture that explains best. A request flowing through layers might be a sequence (show_custom). A lifecycle is a state machine. A config surface is a table. A hot path is a code excerpt with highlighted lines. Use show_custom freely — make it look good: clean, legible, a bit of motion where motion carries meaning, and data-path on anything that stands for code.
 
-Your final reply is spoken aloud by a voice and shown as a caption: 2–4 short conversational sentences that tell them what they're now looking at and the one thing to notice. No markdown, no lists, no code, no file paths read out character by character. Never introduce yourself.`;
+Your final reply is spoken aloud by a voice and shown as a caption: 2–4 short conversational sentences that tell them what they're now looking at and the one thing to notice. No markdown, no lists, no code, no file paths read out character by character. Never introduce yourself.
+
+Write everything — answers, view titles, notes, diagram labels, visualizations — in English, unless the reader explicitly asks for another language.`;
 
 async function introPrompt(): Promise<string> {
   const g = idx().graph;

@@ -46,7 +46,7 @@ export function matcher(pattern: string): (path: string) => boolean {
 }
 
 export function isActive(f: MapFilter): boolean {
-  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths);
+  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length);
 }
 
 /** The files a filter keeps, or null when the filter keeps everything. */
@@ -57,9 +57,11 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
   const langs = new Set(f.langs);
   const tops = new Set(f.tops);
   const only = f.paths ? new Set(f.paths) : null;
+  const hidden = new Set(f.hidden ?? []);
   const out = new Set<string>();
   for (const file of files) {
     if (only && !only.has(file.path)) continue;
+    if (hidden.has(file.path)) continue;
     if (langs.size && !langs.has(file.lang)) continue;
     if (tops.size && !tops.has(file.top)) continue;
     if (f.hideTests && isTest(file.path)) continue;
@@ -73,7 +75,7 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
 
 /** A short human description, for chips and for the voice. */
 export function describe(f: MapFilter): string {
-  if (f.label) return f.label;
+  if (f.label) return f.hidden?.length ? `${f.label} · ${f.hidden.length} hidden` : f.label;
   const bits = [
     f.include.length ? `only ${f.include.join(", ")}` : "",
     f.exclude.length ? `without ${f.exclude.join(", ")}` : "",
@@ -82,6 +84,7 @@ export function describe(f: MapFilter): string {
     f.hideTests ? "no tests" : "",
     f.hideDocs ? "no docs/config" : "",
     f.paths ? `${f.paths.length} chosen files` : "",
+    f.hidden?.length ? `${f.hidden.length} hidden` : "",
   ].filter(Boolean);
   return bits.join(" · ") || "everything";
 }

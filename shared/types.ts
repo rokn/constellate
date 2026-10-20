@@ -131,6 +131,8 @@ export type MapFilter = {
   tops: string[];
   /** An explicit set of files chosen by the navigator. */
   paths?: string[];
+  /** Files you hid one by one (or by folder): exact paths, always excluded. */
+  hidden?: string[];
   /** A name for the filter, when the navigator made it. */
   label?: string;
 };
@@ -233,7 +235,7 @@ export type UiCommand =
   /** Organize the map by a lens: "folders", "modules", or a lens id. */
   | { cmd: "set_lens"; lensId: string };
 
-export type Layer = "imports" | "logical" | "labels";
+export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons";
 
 /**
  * How you have the map set up for one repo — knobs, layers, organization,

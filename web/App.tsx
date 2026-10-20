@@ -12,7 +12,7 @@ import { FilePanel } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 
-const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true };
+const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true };
 
 /** A place you've been, so "back" retraces the flight. */
 type Stop =
@@ -51,6 +51,13 @@ export function App() {
   const [introDone, setIntroDone] = useState(false);
   const [tour, setTour] = useState<number | null>(null);
   const [selection, setSelection] = useState("");
+  /** A short-lived note with an undo — after hiding something. */
+  const [toast, setToast] = useState<{ text: string; undo: () => void } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
   const [filter, setFilter] = useState<MapFilter>(EMPTY_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
   /** "folders", "modules", or the id of a lens the navigator wrote. */
@@ -178,6 +185,29 @@ export function App() {
     [frames],
   );
 
+  /**
+   * Take files off the map. They join the filter's hidden list — saved with
+   * the repo, listed in the Filter panel — and anything showing them closes.
+   */
+  const hide = useCallback(
+    (paths: string[], what: string) => {
+      const already = new Set(filter.hidden ?? []);
+      const add = paths.filter((p) => !already.has(p));
+      if (!add.length) return;
+      const gone = new Set(add);
+      setFilter((f) => ({ ...f, hidden: [...(f.hidden ?? []), ...add] }));
+      if (file && gone.has(file.path)) setFile(null);
+      const left = emphasis.filter((p) => !gone.has(p));
+      setEmphasis(left);
+      if (!left.length) setFocusLabel(undefined);
+      setToast({
+        text: `Hid ${what}`,
+        undo: () => setFilter((f) => ({ ...f, hidden: (f.hidden ?? []).filter((p) => !gone.has(p)) })),
+      });
+    },
+    [filter.hidden, file, emphasis],
+  );
+
   /** Back to what you had selected — the open file, else the focus, else everything. */
   const recenter = useCallback(() => {
     const shift = shiftFor(panels.current);
@@ -303,9 +333,10 @@ export function App() {
           return setFrameId(null);
         case "filter":
           // A navigator filter replaces the old one; it names what it shows.
-          return setFilter({ ...EMPTY_FILTER, ...c.filter });
+          // What you hid yourself stays hidden.
+          return setFilter((f) => ({ ...EMPTY_FILTER, ...c.filter, hidden: f.hidden }));
         case "clear_filter":
-          return setFilter(EMPTY_FILTER);
+          return setFilter((f) => ({ ...EMPTY_FILTER, hidden: f.hidden }));
         case "set_lens":
           setTour(null);
           return setLensId(c.lensId);
@@ -464,6 +495,9 @@ export function App() {
         e.preventDefault();
         if (e.target instanceof HTMLElement) e.target.blur();
         recenter();
+      } else if (e.key === "x") {
+        if (file) hide([file.path], file.path.split("/").pop()!);
+        else if (emphasis.length) hide(emphasis, `${emphasis.length} file${emphasis.length === 1 ? "" : "s"}`);
       } else if (e.key === "o") toOverview();
       else if (e.key === "[" || e.key === "Backspace") back();
       else if (e.key === "i") setLayers((l) => ({ ...l, imports: !l.imports }));
@@ -481,7 +515,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -529,6 +563,11 @@ export function App() {
             const g = overlays.find((o) => o.id === id);
             if (g) focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label);
           }}
+          onHide={(t) => {
+            if ("file" in t) return hide([t.file], t.file.split("/").pop()!);
+            const under = graph.files.map((f) => f.path).filter((p) => p.startsWith(`${t.dir}/`) && (!visible || visible.has(p)));
+            hide(under, `${t.dir}/ (${under.length} file${under.length === 1 ? "" : "s"})`);
+          }}
           onPickDir={(d) => focus(graph.files.filter((f) => f.path.startsWith(`${d}/`)).map((f) => f.path), `${d}/`)}
           onBackground={() => setPointer(null)}
         />
@@ -555,6 +594,12 @@ export function App() {
           </Toggle>
           <Toggle on={layers.labels} tone="muted" onClick={() => setLayers((l) => ({ ...l, labels: !l.labels }))}>
             Labels
+          </Toggle>
+          <Toggle on={layers.folders} tone="muted" onClick={() => setLayers((l) => ({ ...l, folders: !l.folders }))}>
+            Folders
+          </Toggle>
+          <Toggle on={layers.beacons} tone="runtime" onClick={() => setLayers((l) => ({ ...l, beacons: !l.beacons }))}>
+            Beacons
           </Toggle>
         </div>
         {!showIntro && (
@@ -614,7 +659,7 @@ export function App() {
             </button>
             {visible && (
               <span className="glass rounded-md px-2.5 py-0.5 text-[12.5px]">
-                {visible.size.toLocaleString()} of {graph.files.length.toLocaleString()} files · {describe(filter)}
+                {visible.size.toLocaleString("en-US")} of {graph.files.length.toLocaleString("en-US")} files · {describe(filter)}
                 <button onClick={() => setFilter(EMPTY_FILTER)} className="ml-2 text-muted hover:text-course">
                   Clear
                 </button>
@@ -683,6 +728,29 @@ export function App() {
           >
             Save as group
           </button>
+          <button
+            onClick={() => hide(emphasis, `${emphasis.length} file${emphasis.length === 1 ? "" : "s"}`)}
+            className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-muted hover:text-text"
+            title="Hide these files from the map (x)"
+          >
+            Hide
+          </button>
+        </div>
+      )}
+      {toast && (
+        <div className="pointer-events-none absolute left-1/2 top-14 z-30 -translate-x-1/2">
+          <p className="glass rise pointer-events-auto flex items-center gap-3 rounded-full px-3.5 py-1 text-[13px]">
+            <span className="max-w-[420px] truncate">{toast.text}</span>
+            <button
+              onClick={() => {
+                toast.undo();
+                setToast(null);
+              }}
+              className="text-course hover:underline"
+            >
+              Undo
+            </button>
+          </p>
         </div>
       )}
 
@@ -696,6 +764,7 @@ export function App() {
             onClose={() => setFile(null)}
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}
+            onHide={() => hide([file.path], file.path.split("/").pop()!)}
           />
         </div>
       )}

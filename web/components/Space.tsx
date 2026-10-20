@@ -91,6 +91,7 @@ export function Space({
   onPickModule,
   onPickDir,
   onPickOverlay,
+  onHide,
   onBackground,
 }: {
   ref: Ref<SpaceHandle>;
@@ -112,6 +113,8 @@ export function Space({
   onPickModule: (id: string) => void;
   onPickDir: (dir: string) => void;
   onPickOverlay: (id: string) => void;
+  /** Right-click: hide this file, or everything under this folder. */
+  onHide: (target: { file: string } | { dir: string }) => void;
   onBackground: () => void;
 }) {
   const el = useRef<HTMLDivElement>(null);
@@ -143,8 +146,8 @@ export function Space({
   const overlayObjs = useRef(
     new Map<string, { beacon: THREE.Group; mesh: THREE.Mesh; hit: THREE.Mesh; spokes: THREE.LineSegments; members: string[] }>(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onBackground });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onBackground };
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHide, onBackground });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHide, onBackground };
 
   /* ------------------------------- boot -------------------------------- */
 
@@ -183,6 +186,15 @@ export function Space({
         else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4));
         else handlers.current.onPickDir(n.id.slice(4));
       })
+      // A right-click that isn't a pan hides what's under it.
+      .onNodeRightClick((n) => {
+        if (n.type === "file") handlers.current.onHide({ file: n.id });
+        else if (n.type === "dir" && n.id !== "dir:.") handlers.current.onHide({ dir: n.id.slice(4) });
+      })
+      // No dragging bodies around: a press on a body should orbit like
+      // anywhere else, and the library's drag-end path fakes a touch pointerup
+      // that crashes the orbit controls.
+      .enableNodeDrag(false)
       .onBackgroundClick(() => handlers.current.onBackground());
 
     setForces();
@@ -320,8 +332,9 @@ export function Space({
       for (const ov of overlayObjs.current.values()) {
         const members = ov.members.filter((p) => nodes.current.get(p)?.x !== undefined);
         const c = centroid(members);
-        ov.beacon.visible = !!c;
-        ov.spokes.visible = !!c && tu().groupSpokes > 0;
+        const beaconsOn = state.current.layers.beacons !== false;
+        ov.beacon.visible = !!c && beaconsOn;
+        ov.spokes.visible = !!c && beaconsOn && tu().groupSpokes > 0;
         if (!c) continue;
         ov.beacon.position.set(c.x, c.y, c.z);
         ov.beacon.scale.setScalar(tu().groupBeaconSize);
@@ -453,13 +466,14 @@ export function Space({
     } else if (n.type === "module") {
       // Group beacons are the organization itself, so they stay; the
       // overview's module beacons belong to the runtime layer.
-      o.group.visible = n.id.startsWith("grp:") || lay.logical;
+      o.group.visible = lay.beacons !== false && (n.id.startsWith("grp:") || lay.logical);
       mat.opacity = emph.size === 0 ? tu().beaconOpacity : tu().beaconOpacity * 0.3;
       if (o.label) {
         o.label.visible = tu().showBeaconLabels;
         o.label.material.opacity = emph.size === 0 ? 1 : 0.22;
       }
     } else {
+      o.group.visible = lay.folders !== false;
       mat.opacity = emph.size === 0 ? tu().folderPointOpacity : tu().folderPointOpacity * 0.2;
       if (o.label) {
         // Territory names are for the overview; up close they balloon into
@@ -480,7 +494,7 @@ export function Space({
       l.type === "member" ? false
         : l.type === "logical" ? lay.logical
           : l.type === "import" ? lay.imports || both(l)
-            : true,
+            : lay.folders !== false,
     )
       .linkColor((l) =>
         // While focused, the runtime arcs step back to a dim ember so the

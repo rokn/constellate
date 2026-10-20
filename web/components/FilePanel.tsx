@@ -14,6 +14,7 @@ export function FilePanel({
   onClose,
   onNavigate,
   onAsk,
+  onHide,
 }: {
   path: string;
   line?: number;
@@ -21,6 +22,7 @@ export function FilePanel({
   onClose: () => void;
   onNavigate: (path: string, line?: number) => void;
   onAsk: (request: string) => void;
+  onHide: () => void;
 }) {
   const [file, setFile] = useState<FileData | null | undefined>(undefined);
   const [jump, setJump] = useState<number | undefined>(line);
@@ -62,6 +64,13 @@ export function FilePanel({
           className="shrink-0 rounded-md border border-course/50 px-2.5 py-1 text-[13px] text-course hover:bg-course/10"
         >
           Explain this file
+        </button>
+        <button
+          onClick={onHide}
+          title="Hide this file from the map (x) — bring it back from Filter"
+          className="shrink-0 rounded px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-text"
+        >
+          Hide
         </button>
         <button onClick={onClose} className="shrink-0 rounded px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-text">
           Close

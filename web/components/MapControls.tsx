@@ -176,6 +176,30 @@ export function FilterPanel({
         </div>
       </div>
 
+      {!!filter.hidden?.length && (
+        <div className="rounded-md border border-line px-2.5 py-2">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[12.5px] text-muted">Hidden files ({filter.hidden.length})</span>
+            <button onClick={() => onChange({ ...filter, hidden: [] })} className="text-[12.5px] text-course hover:underline">
+              Show all
+            </button>
+          </div>
+          <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto">
+            {filter.hidden.map((p) => (
+              <li key={p} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-text/85" title={p}>{p}</span>
+                <button
+                  onClick={() => onChange({ ...filter, hidden: filter.hidden!.filter((x) => x !== p) })}
+                  className="shrink-0 text-[12px] text-muted hover:text-text"
+                >
+                  Show
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {filter.paths && (
         <p className="rounded-md bg-course/10 px-2.5 py-1.5 text-[12.5px] text-text/90">
           The navigator chose {filter.paths.length} files{filter.label ? ` for “${filter.label}”` : ""}. Editing below replaces its choice.
