@@ -232,6 +232,8 @@ export function Space({
    * click handling ignores the same click for a moment.
    */
   const beaconClickAt = useRef(0);
+  /** Where the dolly-through wheel is easing the camera to, if anywhere. */
+  const dollyGoal = useRef<{ cam: THREE.Vector3; target: THREE.Vector3 } | null>(null);
   const beaconJustClicked = () => performance.now() - beaconClickAt.current < 250;
   /** When the focus is larger than the label limit, the files that still get names. */
   const labelled = useRef(new Set<string>());
@@ -350,7 +352,8 @@ export function Space({
     // Left orbits; middle (and right) pan; the wheel zooms toward whatever is
     // under the pointer, the way map and CAD tools do. Damping makes each
     // gesture glide to a stop instead of halting dead.
-    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
+    // Holding the right button flies instead (see below).
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: -1 as THREE.MOUSE };
     controls.screenSpacePanning = true;
     controls.enableDamping = true;
     applyControls();
@@ -422,6 +425,7 @@ export function Space({
     let down: { x: number; y: number } | null = null;
     const onDown = (e: PointerEvent) => {
       down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
+      dollyGoal.current = null;
     };
     const onUp = (e: PointerEvent) => {
       const start = down;
@@ -476,14 +480,232 @@ export function Space({
     host.addEventListener("pointerup", onUp, true);
     host.addEventListener("pointermove", onHover, true);
     // Right-click on a beacon hides its group (it stays in the Groups panel).
-    const onContext = (e: MouseEvent) => {
-      e.preventDefault();
-      const id = overlayAt(e as PointerEvent);
-      if (!id) return;
-      beaconClickAt.current = performance.now();
-      handlers.current.onHideOverlay(id);
-    };
+    // macOS sends contextmenu on press, before we know whether the press is a
+    // flight, so the hide happens on release (in endFlight) instead.
+    const onContext = (e: MouseEvent) => e.preventDefault();
     host.addEventListener("contextmenu", onContext);
+
+    /* ---- dolly through: the wheel flies toward what's under the pointer ---- */
+
+    const sceneSpan = () => {
+      let r = 0;
+      for (const n of nodes.current.values()) if (n.x !== undefined) r = Math.max(r, Math.hypot(n.x, n.y!, n.z!));
+      return Math.max(r, 200);
+    };
+    /** The nearest body along a ray, skipping ones we're already inside. */
+    const bodyAlong = (origin: THREE.Vector3, dir: THREE.Vector3) => {
+      let best: { t: number; r: number } | null = null;
+      const w = new THREE.Vector3();
+      for (const n of nodes.current.values()) {
+        if (n.x === undefined) continue;
+        w.set(n.x - origin.x, n.y! - origin.y, n.z! - origin.z);
+        const t = w.dot(dir);
+        const r = objs.current.get(n.id)?.base ?? 2;
+        if (t < r * 2.5) continue;
+        const off = w.addScaledVector(dir, -t).length();
+        if (off > Math.max(r * 2, t * 0.035)) continue;
+        if (!best || t < best.t) best = { t, r };
+      }
+      return best;
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (!tu().dollyThrough || flight) return;
+      e.preventDefault();
+      e.stopPropagation();
+      controls.autoRotate = false;
+      const camera = g.camera();
+      // Chain from where the last step was heading, so fast scrolling adds up.
+      const cam = dollyGoal.current?.cam.clone() ?? camera.position.clone();
+      const target = dollyGoal.current?.target.clone() ?? controls.target.clone();
+      const forward = target.clone().sub(cam);
+      const pivot = forward.length();
+      forward.normalize();
+      let dir = forward.clone();
+      if (tu().zoomToCursor) {
+        const rect = host.getBoundingClientRect();
+        const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+        // The ray from the goal position, with the camera's (unchanged) orientation.
+        const probe = camera.clone();
+        probe.position.copy(cam);
+        probe.updateMatrixWorld();
+        raycaster.setFromCamera(ndc, probe);
+        dir = raycaster.ray.direction.clone();
+      }
+      const span = sceneSpan();
+      const floor = span * 0.06;
+      // Pixels, lines or pages: one notch is about 100px. Trackpads send many small ones.
+      const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+      const amount = Math.min(Math.abs(px) / 100, 3) * 0.17 * (tu().zoomSpeed / 1.6);
+      let step: number;
+      let ahead: number;
+      if (px < 0) {
+        // In: pace by whatever is ahead, never quite stalling on it — once
+        // you're at it, the next thing along the ray takes over.
+        const body = bodyAlong(cam, dir);
+        const d = body ? body.t : Math.max(pivot, floor);
+        step = Math.max(d * amount, span * 0.004);
+        // The pivot settles on that body while it's still ahead; past it, it's pushed on.
+        ahead = body && body.t - step > body.r * 2.5 ? (body.t - step) * dir.dot(forward) : Math.max(pivot - step * dir.dot(forward), floor);
+      } else {
+        step = -Math.max(pivot, floor) * amount;
+        ahead = pivot - step * dir.dot(forward);
+        // Don't back out into the void.
+        if (cam.clone().addScaledVector(dir, step).length() > span * 8) return;
+      }
+      cam.addScaledVector(dir, step);
+      dollyGoal.current = { cam, target: cam.clone().addScaledVector(forward, Math.max(ahead, floor * 0.25)) };
+    };
+    host.addEventListener("wheel", onWheel, { capture: true, passive: false });
+
+    /* ---- fly mode: hold the right button; mouse looks, WASD moves ---- */
+
+    let flight: {
+      id: number;
+      x: number;
+      y: number;
+      moved: number;
+      keyed: boolean;
+      pivot: number;
+      yaw: number;
+      pitch: number;
+      last: number;
+    } | null = null;
+    const keys = new Set<string>();
+    let flySpeed = 1;
+    const hint = document.createElement("div");
+    hint.className = "scene-tooltip";
+    Object.assign(hint.style, {
+      position: "absolute",
+      left: "50%",
+      top: "18%",
+      transform: "translateX(-50%)",
+      pointerEvents: "none",
+      display: "none",
+      zIndex: "5",
+      whiteSpace: "nowrap",
+    });
+    host.appendChild(hint);
+    const showHint = () => {
+      hint.innerHTML = `Flying · <b>WASD</b> move · <b>Q / E</b> down / up · <b>Shift</b> faster · wheel speed <b>×${flySpeed.toFixed(flySpeed < 1 ? 2 : 1)}</b>`;
+    };
+    const FLY_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
+    const onFlyKey = (e: KeyboardEvent) => {
+      if (!flight || !FLY_KEYS.has(e.code)) return;
+      // Ours while flying: the app's shortcuts mustn't see these.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.type === "keydown") {
+        keys.add(e.code);
+        if (!e.code.startsWith("Shift")) flight.keyed = true;
+      } else keys.delete(e.code);
+    };
+    const startFlight = (e: PointerEvent) => {
+      const camera = g.camera();
+      dollyGoal.current = null;
+      controls.autoRotate = false;
+      controls.enabled = false;
+      const f = camera.getWorldDirection(new THREE.Vector3());
+      flight = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        moved: 0,
+        keyed: false,
+        pivot: camera.position.distanceTo(controls.target),
+        yaw: Math.atan2(-f.x, -f.z),
+        pitch: Math.asin(Math.max(-1, Math.min(1, f.y))),
+        last: performance.now(),
+      };
+      // Look straight with world-up, whatever roll orbiting left behind.
+      camera.up.set(0, 1, 0);
+      showTip(e, null);
+    };
+    const endFlight = (e: PointerEvent | null) => {
+      if (!flight) return;
+      const f = flight;
+      flight = null;
+      keys.clear();
+      hint.style.display = "none";
+      host.style.cursor = "";
+      g.renderer().domElement.style.cursor = "";
+      if (e && host.hasPointerCapture?.(f.id)) host.releasePointerCapture(f.id);
+      const camera = g.camera();
+      const forward = camera.getWorldDirection(new THREE.Vector3());
+      // Orbit, from here on, around what's ahead: the nearest body, else where the pivot was.
+      const flew = f.keyed || f.moved > 5;
+      const body = flew ? bodyAlong(camera.position, forward) : null;
+      controls.target.copy(camera.position).addScaledVector(forward, body?.t ?? f.pivot);
+      controls.enabled = true;
+      controls.update();
+      if (flew) {
+        // A flight, not a click: the graph's own right-click must not hide anything.
+        beaconClickAt.current = performance.now();
+        return;
+      }
+      // A plain right-click on a beacon hides its group (it stays in the Groups panel).
+      const id = e && overlayAt(e);
+      if (id) {
+        beaconClickAt.current = performance.now();
+        handlers.current.onHideOverlay(id);
+      }
+    };
+    const onFlyDown = (e: PointerEvent) => {
+      if (e.button !== 2 || e.pointerType !== "mouse") return;
+      startFlight(e);
+    };
+    const onFlyMove = (e: PointerEvent) => {
+      if (!flight || e.pointerId !== flight.id) return;
+      if (!(e.buttons & 2)) return endFlight(e);
+      flight.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
+      if (flight.moved > 5 || flight.keyed) {
+        // Keep the mouse ours past the window edge — only once it's a flight:
+        // capturing retargets the release, and a plain right-click's release
+        // must still reach the graph (that's how it hides a body).
+        if (!host.hasPointerCapture?.(flight.id)) host.setPointerCapture?.(flight.id);
+        hint.style.display = "block";
+        showHint();
+        host.style.cursor = g.renderer().domElement.style.cursor = "crosshair";
+      }
+      const k = 0.0028 * tu().rotateSpeed;
+      flight.yaw -= e.movementX * k;
+      flight.pitch = Math.max(-1.5, Math.min(1.5, flight.pitch - e.movementY * k));
+      g.camera().rotation.set(flight.pitch, flight.yaw, 0, "YXZ");
+    };
+    const onFlyUp = (e: PointerEvent) => {
+      if (flight && e.button === 2) endFlight(e);
+    };
+    const onFlyWheel = (e: WheelEvent) => {
+      if (!flight) return;
+      e.preventDefault();
+      e.stopPropagation();
+      flySpeed = Math.max(0.05, Math.min(20, flySpeed * (e.deltaY < 0 ? 1.25 : 0.8)));
+      hint.style.display = "block";
+      showHint();
+    };
+    const onBlur = () => endFlight(null);
+    host.addEventListener("pointerdown", onFlyDown, true);
+    host.addEventListener("pointermove", onFlyMove, true);
+    host.addEventListener("pointerup", onFlyUp, true);
+    host.addEventListener("wheel", onFlyWheel, { capture: true, passive: false });
+    window.addEventListener("keydown", onFlyKey, true);
+    window.addEventListener("keyup", onFlyKey, true);
+    window.addEventListener("blur", onBlur);
+    const flyStep = (now: number) => {
+      if (!flight) return;
+      const dt = Math.min(0.05, (now - flight.last) / 1000);
+      flight.last = now;
+      const camera = g.camera();
+      const v = new THREE.Vector3(
+        (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0),
+        (keys.has("KeyE") ? 1 : 0) - (keys.has("KeyQ") ? 1 : 0),
+        (keys.has("KeyS") ? 1 : 0) - (keys.has("KeyW") ? 1 : 0),
+      );
+      if (!v.lengthSq()) return;
+      // A tenth of the map a second at speed ×1; Shift for four times that.
+      const speed = sceneSpan() * 0.1 * flySpeed * (keys.has("ShiftLeft") || keys.has("ShiftRight") ? 4 : 1);
+      v.normalize().applyQuaternion(camera.quaternion).multiplyScalar(speed * dt);
+      camera.position.add(v);
+    };
     // Grabbing the map is a request to stop drifting.
     controls.addEventListener("start", () => (controls.autoRotate = false));
 
@@ -491,7 +713,21 @@ export function Space({
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const now = performance.now();
-      controls.update();
+      if (flight) flyStep(now);
+      else {
+        const goal = dollyGoal.current;
+        if (goal) {
+          const camera = g.camera();
+          camera.position.lerp(goal.cam, 0.22);
+          controls.target.lerp(goal.target, 0.22);
+          if (camera.position.distanceToSquared(goal.cam) < 0.01) {
+            camera.position.copy(goal.cam);
+            controls.target.copy(goal.target);
+            dollyGoal.current = null;
+          }
+        }
+        controls.update();
+      }
 
       for (const [id, t0] of pulses.current) {
         const o = objs.current.get(id);
@@ -587,7 +823,16 @@ export function Space({
       host.removeEventListener("pointerup", onUp, true);
       host.removeEventListener("pointermove", onHover, true);
       host.removeEventListener("contextmenu", onContext);
+      host.removeEventListener("wheel", onWheel, true);
+      host.removeEventListener("pointerdown", onFlyDown, true);
+      host.removeEventListener("pointermove", onFlyMove, true);
+      host.removeEventListener("pointerup", onFlyUp, true);
+      host.removeEventListener("wheel", onFlyWheel, true);
+      window.removeEventListener("keydown", onFlyKey, true);
+      window.removeEventListener("keyup", onFlyKey, true);
+      window.removeEventListener("blur", onBlur);
       tip.remove();
+      hint.remove();
       g._destructor();
       host.innerHTML = "";
       fg.current = null;
@@ -932,6 +1177,8 @@ export function Space({
     ctl.panSpeed = k.panSpeed;
     ctl.dampingFactor = k.damping;
     ctl.zoomToCursor = k.zoomToCursor;
+    // With dolly through on, the wheel is ours (see onWheel).
+    ctl.enableZoom = !k.dollyThrough;
     ctl.autoRotateSpeed = k.autoRotateSpeed;
     if (!k.autoRotate) ctl.autoRotate = false;
   }
@@ -1072,6 +1319,7 @@ export function Space({
     const pos = look.clone().addScaledVector(dir, distance);
     const ctl = controls();
     if (ctl) ctl.autoRotate = false;
+    dollyGoal.current = null;
     g.cameraPosition({ x: pos.x, y: pos.y, z: pos.z }, { x: look.x, y: look.y, z: look.z }, ms);
   };
 

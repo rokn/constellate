@@ -51,6 +51,7 @@ export type Tuning = {
   panSpeed: number;
   damping: number;
   zoomToCursor: boolean;
+  dollyThrough: boolean;
   flySeconds: number;
   focusDistance: number;
   autoRotate: boolean;
@@ -111,6 +112,7 @@ export const DEFAULT_TUNING: Tuning = {
   panSpeed: 1.1,
   damping: 0.12,
   zoomToCursor: true,
+  dollyThrough: true,
   flySeconds: 1.6,
   focusDistance: 1,
   autoRotate: true,
@@ -213,6 +215,7 @@ export const SECTIONS: Section[] = [
       r("panSpeed", "Pan speed", 0.2, 4, 0.05),
       r("damping", "Glide", 0.02, 0.5, 0.01, "Lower glides longer after you let go"),
       t("zoomToCursor", "Zoom toward pointer"),
+      t("dollyThrough", "Dolly through", "Scroll keeps going past what you zoom into, at a pace set by how far away it is. Off: classic orbit zoom, which slows to a stop at the pivot"),
       r("flySeconds", "Flight time (s)", 0.2, 5, 0.1),
       r("focusDistance", "Focus distance", 0.3, 3, 0.05, "How close flights stop"),
       t("autoRotate", "Drift in overview"),
