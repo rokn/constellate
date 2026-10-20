@@ -137,6 +137,16 @@ theme's colours are injected as CSS variables, and any element with `data-path`
 | amber | a logical module and its runtime links |
 | magenta | your course — the open file's halo, the focus, and the dashed line of where you've flown |
 
+## As an app, and with less UI
+
+Codeflight is a PWA: from `http://localhost:4317` in Chrome or Edge, use *Install* in the
+address bar to get its own window and icon. (Browsers only allow installing from https or
+localhost, so other devices on the LAN can use it in a browser tab but can't install it.)
+
+**Hide UI** (`u`, or the button beside the search bar) leaves just the map, the search bar
+and the voice button; files and answers still open in their panels. On touch devices the
+read-only code editor doesn't bring up the on-screen keyboard.
+
 ## Controls
 
 | Key | Action | Say instead |
@@ -146,6 +156,7 @@ theme's colours are injected as CSS variables, and any element with `data-path`
 | `g` | groups panel | "mark everything under internal/billing" |
 | `Space` | recenter on what's selected — the open file, else the focus, else the whole map | — |
 | `,` | tune panel | — |
+| `u` | hide / show the UI | — |
 | `o` | overview | "zoom out" |
 | `[` / `]`, mouse back / forward | back and forward through what you've opened | "go back" |
 | `t` | guided tour of the modules | "give me the tour" |

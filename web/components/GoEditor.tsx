@@ -44,6 +44,9 @@ export function GoEditor({
         theme: "codeflight",
         readOnly: true,
         domReadOnly: true,
+        // The classic hidden textarea rather than the newer EditContext, so
+        // the input element can be told not to summon a keyboard (below).
+        editContext: false,
         automaticLayout: true,
         minimap: { enabled: false },
         fontFamily: '"JetBrains Mono", ui-monospace, monospace',
@@ -60,6 +63,17 @@ export function GoEditor({
         padding: { top: 8 },
       });
       editor.current = ed;
+      // Read-only: a touch device has nothing to type, so its on-screen
+      // keyboard must not pop up when the code is tapped. inputmode="none"
+      // keeps the hidden input focusable (shortcuts, selection, ⌘-click) while
+      // telling the device not to show a keyboard for it.
+      const quiet = () =>
+        ed.getDomNode()?.querySelectorAll("textarea").forEach((t) => {
+          t.setAttribute("inputmode", "none");
+          t.setAttribute("readonly", "");
+        });
+      quiet();
+      ed.onDidFocusEditorText(quiet);
       if (import.meta.env.DEV) (window as unknown as { __goEditor: unknown }).__goEditor = ed;
       decorations.current = ed.createDecorationsCollection();
       ed.onDidChangeCursorSelection(() => {

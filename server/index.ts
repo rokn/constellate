@@ -243,7 +243,18 @@ async function main() {
       } catch {
         file = path.join(dist, "index.html");
       }
-      const type: Record<string, string> = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".wasm": "application/wasm" };
+      const type: Record<string, string> = {
+        ".js": "text/javascript",
+        ".css": "text/css",
+        ".html": "text/html",
+        ".svg": "image/svg+xml",
+        ".wasm": "application/wasm",
+        ".png": "image/png",
+        ".json": "application/json",
+        ".webmanifest": "application/manifest+json",
+        ".ttf": "font/ttf",
+        ".woff2": "font/woff2",
+      };
       res.writeHead(200, { "Content-Type": type[path.extname(file)] ?? "application/octet-stream" });
       res.end(await readFile(file));
     };

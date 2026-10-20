@@ -115,6 +115,25 @@ export function App() {
   /** The code panel filling the window. */
   const [panelFull, setPanelFull] = useState(false);
 
+  /**
+   * Hide UI: just the map, the search bar and the voice button. Code and
+   * answers still open in their panels. Remembered in this browser.
+   */
+  const [minimal, setMinimal] = useState(() => {
+    try {
+      return localStorage.getItem("codeflight.minimal") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("codeflight.minimal", minimal ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  }, [minimal]);
+
   /** Drag the panel's right edge to resize it; the width is remembered in this browser. */
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -604,6 +623,7 @@ export function App() {
       } else if (e.key === "o") toOverview();
       else if (e.key === "[" || e.key === "Backspace") back();
       else if (e.key === "]") forward();
+      else if (e.key === "u") setMinimal((m) => !m);
       else if (e.key === "i") setLayers((l) => ({ ...l, imports: !l.imports }));
       else if (e.key === "l") setLayers((l) => ({ ...l, logical: !l.logical }));
       else if (e.key === "t" && overview) setTour(0);
@@ -644,8 +664,8 @@ export function App() {
   };
 
   const activeFrame = frames.find((f) => f.id === frameId);
-  const showIntro = !introDone && tour === null && !file && !frameId;
-  const showDestinations = introDone && tour === null && !file && !frameId && !emphasis.length && !!overview?.topics.length;
+  const showIntro = !minimal && !introDone && tour === null && !file && !frameId;
+  const showDestinations = !minimal && introDone && tour === null && !file && !frameId && !emphasis.length && !!overview?.topics.length;
 
   return (
     <div className="relative h-full overflow-hidden bg-night">
@@ -681,7 +701,7 @@ export function App() {
       {showIntro && <Intro state={state} graph={graph} onTour={() => (setIntroDone(true), setTour(0))} onExplore={() => setIntroDone(true)} />}
 
       {/* Instruments */}
-      <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-col gap-2">
+      <div className={`${minimal ? "hidden " : ""}pointer-events-none absolute left-4 top-4 z-10 flex flex-col gap-2`}>
         {!showIntro && (
           <div className="pointer-events-auto">
             <button onClick={toOverview} className="text-left" title="Back to the whole map (o)">
@@ -815,7 +835,7 @@ export function App() {
         )}
       </div>
 
-      {focusLabel && emphasis.length > 0 && tour === null && (
+      {!minimal && focusLabel && emphasis.length > 0 && tour === null && (
         <div className="pointer-events-none absolute left-1/2 top-4 z-10 flex -translate-x-1/2 items-center">
           <button
             onClick={() => {
@@ -843,7 +863,7 @@ export function App() {
           </button>
         </div>
       )}
-      {toast && (
+      {!minimal && toast && (
         <div className="pointer-events-none absolute left-1/2 top-14 z-30 -translate-x-1/2">
           <p className="glass rise pointer-events-auto flex items-center gap-3 rounded-full px-3.5 py-1 text-[13px]">
             <span className="max-w-[420px] truncate">{toast.text}</span>
@@ -913,7 +933,7 @@ export function App() {
         </div>
       )}
 
-      {tuneOpen && (
+      {!minimal && tuneOpen && (
         <div className="pointer-events-none absolute bottom-28 right-4 top-4 z-40 w-[min(360px,calc(100%-2rem))]">
           <TuningPanel tuning={tuning} onChange={setTuning} onRelayout={() => space.current?.relayout()} onClose={() => setTuneOpen(false)} />
         </div>
@@ -921,7 +941,7 @@ export function App() {
 
       {/* Bottom deck */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex flex-col items-center gap-3 px-4 pb-4">
-        {tour !== null && modules[tour] && (
+        {!minimal && tour !== null && modules[tour] && (
           <TourCaption
             module={modules[tour]}
             index={tour}
@@ -932,8 +952,20 @@ export function App() {
         )}
         {showDestinations && <Destinations topics={overview!.topics} onPick={goTopic} />}
         <div className="flex w-full items-end justify-between gap-4">
-          <div className="hidden min-w-0 flex-1 md:block">
-            <ActivityTicker activity={state.activity} busy={state.busy} />
+          <div className="flex min-w-0 flex-1 items-end justify-end gap-3">
+            {!minimal && (
+              <div className="hidden min-w-0 flex-1 md:block">
+                <ActivityTicker activity={state.activity} busy={state.busy} />
+              </div>
+            )}
+            <button
+              onClick={() => setMinimal((m) => !m)}
+              aria-pressed={minimal}
+              title={minimal ? "Show everything again (u)" : "Hide everything but search and voice (u)"}
+              className="glass pointer-events-auto shrink-0 rounded-full px-3 py-1.5 text-[12.5px] text-muted hover:text-text"
+            >
+              {minimal ? "Show UI" : "Hide UI"}
+            </button>
           </div>
           <CommandBar
             inputRef={askInput}
