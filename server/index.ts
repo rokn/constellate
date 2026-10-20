@@ -17,6 +17,7 @@ import {
   removeLens,
   removeNote,
   removeOverlay,
+  rescan,
   restoreNote,
   session,
   setView,
@@ -307,6 +308,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       // groupings, groups, answers, your view — is kept.
       if (!session.state.repo || !session.idx) return json(res, 400, { error: "No repository open." }), true;
       {
+        // Read the files again first: the chart (and the map) are drawn
+        // from the code as it is now, not as it was when the server started.
+        await rescan();
         // The chart being replaced goes to the navigator, to update rather than redraw.
         const previous = session.state.overview;
         const since = session.chartedHead;

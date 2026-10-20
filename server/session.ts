@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -15,7 +16,10 @@ import type {
   UiCommand,
   View,
 } from "../shared/types";
+import { promisify } from "node:util";
 import { indexGraph, scanRepo, type GraphIndex } from "./scan";
+
+const run = promisify(execFile);
 
 /**
  * One open repository, one session. The server is a local tool — one person,
@@ -317,6 +321,64 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
   session.state.status = "analyzing";
   emit();
 }
+
+/* ------------------------------- rescans ------------------------------- */
+
+/**
+ * Re-reads the files in place: a new static graph, with everything you made
+ * kept. Used when the repo changes under the map (a pull, a checkout,
+ * deleted files) and before re-charting, so the chart is drawn from the
+ * code as it is now.
+ */
+let rescanning: Promise<void> | null = null;
+export function rescan(): Promise<void> {
+  if (rescanning) return rescanning;
+  rescanning = (async () => {
+    const root = session.idx?.graph.root;
+    if (!root) return;
+    const graph = await scanRepo(root);
+    if (session.idx?.graph.root !== root) return; // another repo opened meanwhile
+    const before = session.idx.graph;
+    session.idx = indexGraph(graph);
+    session.state.repo = { name: graph.name, root: graph.root, branch: graph.branch };
+    session.state.graphVersion++;
+    // The chart is out of date once the code moved on from where it was drawn.
+    if (session.state.overview && session.state.status === "ready") {
+      session.state.stale = !!session.state.stale || graph.head !== session.chartedHead || graph.files.length !== before.files.length || graph.imports.length !== before.imports.length;
+    }
+    pushActivity({ kind: "tool", detail: `Rescanned: ${graph.totals.files} files and ${graph.imports.length} imports` });
+    emit();
+  })().finally(() => {
+    rescanning = null;
+  });
+  return rescanning;
+}
+
+/**
+ * Watches the repo for changes a rescan should pick up: a new HEAD, or a
+ * different working-tree status (files added, deleted, modified). Cheap —
+ * two git calls every few seconds — and the rescan itself is under a second.
+ */
+let watched: { root: string; key: string } | null = null;
+setInterval(() => {
+  const root = session.idx?.graph.root;
+  if (!root || session.state.status === "scanning" || rescanning) return;
+  Promise.all([
+    run("git", ["rev-parse", "HEAD"], { cwd: root }).then((r) => r.stdout.trim()),
+    run("git", ["status", "--porcelain", "--untracked-files=normal"], { cwd: root, maxBuffer: 16 * 1024 * 1024 }).then((r) => r.stdout),
+  ])
+    .then(([head, status]) => {
+      const key = `${head}\n${status}`;
+      if (watched?.root !== root) watched = { root, key };
+      else if (watched.key !== key) {
+        watched.key = key;
+        void rescan();
+      }
+    })
+    .catch(() => {
+      /* not a git repo: nothing to watch */
+    });
+}, 4000).unref();
 
 /* ----------------------------- persistence ----------------------------- */
 

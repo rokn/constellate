@@ -56,11 +56,14 @@ async function listFiles(root: string): Promise<string[]> {
   // git knows what is ignored far better than we do; fall back to a walk only
   // when this isn't a repository.
   try {
-    const { stdout } = await run("git", ["ls-files", "-co", "--exclude-standard"], {
-      cwd: root,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    return stdout.split("\n").filter(Boolean);
+    const opts = { cwd: root, maxBuffer: 64 * 1024 * 1024 };
+    const [{ stdout }, deleted] = await Promise.all([
+      run("git", ["ls-files", "-co", "--exclude-standard"], opts),
+      // Deleted but not committed yet: still in git's index, gone from the disk.
+      run("git", ["ls-files", "--deleted"], opts),
+    ]);
+    const gone = new Set(deleted.stdout.split("\n").filter(Boolean));
+    return stdout.split("\n").filter((f) => f && !gone.has(f));
   } catch {
     const out: string[] = [];
     const walk = async (dir: string) => {

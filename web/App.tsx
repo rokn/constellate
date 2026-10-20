@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
+import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
 import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
@@ -760,6 +760,14 @@ export function App() {
   }, [graph?.root, tuning, layers, lensId, filter, savedFilters]);
 
   /* ------------------------------ repo changes ----------------------------- */
+
+  // The same repo, rescanned (a pull, deleted files): file contents may have
+  // changed too, so the code panel reads them fresh.
+  const scannedFor = useRef<RepoGraph | null>(null);
+  useEffect(() => {
+    if (graph && scannedFor.current && scannedFor.current.root === graph.root) clearFileCache();
+    scannedFor.current = graph;
+  }, [graph]);
 
   // Each newly opened repo falls in from deep space.
   const warped = useRef<string | null>(null);
