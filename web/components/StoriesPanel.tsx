@@ -17,6 +17,7 @@ export function StoriesPanel({
   charted,
   onPlay,
   onPlayIntro,
+  onDiff,
   onClose,
 }: {
   stories: Story[];
@@ -24,6 +25,8 @@ export function StoriesPanel({
   charted: boolean;
   onPlay: (id: string) => void;
   onPlayIntro: () => void;
+  /** Open a branch's diff against its base. */
+  onDiff: (branch: string, base?: string) => void;
   onClose: () => void;
 }) {
   const [request, setRequest] = useState("");
@@ -107,7 +110,7 @@ export function StoriesPanel({
           )}
         </section>
 
-        <Branches stories={branchStories} onPlay={onPlay} />
+        <Branches stories={branchStories} onPlay={onPlay} onDiff={onDiff} />
 
         {mine.length > 0 && (
           <section>
@@ -283,7 +286,7 @@ function Settings({ settings }: { settings: StorySettings }) {
  * told with your voice and style. Scripts can do the same through
  * POST /api/stories/branch, with the default voice and style.
  */
-function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) => void }) {
+function Branches({ stories, onPlay, onDiff }: { stories: Story[]; onPlay: (id: string) => void; onDiff: (branch: string, base?: string) => void }) {
   const [list, setList] = useState<{ base: string; branches: BranchInfo[] } | null>(null);
   const [error, setError] = useState("");
   const [pick, setPick] = useState("");
@@ -357,6 +360,14 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
             {local.length > 0 && <optgroup label="Local">{local.map(option)}</optgroup>}
             {remote.length > 0 && <optgroup label="Remote">{remote.map(option)}</optgroup>}
           </select>
+          <button
+            onClick={() => pick && onDiff(pick, list.base)}
+            disabled={!pick}
+            className="shrink-0 rounded-md border border-line px-2.5 text-[13px] text-muted hover:border-course/60 hover:text-text disabled:opacity-40"
+            title={`Every change ${pick || "the branch"} makes relative to ${list.base}`}
+          >
+            Diff
+          </button>
           <button
             onClick={() => void explain()}
             disabled={!pick || busy}

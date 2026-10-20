@@ -82,6 +82,14 @@ of a file. In the Stories panel, pick a branch under *Branches* — yours, or a 
 (*Fetch remotes* runs `git fetch --all --prune` first) — and *Explain vs main*. A remote
 branch works the same as a local one: `"branch": "origin/feature/x"`.
 
+**The full diff.** *Diff* (beside *Explain*, and *Full diff* in a branch story's player)
+opens everything the branch changes against its base: the changed files down the side
+with their status and +/−, git's diff of the selected one beside them (↑ / ↓ step through
+files), the branch's commits, *Light on map* to focus the changed files, and *Explain as
+a story*. A link opens it too: `/?diff=<branch>&base=<base>`; the branch-story API
+returns one as `diffUrl`. `GET /api/branch-diff?branch=&base=` gives the commits and
+files, and with `&path=` one file's diff.
+
 **Hearing a voice.** Picking a voice plays a short line in it (so does letting go of the
 pace slider, and *Hear it*); previews are cached like everything else.
 

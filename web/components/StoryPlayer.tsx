@@ -44,6 +44,7 @@ export function StoryPlayer({
   onFocus,
   onOpenFile,
   onPick,
+  onDiff,
   onClose,
 }: {
   story: Story;
@@ -54,6 +55,8 @@ export function StoryPlayer({
   onOpenFile: (path: string, line?: number, endLine?: number) => void;
   /** Another story in the queue. */
   onPick: (id: string, autoplay: boolean) => void;
+  /** A branch story: open the branch's whole diff. */
+  onDiff?: () => void;
   onClose: () => void;
 }) {
   const [speed, setSpeedState] = useState(() => stored(SPEED_KEY, 1));
@@ -139,6 +142,8 @@ export function StoryPlayer({
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       const k = keys.current;
       if (!k) return;
+      // Something modal is over the story (the full diff): its keys are its own.
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       const handled = (() => {
         if (e.key === " " || e.code === "Space") return k.toggle(), true;
         if (e.key === "ArrowRight") return e.shiftKey ? k.seekAbs(5000) : k.step(1), true;
@@ -179,6 +184,18 @@ export function StoryPlayer({
                 title="The parts of the code this story is about"
               >
                 Code in this story ({story.context.length})
+              </button>
+            )}
+            {onDiff && (
+              <button
+                onClick={() => {
+                  player.pause();
+                  onDiff();
+                }}
+                className="rounded px-2 py-0.5 text-[13px] text-muted hover:bg-white/5 hover:text-text"
+                title={`Every change against ${story.branch?.base}`}
+              >
+                Full diff
               </button>
             )}
             <button onClick={onClose} className="rounded px-2 py-0.5 text-[13px] text-muted hover:bg-white/5 hover:text-text" aria-label="Close story">

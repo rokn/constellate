@@ -18,6 +18,7 @@ import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 import { StoryPlayer } from "./components/StoryPlayer";
 import { StoriesPanel } from "./components/StoriesPanel";
+import { BranchDiff } from "./components/BranchDiff";
 
 const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true };
 
@@ -103,6 +104,12 @@ export function App() {
   const [storiesOpen, setStoriesOpen] = useState(false);
   /** The story playing, the playlist it's in, and whether to start on its own. */
   const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean } | null>(null);
+  /** A branch's whole diff against its base, open over everything. A link can open it: /?diff=<branch>&base=<base>. */
+  const [branchDiff, setBranchDiff] = useState<{ branch: string; base?: string } | null>(() => {
+    const q = new URLSearchParams(location.search);
+    const branch = q.get("diff");
+    return branch ? { branch, base: q.get("base") || undefined } : null;
+  });
   /** The "what changed since the chart" list under the re-chart prompt. */
   const [changesOpen, setChangesOpen] = useState(false);
   /** The note being written or edited, and what it's pinned to. */
@@ -1308,6 +1315,7 @@ export function App() {
               playStory(id, queue);
             }}
             onPlayIntro={playIntro}
+            onDiff={(branch, base) => setBranchDiff({ branch, base })}
             onClose={() => setStoriesOpen(false)}
           />
         )}
@@ -1537,10 +1545,31 @@ export function App() {
             }}
             onOpenFile={(p, l, e) => openFile(p, l, e)}
             onPick={(id, autoplay) => playStory(id, story.queue, autoplay)}
+            onDiff={s.branch ? () => setBranchDiff({ branch: s.branch!.name, base: s.branch!.base }) : undefined}
             onClose={() => setStory(null)}
           />
         );
       })()}
+
+      {branchDiff && (
+        <BranchDiff
+          branch={branchDiff.branch}
+          base={branchDiff.base}
+          onLight={(paths, label) => {
+            setBranchDiff(null);
+            focus(paths, label);
+          }}
+          onExplain={(branch, base) => {
+            setBranchDiff(null);
+            // The new story opens itself as it's written (see the stories effect).
+            void post("/api/stories/branch", { branch, base, settings: "mine" });
+          }}
+          onClose={() => {
+            setBranchDiff(null);
+            if (location.search) window.history.replaceState(null, "", location.pathname);
+          }}
+        />
+      )}
 
       {!minimal && tuneOpen && (
         <div className="pointer-events-none absolute bottom-28 right-4 top-4 z-40 w-[min(360px,calc(100%-2rem))]">

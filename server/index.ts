@@ -32,7 +32,7 @@ import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
-import { fetchRemotes, listBranches } from "./branch";
+import { branchDiff, branchFileDiff, fetchRemotes, listBranches } from "./branch";
 
 /**
  * One process: the API, the live stream, the voice bridge and (in dev) Vite.
@@ -372,6 +372,28 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         json(res, 502, { error: err instanceof Error ? err.message.split("\n")[0] : String(err) });
       }
       return true;
+    case "GET /api/branch-diff": {
+      // A branch against its base: commits and changed files. With `path`, that file's diff.
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      const q = url.searchParams;
+      try {
+        const root = session.idx.graph.root;
+        const d = await branchDiff(root, q.get("branch") ?? "", q.get("base") || undefined);
+        const file = q.get("path");
+        if (file) {
+          const diff = await branchFileDiff(root, d, file);
+          return json(res, 200, { diff: diff.length > 400_000 ? `${diff.slice(0, 400_000)}\n… (diff truncated)` : diff }), true;
+        }
+        const idx = session.idx;
+        json(res, 200, {
+          ...d,
+          files: d.files.map((f) => ({ ...f, lang: idx.byPath.get(f.path)?.lang ?? (path.extname(f.path).slice(1) || "text"), onMap: idx.byPath.has(f.path) })),
+        });
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
     case "GET /api/story": {
       const s = getStory(url.searchParams.get("id") ?? "");
       if (!s) return json(res, 404, { error: "No such story." }), true;
@@ -410,7 +432,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         return json(res, 400, { error: err instanceof Error ? err.message : String(err) }), true;
       }
       const link = `http://localhost:${port}/?story=${story.id}`;
-      if (!b.wait) return json(res, 202, { ok: true, id: story.id, state: story.state, url: link, status: `/api/story?id=${story.id}` }), true;
+      const diffUrl = `http://localhost:${port}/?diff=${encodeURIComponent(story.branch!.name)}&base=${encodeURIComponent(story.branch!.base)}`;
+      if (!b.wait) return json(res, 202, { ok: true, id: story.id, state: story.state, url: link, diffUrl, status: `/api/story?id=${story.id}` }), true;
       // Wait (up to `wait` seconds, default ten minutes) for it to be written and voiced.
       const deadline = Date.now() + (typeof b.wait === "number" ? b.wait : 600) * 1000;
       const done = await new Promise<boolean>((resolve) => {
@@ -423,7 +446,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         check();
       });
       const s = getStory(story.id);
-      json(res, done && s?.state === "ready" ? 200 : done ? 500 : 202, { ok: s?.state === "ready", id: story.id, state: s?.state, error: s?.error, title: s?.title, url: link, story: s });
+      json(res, done && s?.state === "ready" ? 200 : done ? 500 : 202, { ok: s?.state === "ready", id: story.id, state: s?.state, error: s?.error, title: s?.title, url: link, diffUrl, story: s });
       return true;
     }
     case "POST /api/story-settings": {
