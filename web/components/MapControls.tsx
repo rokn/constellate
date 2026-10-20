@@ -113,6 +113,7 @@ export function Legend({
   selected,
   onPick,
   onIsolate,
+  onSolo,
   onShowAll,
 }: {
   groups: LogicalModule[];
@@ -128,6 +129,8 @@ export function Legend({
   onPick: (g: LogicalModule) => void;
   /** Toggle showing only this row (with the others in), or with `exclude`, hiding it. */
   onIsolate: (g: LogicalModule, exclude: boolean) => void;
+  /** Double-click: show only this row (again: show all). */
+  onSolo: (g: LogicalModule) => void;
   onShowAll: () => void;
 }) {
   // Same inputs as the space uses, so a legend dot and its cluster always match.
@@ -179,8 +182,9 @@ export function Legend({
               </button>
               <button
                 onClick={(e) => (e.shiftKey ? onIsolate(g, false) : e.altKey ? onIsolate(g, true) : onPick(g))}
+                onDoubleClick={(e) => !e.shiftKey && !e.altKey && onSolo(g)}
                 className="flex min-w-0 flex-1 items-baseline gap-2 py-1 pr-3 text-left hover:bg-white/5"
-                title={`${g.summary ? `${g.summary}\n` : ""}Click to fly there · Shift+click to isolate · Alt+click to hide`}
+                title={`${g.summary ? `${g.summary}\n` : ""}Click to fly there · Double-click to show only it · Shift+click to isolate · Alt+click to hide`}
               >
                 <span className={`min-w-0 flex-1 truncate text-[13px] ${st === "in" || selected?.has(g.id) ? "text-text" : ""} ${st === "out" ? "line-through" : ""}`}>{g.label}</span>
                 {links && !selected?.has(g.id) && (() => {

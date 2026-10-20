@@ -252,7 +252,7 @@ export function Space({
   active: string | null;
   onPick: (path: string) => void;
   /** `how`: Shift was held (isolate it) or Alt (take it out of view); toggles. */
-  onPickModule: (id: string, how?: "isolate" | "exclude") => void;
+  onPickModule: (id: string, how?: "isolate" | "exclude" | "solo") => void;
   onPickDir: (dir: string, how?: "isolate" | "exclude") => void;
   onPickOverlay: (id: string) => void;
   /** Your notes, drawn as sticky cards on what they're pinned to. */
@@ -321,6 +321,8 @@ export function Space({
   handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground };
   /** Files close enough to the camera to be named (Tune -> Name nearby files). */
   const near = useRef(new Set<string>());
+  /** The last beacon clicked, to tell a double-click (show only it) from a click. */
+  const lastBeaconClick = useRef<{ id: string; at: number } | null>(null);
   /** Note cards on the map, by note id. */
   /**
    * Note cards, as HTML over the map rather than sprites in it: crisp text,
@@ -394,7 +396,12 @@ export function Space({
         if (n.type === "file") handlers.current.onPick(n.id);
         else {
           const how = e.altKey ? "exclude" : e.shiftKey ? "isolate" : undefined;
-          if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), how);
+          // A second click on the same beacon soon after: show only that module.
+          const now = performance.now();
+          const again = n.type === "module" && !how && lastBeaconClick.current?.id === n.id && now - lastBeaconClick.current.at < 400;
+          lastBeaconClick.current = again ? null : { id: n.id, at: now };
+          if (again) handlers.current.onPickModule(n.id.slice(4), "solo");
+          else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), how);
           else handlers.current.onPickDir(n.id.slice(4), how);
         }
       })

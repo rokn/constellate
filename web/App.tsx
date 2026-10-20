@@ -388,6 +388,20 @@ export function App() {
       return { ...f, isolate: next.length ? next : undefined };
     });
   }, []);
+  /**
+   * Show only this module or folder (double-click): it replaces whatever is
+   * isolated, keeping what's hidden. Already the only one: show all again.
+   */
+  const soloIsolate = useCallback((item: Isolated) => {
+    setFilter((f) => {
+      const cur = f.isolate ?? [];
+      const ins = cur.filter((i) => !i.exclude);
+      const outs = cur.filter((i) => i.exclude && !(i.kind === item.kind && i.id === item.id));
+      const alone = ins.length === 1 && ins[0].kind === item.kind && ins[0].id === item.id;
+      const next = alone ? outs : [...outs, item];
+      return { ...f, isolate: next.length ? next : undefined };
+    });
+  }, []);
   const isolatedIds = useMemo(
     () => new Map((filter.isolate ?? []).filter((i) => i.kind === legend?.kind).map((i) => [i.id, i.exclude ? ("out" as const) : ("in" as const)])),
     [filter, legend?.kind],
@@ -1083,6 +1097,11 @@ export function App() {
               if (m) setPickedRow({ id: m.id, label: m.label });
               return focusModule(id);
             }
+            if (how === "solo") {
+              const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
+              if (m) soloIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths });
+              return;
+            }
             // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
             const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
             if (!m) return;
@@ -1369,6 +1388,7 @@ export function App() {
             onIsolate={(g, exclude) =>
               toggleIsolate(legend.kind === "dir" ? { kind: "dir", id: g.id, label: g.label } : { kind: "module", id: g.id, label: g.label, paths: g.paths }, exclude)
             }
+            onSolo={(g) => soloIsolate(legend.kind === "dir" ? { kind: "dir", id: g.id, label: g.label } : { kind: "module", id: g.id, label: g.label, paths: g.paths })}
             onShowAll={() => setFilter((f) => ({ ...f, isolate: undefined }))}
           />
         )}
