@@ -11,6 +11,27 @@ export type FileData = {
   importers: string[];
 };
 
+/**
+ * Parts of the state that change rarely. The server pushes the whole state on
+ * every change — dozens of times while the navigator works — and re-parsing
+ * makes every part a new object. Anything downstream that compares by identity
+ * (the 3D map rebuilds its graph when the overview "changes") would then redo
+ * its work on every push, which is what made the map jump around.
+ */
+const STABLE_KEYS = ["repo", "overview", "lenses", "overlays", "view", "frames"] as const;
+
+/** Keep the previous object for any part whose content didn't change. */
+function share(prev: SessionState | null, next: SessionState): SessionState {
+  if (!prev) return next;
+  const out = { ...next } as Record<string, unknown>;
+  for (const k of STABLE_KEYS) {
+    const a = (prev as Record<string, unknown>)[k];
+    const b = (next as Record<string, unknown>)[k];
+    if (a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b)) out[k] = a;
+  }
+  return out as SessionState;
+}
+
 /** The session stream: the server pushes its whole state, coalesced, on every change. */
 export function useSession() {
   const [state, setState] = useState<SessionState | null>(null);
@@ -22,7 +43,7 @@ export function useSession() {
     const connect = () => {
       es = new EventSource("/api/events");
       es.onopen = () => setConnected(true);
-      es.onmessage = (e) => setState(JSON.parse(e.data) as SessionState);
+      es.onmessage = (e) => setState((prev) => share(prev, JSON.parse(e.data) as SessionState));
       es.onerror = () => {
         setConnected(false);
         es?.close();

@@ -126,6 +126,8 @@ export function Space({
   const routeLine = useRef<THREE.Line | null>(null);
   const halo = useRef<THREE.Mesh | null>(null);
   const built = useRef(false);
+  /** What the graph was last built from, so an identical rebuild is skipped. */
+  const builtKey = useRef("");
   const refit = useRef<ReturnType<typeof setTimeout>>(undefined);
   const state = useRef({
     emphasis: new Set<string>(),
@@ -600,6 +602,21 @@ export function Space({
     for (const e of graph.imports) {
       if (next.has(e.from) && next.has(e.to)) links.push({ source: e.from, target: e.to, type: "import" });
     }
+
+    // Same nodes and links as last time: nothing to rebuild. Feeding the
+    // library new graph data reheats the simulation and throws every body
+    // around, so only a real change in structure is allowed to do that.
+    const key = `${[...next.keys()].join("|")}#${links.map((l) => `${l.source as string}>${l.target as string}:${l.type}`).join("|")}`;
+    if (key === builtKey.current) {
+      for (const [id, o] of objs.current) {
+        const c = fileColor.get(id);
+        if (c) (o.mesh.material as THREE.MeshBasicMaterial).color.set(c);
+      }
+      nodes.current = next;
+      applyAll();
+      return;
+    }
+    builtKey.current = key;
 
     // Objects for nodes that left the map are dropped; group beacons are
     // rebuilt per grouping, since their colour belongs to the grouping.

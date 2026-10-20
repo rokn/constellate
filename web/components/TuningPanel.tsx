@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DEFAULT_TUNING, PRESETS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
+import { DEFAULT_TUNING, FORCE_KNOBS, PRESETS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
 
 /**
  * Every knob on the map. Changes apply live; knobs that rebuild the bodies
@@ -93,8 +93,9 @@ export function TuningPanel({
 }
 
 function KnobRow({ knob, value, onChange }: { knob: Knob; value: number | boolean; onChange: (v: number | boolean) => void }) {
-  // Shape knobs rebuild every body; preview the number while dragging, apply on release.
-  const deferred = SHAPE_KNOBS.includes(knob.key);
+  // Shape knobs rebuild every body and force knobs reheat the layout: preview
+  // the number while dragging, apply once on release.
+  const deferred = SHAPE_KNOBS.includes(knob.key) || FORCE_KNOBS.includes(knob.key);
   const [draft, setDraft] = useState<number | null>(null);
 
   if ("toggle" in knob) {
