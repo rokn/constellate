@@ -7,6 +7,8 @@ import type {
   Frame,
   GroupOverlay,
   Lens,
+  Note,
+  NoteTarget,
   Overview,
   SessionState,
   ViewSettings,
@@ -48,6 +50,7 @@ export const session: Session = {
     graphVersion: 0,
     lenses: [],
     overlays: [],
+    notes: [],
     frames: [],
     activity: [],
     commands: [],
@@ -157,6 +160,32 @@ export function updateOverlay(id: string, patch: Partial<Pick<GroupOverlay, "vis
   emit();
 }
 
+export function addNote(text: string, target: NoteTarget): Note {
+  const now = Date.now();
+  const note: Note = { id: `n${now.toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`, text, target, createdAt: now, updatedAt: now };
+  session.state.notes = [...session.state.notes, note];
+  emit();
+  return note;
+}
+
+export function updateNote(id: string, text: string) {
+  session.state.notes = session.state.notes.map((n) => (n.id === id ? { ...n, text, updatedAt: Date.now() } : n));
+  emit();
+}
+
+/** Removes a note; returns it, so it can be put back. */
+export function removeNote(id: string): Note | undefined {
+  const note = session.state.notes.find((n) => n.id === id);
+  session.state.notes = session.state.notes.filter((n) => n.id !== id);
+  emit();
+  return note;
+}
+
+export function restoreNote(note: Note) {
+  session.state.notes = [...session.state.notes.filter((n) => n.id !== note.id), note];
+  emit();
+}
+
 export function removeOverlay(id: string) {
   session.state.overlays = session.state.overlays.filter((o) => o.id !== id);
   emit();
@@ -237,6 +266,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     graphVersion: session.state.graphVersion + 1,
     lenses: [],
     overlays: [],
+    notes: [],
     frames: [],
     activity: [],
     commands: [],
@@ -267,6 +297,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
   if (cached) {
     session.state.lenses = cached.lenses ?? [];
     session.state.overlays = cached.overlays ?? [];
+    session.state.notes = cached.notes ?? [];
     session.state.view = cached.view;
     session.state.frames = (cached.frames ?? []).map((f) =>
       f.state === "working" ? { ...f, state: "error", error: "Interrupted by a restart." } : f,
@@ -296,6 +327,7 @@ type Cached = {
   view?: ViewSettings;
   lenses?: Lens[];
   overlays?: GroupOverlay[];
+  notes?: Note[];
   frames: Frame[];
   agentSessionId?: string;
 };
@@ -318,13 +350,14 @@ async function persist() {
   // Nothing to keep until something has been made; and never write while a
   // repo is still being opened, or an empty state would overwrite a saved one.
   if (!s.repo || !session.idx || s.status === "scanning") return;
-  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.frames.length && !s.view) return;
+  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.frames.length && !s.view) return;
   const body: Cached = {
     head: session.chartedHead,
     overview: s.overview,
     view: s.view,
     lenses: s.lenses,
     overlays: s.overlays,
+    notes: s.notes,
     frames: s.frames,
     agentSessionId: session.agentSessionId,
   };

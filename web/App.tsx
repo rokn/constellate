@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
+import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
 import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
+import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
@@ -15,7 +16,7 @@ import { FilePanel } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 
-const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true };
+const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true };
 
 /** A place you've been, so "back" retraces the flight. */
 type Stop =
@@ -84,6 +85,9 @@ export function App() {
   const [tuning, setTuning] = useState<Tuning>(loadTuning);
   const [tuneOpen, setTuneOpen] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  /** The note being written or edited, and what it's pinned to. */
+  const [noteEdit, setNoteEdit] = useState<{ target: NoteTarget; note?: Note } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [range, setRange] = useState<TimeRange | null>(null);
   const [coupling, setCoupling] = useState(false);
@@ -96,9 +100,10 @@ export function App() {
   /** Where a Shift-selection started, and where its moving end is. */
   const anchor = useRef<string | null>(null);
   /** Opening one left-hand panel closes the other; they share the column. */
-  const openPanel = (which: "filter" | "groups" | null) => {
+  const openPanel = (which: "filter" | "groups" | "notes" | null) => {
     setFilterOpen(which === "filter");
     setGroupsOpen(which === "groups");
+    setNotesOpen(which === "notes");
   };
   /**
    * Where you've been, browser-style: `at` is where you are now; back and
@@ -204,6 +209,7 @@ export function App() {
   const overview = state?.overview;
   const lenses = useMemo(() => state?.lenses ?? [], [state?.lenses]);
   const overlays = useMemo(() => state?.overlays ?? [], [state?.overlays]);
+  const notes = useMemo(() => state?.notes ?? [], [state?.notes]);
   const shownOverlays: Overlay[] = useMemo(
     () =>
       overlays
@@ -873,6 +879,14 @@ export function App() {
         e.preventDefault();
         setPlaying(false);
         step(e.key === "ArrowDown" ? 1 : -1, e.shiftKey);
+      } else if (e.key === "n") {
+        // A note on the import line under the pointer, else on the open file.
+        // (The key press mustn't also land in the editor it opens.)
+        e.preventDefault();
+        const link = space.current?.hoveredLink();
+        if (link) setNoteEdit({ target: { kind: "link", ...link } });
+        else if (file) setNoteEdit({ target: { kind: "file", path: file.path } });
+        else openPanel("notes");
       } else if (e.key === " " || e.code === "Space") {
         // Space recenters even if a button has focus — it shouldn't also press it.
         e.preventDefault();
@@ -953,6 +967,12 @@ export function App() {
           emphasis={emphasis}
           active={file?.path ?? null}
           onPick={(p) => openFile(p, undefined, undefined, false)}
+          notes={notes}
+          onPickNote={(id) => {
+            const n = notes.find((x) => x.id === id);
+            if (n) setNoteEdit({ target: n.target, note: n });
+          }}
+          onNoteOnLink={(from, to) => setNoteEdit({ target: { kind: "link", from, to } })}
           onPickModule={(id, how) => {
             if (!how) return focusModule(id);
             // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
@@ -986,6 +1006,35 @@ export function App() {
         />
       )}
 
+      {noteEdit && (
+        <div className="pointer-events-none fixed inset-x-0 top-[132px] z-30 flex justify-center px-4">
+          <NoteEditor
+            key={noteEdit.note?.id ?? JSON.stringify(noteEdit.target)}
+            target={noteEdit.target}
+            note={noteEdit.note}
+            onSave={(text) => {
+              void post("/api/notes", noteEdit.note ? { action: "update", id: noteEdit.note.id, text } : { action: "add", text, target: noteEdit.target });
+              setNoteEdit(null);
+            }}
+            onDelete={
+              noteEdit.note
+                ? () => {
+                    const note = noteEdit.note!;
+                    void post("/api/notes", { action: "delete", id: note.id });
+                    setNoteEdit(null);
+                    setToast({ text: `Deleted the note on ${describeTarget(note.target)}`, undo: () => void post("/api/notes", { action: "restore", note }) });
+                  }
+                : undefined
+            }
+            onGo={() => {
+              const t = noteEdit.target;
+              space.current?.focus(t.kind === "file" ? [t.path] : [t.from, t.to], shiftFor(panels.current));
+            }}
+            onClose={() => setNoteEdit(null)}
+          />
+        </div>
+      )}
+
       {showIntro && <Intro state={state} graph={graph} onTour={() => (setIntroDone(true), setTour(0))} onExplore={() => setIntroDone(true)} />}
 
       {/* Instruments */}
@@ -1013,6 +1062,9 @@ export function App() {
           </Toggle>
           <Toggle on={layers.beacons} tone="runtime" onClick={() => setLayers((l) => ({ ...l, beacons: !l.beacons }))}>
             Beacons
+          </Toggle>
+          <Toggle on={layers.notes !== false} tone="runtime" onClick={() => setLayers((l) => ({ ...l, notes: l.notes === false }))}>
+            Notes
           </Toggle>
         </div>
         {!showIntro && (
@@ -1068,6 +1120,14 @@ export function App() {
               Groups{overlays.length ? ` (${overlays.length})` : ""}
             </button>
             <button
+              onClick={() => openPanel(notesOpen ? null : "notes")}
+              aria-expanded={notesOpen}
+              title="Your notes on the map (n writes one on the open file)"
+              className={`rounded-md px-2.5 py-0.5 text-[13px] ${notesOpen ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
+            >
+              Notes{notes.length ? ` (${notes.length})` : ""}
+            </button>
+            <button
               onClick={() => setTuneOpen((o) => !o)}
               aria-expanded={tuneOpen}
               title="Tune the map (,)"
@@ -1107,6 +1167,16 @@ export function App() {
             onClose={() => setFilterOpen(false)}
           />
         )}
+        {notesOpen && (
+          <NotesPanel
+            notes={notes}
+            onOpen={(n) => {
+              space.current?.flyToNote(n.id);
+              setNoteEdit({ target: n.target, note: n });
+            }}
+            onClose={() => setNotesOpen(false)}
+          />
+        )}
         {groupsOpen && graph && (
           <GroupsPanel
             overlays={overlays}
@@ -1135,7 +1205,7 @@ export function App() {
             onClose={() => setGroupsOpen(false)}
           />
         )}
-        {!showIntro && !filterOpen && !groupsOpen && legend && !file && (
+        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && legend && !file && (
           <Legend
             groups={legend.groups}
             counts={legend.counts}
@@ -1243,6 +1313,7 @@ export function App() {
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}
             onHide={() => hide([file.path], file.path.split("/").pop()!)}
+            onNote={() => setNoteEdit({ target: { kind: "file", path: file.path } })}
             goEditor={goplsReady}
             onReferences={(name, paths) => {
               // Light who uses it on the map, without moving the camera off the code.

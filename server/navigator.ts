@@ -817,10 +817,21 @@ async function introPrompt(rechart?: Rechart): Promise<string> {
   ].join("\n");
 }
 
+/** The reader's own notes on a file and its import lines — what they've learned or want to remember. */
+function notesOn(path?: string): string {
+  if (!path) return "";
+  const mine = session.state.notes.filter((n) => (n.target.kind === "file" ? n.target.path === path : n.target.from === path || n.target.to === path));
+  if (!mine.length) return "";
+  return `Their notes on it:\n${mine
+    .map((n) => `- ${n.target.kind === "file" ? "on the file" : `on the import ${n.target.from} → ${n.target.to}`}: ${n.text.slice(0, 600)}`)
+    .join("\n")}`;
+}
+
 function screenNote(screen?: ScreenContext): string {
   if (!screen) return "";
   const bits = [
     screen.openFile ? `They have ${screen.openFile.path}${screen.openFile.line ? ` open at line ${screen.openFile.line}` : ""} in the code panel.` : "",
+    notesOn(screen.openFile?.path),
     screen.focusLabel ? `The camera is on: ${screen.focusLabel}.` : "",
     screen.lens ? `The map is organized by ${screen.lens}${screen.lensId && screen.lensId !== "folders" ? ` (grouping id: ${screen.lensId})` : ""}.` : "",
     screen.range ? `The map is showing history: ${screen.range}.` : "",

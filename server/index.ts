@@ -3,12 +3,27 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Lens, ScreenContext, ViewSettings } from "../shared/types";
+import type { Lens, Note, NoteTarget, ScreenContext, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
 import { commitMessage, diffFile, graphAt, loadHistory } from "./history";
-import { addOverlay, dropOverview, openRepo, putLens, removeLens, removeOverlay, session, setView, subscribe, updateOverlay } from "./session";
+import {
+  addNote,
+  addOverlay,
+  dropOverview,
+  openRepo,
+  putLens,
+  removeLens,
+  removeNote,
+  removeOverlay,
+  restoreNote,
+  session,
+  setView,
+  subscribe,
+  updateNote,
+  updateOverlay,
+} from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
 
@@ -201,6 +216,22 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       void done.catch((err) => console.error("[ask]", err));
       json(res, 202, { ok: true });
       return true;
+    }
+    case "POST /api/notes": {
+      // Your notes on files and import lines.
+      if (!session.state.repo) return json(res, 400, { error: "No repository open." }), true;
+      const b = await body<{ action?: string; id?: string; text?: string; target?: NoteTarget; note?: Note }>(req);
+      const text = b.text?.trim().slice(0, 4000) ?? "";
+      const t = b.target;
+      const validTarget = !!t && ((t.kind === "file" && !!t.path) || (t.kind === "link" && !!t.from && !!t.to));
+      if (b.action === "add" && text && validTarget) return json(res, 200, { ok: true, note: addNote(text, t!) }), true;
+      if (b.action === "update" && b.id && text) return updateNote(b.id, text), json(res, 200, { ok: true }), true;
+      if (b.action === "delete" && b.id) {
+        const note = removeNote(b.id);
+        return json(res, note ? 200 : 404, note ? { ok: true, note } : { error: "No such note." }), true;
+      }
+      if (b.action === "restore" && b.note?.id && b.note.text && b.note.target) return restoreNote(b.note), json(res, 200, { ok: true }), true;
+      return json(res, 400, { error: "Unknown action, or nothing to save." }), true;
     }
     case "POST /api/lenses": {
       // Delete a grouping, or put a deleted one back (undo).

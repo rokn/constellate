@@ -20,7 +20,7 @@ export type FileData = {
  * (the 3D map rebuilds its graph when the overview "changes") would then redo
  * its work on every push, which is what made the map jump around.
  */
-const STABLE_KEYS = ["repo", "overview", "lenses", "overlays", "view", "frames"] as const;
+const STABLE_KEYS = ["repo", "overview", "lenses", "overlays", "notes", "view", "frames"] as const;
 
 /** Keep the previous object for any part whose content didn't change. */
 function share(prev: SessionState | null, next: SessionState): SessionState {

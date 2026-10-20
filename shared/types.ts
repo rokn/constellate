@@ -121,6 +121,18 @@ export type Lens = {
  * hot path" — without reorganizing it. Drawn as a beacon over its files; the
  * layout, and whatever separation it has, stays exactly as it is.
  */
+/** Where a note is pinned: a file, or an import line between two files. */
+export type NoteTarget = { kind: "file"; path: string } | { kind: "link"; from: string; to: string };
+
+/** Your note, pinned to the map as a sticky card. */
+export type Note = {
+  id: string;
+  text: string;
+  target: NoteTarget;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type GroupOverlay = {
   id: string;
   label: string;
@@ -306,7 +318,7 @@ export type UiCommand =
   /** Fly through the commits in the current range, one by one. */
   | { cmd: "replay" };
 
-export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons";
+export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons" | "notes";
 
 /**
  * How you have the map set up for one repo — knobs, layers, organization,
@@ -350,6 +362,7 @@ export type SessionState = {
   lenses: Lens[];
   /** Groups marked on top of the map, by you or the navigator. */
   overlays: GroupOverlay[];
+  notes: Note[];
   frames: Frame[];
   activity: Activity[];
   commands: { id: number; cmd: UiCommand }[];

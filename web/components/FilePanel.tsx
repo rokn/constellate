@@ -21,6 +21,7 @@ export function FilePanel({
   onNavigate,
   onAsk,
   onHide,
+  onNote,
   goEditor,
   onReferences,
   onSelection,
@@ -35,6 +36,8 @@ export function FilePanel({
   onNavigate: (path: string, line?: number) => void;
   onAsk: (request: string) => void;
   onHide: () => void;
+  /** Pin a note to this file. */
+  onNote?: () => void;
   /** Use VS Code's editor with gopls for Go files. */
   goEditor?: boolean;
   onReferences?: (name: string, paths: string[]) => void;
@@ -104,6 +107,15 @@ export function FilePanel({
         >
           Explain this file
         </button>
+        {onNote && (
+          <button
+            onClick={onNote}
+            title="Pin a note to this file (n)"
+            className="shrink-0 rounded px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-[#ffd75e]"
+          >
+            Note
+          </button>
+        )}
         <button
           onClick={onHide}
           title="Hide this file from the map (x) — bring it back from Filter"
