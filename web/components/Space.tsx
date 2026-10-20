@@ -137,76 +137,14 @@ export type SpaceHandle = {
 /** The sticky-note colour: nothing else on the map is this yellow. */
 const NOTE_BG = "#ffd75e";
 
-/**
- * A note's card, drawn once to a canvas: a yellow card with the first lines of
- * the text, and a stem down to the point it's pinned to. The sprite's anchor
- * is the stem's foot, so the card always stands above what it's on.
- */
-function noteCard(text: string, kind: "file" | "link") {
-  const scale = 2;
-  const w = 240;
-  const pad = 10;
-  const lineH = 17;
-  const c = document.createElement("canvas");
-  const ctx = c.getContext("2d")!;
-  ctx.font = `600 13.5px ${FONT_SANS}`;
-  // Word-wrap to the card, three lines at most.
-  const words = text.replace(/\s+/g, " ").trim().split(" ");
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? `${line} ${word}` : word;
-    if (ctx.measureText(next).width > w - pad * 2 - 14 && line) {
-      lines.push(line);
-      line = word;
-      if (lines.length === 3) break;
-    } else line = next;
-  }
-  if (lines.length < 3 && line) lines.push(line);
-  else if (lines.length === 3) lines[2] = `${lines[2].replace(/\s*\S*$/, "")}…`;
-  const cardH = pad * 2 + lines.length * lineH;
-  const stem = 26;
-  c.width = w * scale;
-  c.height = (cardH + stem) * scale;
-  ctx.scale(scale, scale);
-  // Card, with a folded corner so it reads as a note at a glance.
-  ctx.fillStyle = NOTE_BG;
-  ctx.beginPath();
-  ctx.moveTo(4, 0);
-  ctx.lineTo(w - 14, 0);
-  ctx.lineTo(w, 14);
-  ctx.lineTo(w, cardH - 4);
-  ctx.quadraticCurveTo(w, cardH, w - 4, cardH);
-  ctx.lineTo(4, cardH);
-  ctx.quadraticCurveTo(0, cardH, 0, cardH - 4);
-  ctx.lineTo(0, 4);
-  ctx.quadraticCurveTo(0, 0, 4, 0);
-  ctx.fill();
-  ctx.fillStyle = "#c9a227";
-  ctx.beginPath();
-  ctx.moveTo(w - 14, 0);
-  ctx.lineTo(w - 14, 14);
-  ctx.lineTo(w, 14);
-  ctx.fill();
-  ctx.fillStyle = "#2b2200";
-  ctx.font = `600 13.5px ${FONT_SANS}`;
-  ctx.textBaseline = "top";
-  lines.forEach((l, i) => ctx.fillText(l, pad, pad + i * lineH));
-  // The stem, and a ring where it's pinned (a dash for an import line).
-  ctx.strokeStyle = NOTE_BG;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(w / 2, cardH);
-  ctx.lineTo(w / 2, cardH + stem - 6);
-  ctx.stroke();
-  ctx.beginPath();
-  if (kind === "file") ctx.arc(w / 2, cardH + stem - 4, 3.5, 0, Math.PI * 2);
-  else ctx.rect(w / 2 - 6, cardH + stem - 5, 12, 2.5);
-  ctx.stroke();
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return { tex, w, h: cardH + stem };
-}
+/** A note's first line: what the map shows of it. */
+const firstLine = (text: string) => (text.trim().split("\n")[0] ?? "").replace(/\s+/g, " ").trim();
+/** A card's width in the world, so it shrinks with distance like the rest of the map. */
+const NOTE_WORLD_W = 46;
+/** A card's drawn width; it's never shown bigger than this. */
+const NOTE_CARD_PX = 220;
+/** Below this many pixels wide a card can't be read: it folds into a one-line tag. */
+const NOTE_MIN_PX = 120;
 
 // Labels are drawn to canvas, which won't wait for a web font: without a
 // fallback stack the first ones come out in the browser's default serif.
@@ -343,7 +281,14 @@ export function Space({
   const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground });
   handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground };
   /** Note cards on the map, by note id. */
-  const noteObjs = useRef(new Map<string, { sprite: THREE.Sprite; note: Note; w: number; h: number }>());
+  /**
+   * Note cards, as HTML over the map rather than sprites in it: crisp text,
+   * untouched by the bloom, and ordinary hover and click. Placed every frame.
+   */
+  const noteEls = useRef(new Map<string, { el: HTMLDivElement; card: HTMLDivElement; tag: HTMLDivElement; note: Note }>());
+  const noteLayer = useRef<HTMLDivElement | null>(null);
+  /** The map's hover tag, for the notes' own hover. */
+  const tipFor = useRef<(e: MouseEvent, html: string | null) => void>(() => {});
   /** Group membership rings: one sprite per (group, file), drawn around the file. */
   const rings = useRef<{ sprite: THREE.Sprite; path: string; k: number }[]>([]);
   /** The import line under the pointer, lit while hovered. */
@@ -515,17 +460,6 @@ export function Space({
       return live.find(([, o]) => o.hit === hits[0].object)?.[0] ?? null;
     };
 
-    /** The note card under the pointer, if any. */
-    const noteAt = (e: PointerEvent): Note | null => {
-      const live = [...noteObjs.current.values()].filter((o) => o.sprite.visible);
-      if (!live.length) return null;
-      const rect = host.getBoundingClientRect();
-      const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-      raycaster.setFromCamera(ndc, g.camera());
-      const hit = raycaster.intersectObjects(live.map((o) => o.sprite), false)[0];
-      return hit ? (live.find((o) => o.sprite === hit.object)?.note ?? null) : null;
-    };
-
     /** The group spoke under the pointer, if any: which group, which file. */
     const spokeAt = (e: PointerEvent): { id: string; path: string } | null => {
       const rect = host.getBoundingClientRect();
@@ -573,22 +507,23 @@ export function Space({
       tip.style.left = `${e.clientX - r.left + 14}px`;
       tip.style.top = `${e.clientY - r.top + 14}px`;
     };
+    tipFor.current = (e, html) => showTip(e as PointerEvent, html);
+    const layer = document.createElement("div");
+    Object.assign(layer.style, { position: "absolute", inset: "0", pointerEvents: "none", overflow: "hidden", zIndex: "4" });
+    host.appendChild(layer);
+    noteLayer.current = layer;
     let down: { x: number; y: number } | null = null;
     const onDown = (e: PointerEvent) => {
       down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
       takeCamera();
     };
+    const onNote = (e: Event) => !!(e.target as HTMLElement | null)?.closest?.(".note-pin");
     const onUp = (e: PointerEvent) => {
       const start = down;
       down = null;
+      if (onNote(e)) return;
       // A drag that ends on a beacon is still an orbit, not a click.
       if (!start || e.button !== 0 || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5) return;
-      const note = noteAt(e);
-      if (note) {
-        beaconClickAt.current = performance.now();
-        handlers.current.onPickNote(note.id);
-        return;
-      }
       const id = overlayAt(e);
       if (id) {
         beaconClickAt.current = performance.now();
@@ -603,17 +538,9 @@ export function Space({
       }
     };
     const onHover = (e: PointerEvent) => {
-      if (e.buttons || (!overlayObjs.current.size && !noteObjs.current.size)) return showTip(e, null);
-      const note = noteAt(e);
-      if (note) {
-        host.style.cursor = g.renderer().domElement.style.cursor = "pointer";
-        const where = note.target.kind === "file" ? note.target.path : `${note.target.from} → ${note.target.to}`;
-        return showTip(
-          e,
-          `<div style="color:${NOTE_BG};font-weight:600">Note · <span style="opacity:.7;font-weight:400">${esc(where)}</span></div>` +
-            `<div style="white-space:pre-wrap;max-width:340px">${esc(note.text)}</div><span style="opacity:.45">click to edit</span>`,
-        );
-      }
+      // A note shows its own tag.
+      if (onNote(e)) return;
+      if (e.buttons || !overlayObjs.current.size) return showTip(e, null);
       const beacon = overlayAt(e);
       const spoke = beacon ? null : spokeAt(e);
       const over = !!(beacon || spoke);
@@ -1098,21 +1025,39 @@ export function Space({
           tu().groupRings * (emphasis.size && !emphasis.has(r.path) ? 0.2 : 1);
       }
 
-      // Notes ride what they're pinned to, at a fixed size on screen, never dimmed.
+      // Notes ride what they're pinned to, never dimmed. A card has a size in
+      // the world, so it shrinks with distance like the rest of the map (and
+      // never grows past its drawn size); too small to read, it's a tag.
       const notesOn = state.current.layers.notes !== false;
       const camera = g.camera() as THREE.PerspectiveCamera;
       const px = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / host.clientHeight;
-      for (const o of noteObjs.current.values()) {
+      const at = new THREE.Vector3();
+      for (const o of noteEls.current.values()) {
         const t = o.note.target;
         const a = nodes.current.get(t.kind === "file" ? t.path : t.from);
         const b = t.kind === "link" ? nodes.current.get(t.to) : a;
         if (!notesOn || a?.x === undefined || b?.x === undefined) {
-          o.sprite.visible = false;
+          o.el.style.display = "none";
           continue;
         }
-        o.sprite.visible = true;
-        o.sprite.position.set((a.x + b.x!) / 2, (a.y! + b.y!) / 2, (a.z! + b.z!) / 2);
-        o.sprite.scale.set(o.w * px, o.h * px, 1);
+        at.set((a.x + b.x!) / 2, (a.y! + b.y!) / 2, (a.z! + b.z!) / 2);
+        const dist = camera.position.distanceTo(at);
+        at.project(camera);
+        if (at.z > 1 || Math.abs(at.x) > 1.3 || Math.abs(at.y) > 1.3) {
+          o.el.style.display = "none";
+          continue;
+        }
+        const x = ((at.x + 1) / 2) * host.clientWidth;
+        const y = ((1 - at.y) / 2) * host.clientHeight;
+        const wide = Math.min(NOTE_CARD_PX, NOTE_WORLD_W / (dist * px));
+        const card = wide >= NOTE_MIN_PX;
+        o.el.style.display = "block";
+        o.card.style.display = card ? "block" : "none";
+        o.tag.style.display = card ? "none" : "block";
+        // Anchored at the stem's foot: the note stands above its pin.
+        o.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)${card ? ` scale(${(wide / NOTE_CARD_PX).toFixed(3)})` : ""}`;
+        // Nearer notes in front of farther ones.
+        o.el.style.zIndex = String(Math.round((1 - at.z) * 1e6));
       }
 
       const a = state.current.active && nodes.current.get(state.current.active);
@@ -1150,6 +1095,7 @@ export function Space({
       window.removeEventListener("keyup", onFlyKey, true);
       window.removeEventListener("blur", onBlur);
       tip.remove();
+      layer.remove();
       hint.remove();
       g._destructor();
       host.innerHTML = "";
@@ -1694,30 +1640,52 @@ export function Space({
   }, [overlays, tuning.beaconLabelSize]);
 
   useEffect(() => {
-    const g = fg.current;
-    if (!g) return;
-    const live = noteObjs.current;
+    const layer = noteLayer.current;
+    if (!layer) return;
+    const live = noteEls.current;
     for (const [id, o] of live) {
       const now = notes.find((n) => n.id === id);
       if (now && now.text === o.note.text) {
         o.note = now;
         continue;
       }
-      g.scene().remove(o.sprite);
-      o.sprite.material.map?.dispose();
-      o.sprite.material.dispose();
+      o.el.remove();
       live.delete(id);
     }
     for (const note of notes) {
       if (live.has(note.id)) continue;
-      const card = noteCard(note.text, note.target.kind);
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: card.tex, sizeAttenuation: false, depthTest: false, depthWrite: false, transparent: true }));
-      // Anchored at the stem's foot, so the card stands above its pin.
-      sprite.center.set(0.5, 0);
-      sprite.renderOrder = 999;
-      sprite.visible = false;
-      g.scene().add(sprite);
-      live.set(note.id, { sprite, note, w: card.w, h: card.h });
+      const el = document.createElement("div");
+      el.className = "note-pin";
+      Object.assign(el.style, { position: "absolute", left: "0", top: "0", transformOrigin: "50% 100%", pointerEvents: "auto", cursor: "pointer" });
+      const first = firstLine(note.text);
+      const card = document.createElement("div");
+      card.className = "note-card";
+      card.style.width = `${NOTE_CARD_PX}px`;
+      card.textContent = first;
+      const tag = document.createElement("div");
+      tag.className = "note-tag";
+      tag.textContent = first;
+      const stem = document.createElement("div");
+      stem.className = note.target.kind === "file" ? "note-stem" : "note-stem note-stem-link";
+      el.append(card, tag, stem);
+      const where = note.target.kind === "file" ? note.target.path : `${note.target.from} → ${note.target.to}`;
+      el.addEventListener("pointerenter", (e) =>
+        tipFor.current(
+          e,
+          `<div style="color:${NOTE_BG};font-weight:600">Note · <span style="opacity:.7;font-weight:400">${esc(where)}</span></div>` +
+            `<div style="white-space:pre-wrap;max-width:340px">${esc(note.text)}</div><span style="opacity:.45">click to edit</span>`,
+        ),
+      );
+      el.addEventListener("pointerleave", (e) => tipFor.current(e, null));
+      // The graph mustn't take a press on a note as a click on what's behind it.
+      el.addEventListener("pointerdown", (e) => e.stopPropagation());
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        handlers.current.onPickNote(note.id);
+      });
+      el.style.display = "none";
+      layer.appendChild(el);
+      live.set(note.id, { el, card, tag, note });
     }
   }, [notes]);
 
@@ -1829,7 +1797,7 @@ export function Space({
       return l ? { from: endId(l.source), to: endId(l.target) } : null;
     },
     flyToNote(id) {
-      const n = noteObjs.current.get(id)?.note;
+      const n = noteEls.current.get(id)?.note;
       if (!n) return;
       focusIds(n.target.kind === "file" ? [n.target.path] : [n.target.from, n.target.to]);
     },

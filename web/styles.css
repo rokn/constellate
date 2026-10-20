@@ -204,3 +204,58 @@ body,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Notes on the map: sticky cards over the 3D view, drawn as HTML so the bloom leaves them readable. */
+.note-card {
+  background: #ffd75e;
+  color: #2b2200;
+  font: 600 13.5px/1.3 "Barlow", ui-sans-serif, system-ui, sans-serif;
+  padding: 8px 12px 9px 10px;
+  border-radius: 4px;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%);
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.7);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.note-tag {
+  background: #ffd75e;
+  color: #2b2200;
+  font: 600 11px/1 "Barlow", ui-sans-serif, system-ui, sans-serif;
+  padding: 3px 7px;
+  border-radius: 3px;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.note-stem {
+  width: 2px;
+  height: 14px;
+  margin: 0 auto;
+  background: #ffd75e;
+  position: relative;
+}
+.note-stem::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 7px;
+  height: 7px;
+  transform: translateX(-50%);
+  border: 1.5px solid #ffd75e;
+  border-radius: 50%;
+}
+.note-stem-link::after {
+  width: 12px;
+  height: 0;
+  border-width: 1.5px 0 0;
+  border-radius: 0;
+  bottom: 0;
+}
+.note-pin:hover .note-card,
+.note-pin:hover .note-tag {
+  outline: 2px solid #fff3c4;
+}
