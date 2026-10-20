@@ -395,6 +395,8 @@ export function Space({
         if (beaconJustClicked()) return;
         if (n.type === "file") handlers.current.onHide({ file: n.id });
         else if (n.type === "dir" && n.id !== "dir:.") handlers.current.onHide({ dir: n.id.slice(4) });
+        // A module's (or group's) beacon: take that module out of view.
+        else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), "exclude");
       })
       // Dragging bodies is a knob (Tune -> Camera -> Drag bodies). It was off
       // for a while: the library's drag-end path fakes a touch pointerup that

@@ -988,7 +988,14 @@ export function App() {
             if (!how) return focusModule(id);
             // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
             const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
-            if (m) toggleIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths }, how === "exclude");
+            if (!m) return;
+            const item: Isolated = { kind: "module", id: m.id, label: m.label, paths: m.paths };
+            toggleIsolate(item, how === "exclude");
+            // Hiding a whole module is a big change to the map: say so, with a way back.
+            const wasHidden = filter.isolate?.some((i) => i.kind === "module" && i.id === m.id && i.exclude);
+            if (how === "exclude" && !wasHidden) {
+              setToast({ text: `Hid ${m.label} — bring it back from the legend or Filter`, undo: () => toggleIsolate(item, true) });
+            }
           }}
           onOpenImport={(from, line) => openFile(from, line)}
           onHideOverlay={(id) => {
