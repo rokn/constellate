@@ -199,6 +199,8 @@ export function Space({
     tuning,
     /** How many files import each file, for the size-by-importers knob. */
     inDegree: new Map<string, number>(),
+    /** The map's clusters — modules, or the groups when organized by them — for auto-aim. */
+    clusters: [] as { id: string; label: string; members: string[] }[],
   });
   /** The current knob values, read at the moment of use. */
   const tu = () => state.current.tuning;
@@ -550,6 +552,24 @@ export function Space({
       // Pixels, lines or pages: one notch is about 100px. Trackpads send many small ones.
       const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
       const amount = Math.min(Math.abs(px) / 100, 3) * 0.17 * (tu().zoomSpeed / 1.6);
+      const aim = px < 0 && tu().autoAim ? aimFor(e, cam, dir) : null;
+      // Arrived and still scrolling: on through it, down the middle of the view
+      // (the pointer is wherever the target was before the view turned to it).
+      if (aim === "through") dir = forward.clone();
+      else if (aim) {
+        // Turn onto it while closing in, easing to a stop where it's framed.
+        const to = aim.point.clone().sub(cam);
+        const dist = to.length();
+        to.normalize();
+        const remaining = dist - aim.stop;
+        const go = Math.min(remaining, Math.max(remaining * amount * 1.6, span * 0.003));
+        // The last step faces it square; the ones before turn part of the way.
+        const turn = Math.min(1, Math.max(0.35, go / remaining));
+        const face = forward.clone().lerp(to, turn).normalize();
+        cam.addScaledVector(to, go);
+        dollyGoal.current = { cam, target: cam.clone().addScaledVector(face, Math.max(dist - go, floor * 0.25)), at: performance.now() };
+        return;
+      }
       let step: number;
       let ahead: number;
       if (px < 0) {
@@ -570,6 +590,104 @@ export function Space({
       dollyGoal.current = { cam, target: cam.clone().addScaledVector(forward, Math.max(ahead, floor * 0.25)), at: performance.now() };
     };
     host.addEventListener("wheel", onWheel, { capture: true, passive: false });
+
+    /* ---- auto-aim: scrolling toward a cluster or a file homes in on it ---- */
+
+    // What the wheel is homing in on. Held while you keep scrolling with the
+    // mouse still — the view turns, so the pointer soon stops being over it.
+    let aimLock: { kind: "cluster" | "body"; id: string; x: number; y: number; at: number; reached?: boolean } | null = null;
+    const clusterShape = (members: string[]) => {
+      const c = centroid(members);
+      if (!c) return null;
+      const ds = members
+        .map((p) => nodes.current.get(p))
+        .filter((n): n is N => n?.x !== undefined)
+        .map((n) => Math.hypot(n.x! - c.x, n.y! - c.y, n.z! - c.z))
+        .sort((a, b) => a - b);
+      // Most of it, not the stragglers.
+      const r = Math.max(30, ds[Math.floor(ds.length * 0.8)] ?? 30);
+      return { point: new THREE.Vector3(c.x, c.y, c.z), r };
+    };
+    const bodyShape = (id: string) => {
+      const n = nodes.current.get(id);
+      if (n?.x === undefined) return null;
+      const r = objs.current.get(id)?.base ?? 2;
+      return { point: new THREE.Vector3(n.x, n.y!, n.z!), r };
+    };
+    /** Framed distances: a cluster fills the view, a file sits close with room around it. */
+    const clusterStop = (r: number) => r * 2.4 + 40;
+    const bodyStop = (r: number) => Math.max(r * 12, 45);
+    const aimFor = (e: WheelEvent, cam: THREE.Vector3, dir: THREE.Vector3) => {
+      const now = performance.now();
+      const held = aimLock && now - aimLock.at < 700 && Math.hypot(e.clientX - aimLock.x, e.clientY - aimLock.y) < 40 ? aimLock : null;
+      let pick: { kind: "cluster" | "body"; id: string; label: string; point: THREE.Vector3; stop: number } | null = null;
+      // Reached it already: keep going the way you're facing, past it.
+      if (held?.reached) {
+        held.at = now;
+        return "through" as const;
+      }
+      if (held) {
+        const c = held.kind === "cluster" ? state.current.clusters.find((x) => x.id === held.id) : null;
+        const shape = c ? clusterShape(c.members) : held.kind === "body" ? bodyShape(held.id) : null;
+        if (shape) {
+          pick = {
+            kind: held.kind,
+            id: held.id,
+            label: c?.label ?? held.id.split("/").pop()!,
+            point: shape.point,
+            stop: held.kind === "cluster" ? clusterStop(shape.r) : bodyStop(shape.r),
+          };
+        }
+      }
+      if (!pick) {
+        // A cluster the pointer is over and you're still outside of — nearest first.
+        let best: { t: number; c: (typeof state.current.clusters)[number]; point: THREE.Vector3; r: number } | null = null;
+        for (const c of state.current.clusters) {
+          const shape = clusterShape(c.members);
+          if (!shape) continue;
+          const w = shape.point.clone().sub(cam);
+          const t = w.dot(dir);
+          if (t <= 0 || w.length() < clusterStop(shape.r) * 1.08) continue;
+          if (w.addScaledVector(dir, -t).length() > shape.r * 0.9) continue;
+          if (!best || t < best.t) best = { t, c, point: shape.point, r: shape.r };
+        }
+        // The file under the pointer.
+        let body: { id: string; t: number; r: number } | null = null;
+        const w = new THREE.Vector3();
+        for (const n of nodes.current.values()) {
+          if (n.type !== "file" || n.x === undefined) continue;
+          w.set(n.x - cam.x, n.y! - cam.y, n.z! - cam.z);
+          const t = w.dot(dir);
+          const r = objs.current.get(n.id)?.base ?? 2;
+          if (t <= 0) continue;
+          if (w.addScaledVector(dir, -t).length() > Math.max(r * 2.5, t * 0.04)) continue;
+          if (!body || t < body.t) body = { id: n.id, t, r };
+        }
+        // A cluster you're outside of wins, unless the file is in front of it rather than part of it.
+        if (best && !(body && body.t < best.t - best.r)) {
+          pick = { kind: "cluster", id: best.c.id, label: best.c.label, point: best.point, stop: clusterStop(best.r) };
+        } else if (body) {
+          pick = { kind: "body", id: body.id, label: body.id.split("/").pop()!, point: bodyShape(body.id)!.point, stop: bodyStop(body.r) };
+        }
+      }
+      if (pick && cam.distanceTo(pick.point) < pick.stop * 1.05) {
+        // Arrived. Held: carry on through it; otherwise plain dolly-through.
+        if (held) {
+          held.at = now;
+          held.reached = true;
+          return "through" as const;
+        }
+        aimLock = null;
+        return null;
+      }
+      if (!pick) {
+        aimLock = null;
+        return null;
+      }
+      aimLock = { kind: pick.kind, id: pick.id, x: e.clientX, y: e.clientY, at: now };
+      showTip(e as unknown as PointerEvent, `<span style="opacity:.6">aiming at</span> <b>${esc(pick.label)}</b>`);
+      return pick;
+    };
 
     /* ---- fly mode: hold the right button; mouse looks, WASD moves ---- */
 
@@ -1053,6 +1171,18 @@ export function Space({
     );
     const modeChanged = state.current.grouped !== grouped;
     Object.assign(state.current, { grouped, fileColor, groupColor, overview });
+    {
+      const onMap = new Set(files.map((f) => f.path));
+      const from = grouped ? groups.filter((x) => x.id !== OTHER) : (overview?.modules ?? []);
+      let clusters = from.map((m) => ({ id: m.id, label: m.label, members: m.paths.filter((p) => onMap.has(p)) }));
+      // No modules charted yet: the top-level folders are the clusters.
+      if (!clusters.length) {
+        const byTop = new Map<string, string[]>();
+        for (const f of files) byTop.set(f.top, [...(byTop.get(f.top) ?? []), f.path]);
+        clusters = [...byTop].map(([t, members]) => ({ id: `top:${t}`, label: t === "." ? graph.name : t, members }));
+      }
+      state.current.clusters = clusters.filter((c) => c.members.length >= 3);
+    }
 
     // Reuse node objects across rebuilds: they carry their positions, so the
     // map *moves* into a new organization instead of exploding and resettling.
