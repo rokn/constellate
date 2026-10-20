@@ -392,7 +392,23 @@ export function App() {
    * Show only this module or folder (double-click): it replaces whatever is
    * isolated, keeping what's hidden. Already the only one: show all again.
    */
+  /** `focus`, for code above where it's defined. */
+  const focusRef = useRef<(paths: string[], label?: string) => void>(() => {});
   const soloIsolate = useCallback((item: Isolated) => {
+    // Becoming the only one shown (not undoing it): once the map has
+    // regrouped around it, fly there and focus it.
+    const ins = (filter.isolate ?? []).filter((i) => !i.exclude);
+    const undoing = ins.length === 1 && ins[0].kind === item.kind && ins[0].id === item.id;
+    if (!undoing && graph) {
+      const paths =
+        item.kind === "module"
+          ? (item.paths ?? [])
+          : graph.files.filter((f) => (item.id === "." ? !f.path.includes("/") : f.path.startsWith(`${item.id}/`))).map((f) => f.path);
+      clearTimeout(soloFocus.current);
+      // Only what the rest of the filter shows.
+      const shown = unisolated ? paths.filter((p) => unisolated.has(p)) : paths;
+      soloFocus.current = setTimeout(() => focusRef.current(shown, item.label), 700);
+    }
     setFilter((f) => {
       const cur = f.isolate ?? [];
       const ins = cur.filter((i) => !i.exclude);
@@ -401,7 +417,8 @@ export function App() {
       const next = alone ? outs : [...outs, item];
       return { ...f, isolate: next.length ? next : undefined };
     });
-  }, []);
+  }, [filter.isolate, graph, unisolated]);
+  const soloFocus = useRef<ReturnType<typeof setTimeout>>(undefined);
   const isolatedIds = useMemo(
     () => new Map((filter.isolate ?? []).filter((i) => i.kind === legend?.kind).map((i) => [i.id, i.exclude ? ("out" as const) : ("in" as const)])),
     [filter, legend?.kind],
@@ -455,6 +472,7 @@ export function App() {
     space.current?.focus(paths, shiftFor(panels.current));
     record({ kind: "focus", paths, label });
   }, []);
+  focusRef.current = focus;
 
   const showFrame = useCallback(
     (id: string) => {
@@ -985,7 +1003,10 @@ export function App() {
         else if (emphasis.length) {
           setEmphasis([]);
           setFocusLabel(undefined);
-        } else setIntroDone(true);
+        }
+        // Nothing else on screen: the last step back is the whole map again.
+        else if (filter.isolate?.length) setFilter((f) => ({ ...f, isolate: undefined }));
+        else setIntroDone(true);
       } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && historyOpen && listed.length) {
         // Down is older, as the list reads.
         e.preventDefault();
@@ -1036,7 +1057,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, answersOpen, frames, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, answersOpen, frames, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange, filter]);
 
   /* -------------------------------- render -------------------------------- */
 
