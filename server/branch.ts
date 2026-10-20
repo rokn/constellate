@@ -85,9 +85,27 @@ export async function listBranches(root: string, base?: string): Promise<{ base:
   return { base: b, branches };
 }
 
-/** Bring the remote-tracking branches up to date. */
-export async function fetchRemotes(root: string): Promise<void> {
-  await run("git", ["fetch", "--all", "--prune", "--quiet"], { cwd: root, timeout: 120_000 });
+/**
+ * Bring the remote-tracking branches up to date, one remote at a time: with
+ * `fetch --all`, one dead remote (a sibling folder that moved) fails the lot.
+ * Never prompts — there's no one at a terminal to answer.
+ */
+export async function fetchRemotes(root: string): Promise<{ fetched: string[]; failed: { remote: string; error: string }[] }> {
+  const remotes = (await git(root, ["remote"])).trim().split("\n").filter(Boolean);
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes" };
+  const results = await Promise.all(
+    remotes.map((remote) =>
+      run("git", ["fetch", "--prune", "--quiet", remote], { cwd: root, timeout: 120_000, env }).then(
+        () => ({ remote, error: "" }),
+        (err: { stderr?: string; message?: string }) => {
+          // git's own words, not "Command failed: …"
+          const said = (err.stderr ?? err.message ?? "").split("\n").map((l) => l.trim()).find((l) => /^(fatal|error):/.test(l));
+          return { remote, error: said?.replace(/^(fatal|error):\s*/, "") ?? "fetch failed" };
+        },
+      ),
+    ),
+  );
+  return { fetched: results.filter((r) => !r.error).map((r) => r.remote), failed: results.filter((r) => r.error) };
 }
 
 export type BranchDiff = {

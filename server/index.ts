@@ -362,8 +362,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       // Remote branches as they are now, for explaining someone else's work.
       if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
       try {
-        await fetchRemotes(session.idx.graph.root);
-        json(res, 200, await listBranches(session.idx.graph.root));
+        const f = await fetchRemotes(session.idx.graph.root);
+        // Some remotes failing still leaves the others fresh: list them, and say which didn't fetch.
+        if (!f.fetched.length && f.failed.length) {
+          return json(res, 502, { error: f.failed.map((x) => `${x.remote}: ${x.error}`).join("; ") }), true;
+        }
+        json(res, 200, { ...(await listBranches(session.idx.graph.root)), failed: f.failed });
       } catch (err) {
         json(res, 502, { error: err instanceof Error ? err.message.split("\n")[0] : String(err) });
       }

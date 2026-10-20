@@ -289,6 +289,8 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
   const [fetching, setFetching] = useState(false);
+  /** Remotes the last fetch couldn't reach. */
+  const [warn, setWarn] = useState("");
   const take = (b: { base: string; branches: BranchInfo[] }) => {
     setList(b);
     // Keep the pick if it's still there; else the branch you're on, if it has work of its own; else the newest that does.
@@ -305,6 +307,8 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
       .then((b) => {
         setError("");
         take(b);
+        const failed = (b as { failed?: { remote: string; error: string }[] }).failed ?? [];
+        setWarn(failed.length ? `Couldn't fetch ${failed.map((x) => `${x.remote} (${x.error})`).join(", ")}; the others are up to date.` : "");
       })
       .catch((e) => setError(String(e instanceof Error ? e.message : e)));
   useEffect(() => void load(fetch("/api/branches")), []);
@@ -339,6 +343,7 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
           {fetching ? "Fetching…" : "Fetch remotes"}
         </button>
       </div>
+      {warn && <p className="mt-1 text-[12px] text-muted">{warn}</p>}
       {error ? (
         <p className="mt-1 text-[12.5px] text-bad">{error}</p>
       ) : !list ? null : candidates.length ? (
