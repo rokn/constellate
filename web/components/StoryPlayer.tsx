@@ -188,14 +188,11 @@ export function StoryPlayer({
             )}
             {onDiff && (
               <button
-                onClick={() => {
-                  player.pause();
-                  onDiff();
-                }}
+                onClick={onDiff}
                 className="rounded px-2 py-0.5 text-[13px] text-muted hover:bg-white/5 hover:text-text"
-                title={`Every change against ${story.branch?.base}`}
+                title={`Light what the branch changes against ${story.branch?.base}, the way History shows a commit`}
               >
-                Full diff
+                Branch on map
               </button>
             )}
             <button onClick={onClose} className="rounded px-2 py-0.5 text-[13px] text-muted hover:bg-white/5 hover:text-text" aria-label="Close story">

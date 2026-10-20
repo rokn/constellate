@@ -239,3 +239,110 @@ export function BranchDiff({
     document.body,
   );
 }
+
+export type BranchSummary = Summary;
+
+/**
+ * A branch on the map, the way History shows a commit: the map is the code as
+ * it is on the branch, compared with where it forked. This bar says what's
+ * lit — the branch, its size, the files it touched (click one to fly there) —
+ * and leads on to the code diff or a story.
+ */
+export function BranchMapBar({
+  sum,
+  error,
+  loading,
+  onMapPaths,
+  onFly,
+  onCodeDiff,
+  onExplain,
+  onClose,
+}: {
+  sum: Summary | null;
+  error: string;
+  /** The maps at the tip and the fork are still being built. */
+  loading: boolean;
+  onMapPaths: Set<string>;
+  onFly: (path: string) => void;
+  onCodeDiff: () => void;
+  onExplain: () => void;
+  onClose: () => void;
+}) {
+  const [showCommits, setShowCommits] = useState(false);
+  const totals = (sum?.files ?? []).reduce((t, f) => ({ add: t.add + f.add, del: t.del + f.del }), { add: 0, del: 0 });
+  const files = [...(sum?.files ?? [])].sort((a, b) => b.add + b.del - (a.add + a.del));
+  return (
+    <div className="glass rise pointer-events-auto w-full max-w-[980px] rounded-xl px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="rounded border border-course/50 px-1.5 font-cond text-[11.5px] font-medium tracking-wide text-course">Branch</span>
+        <h2 className="min-w-0 font-cond text-[18px] font-semibold">
+          <span className="font-mono text-[14.5px] text-course">{sum?.branch ?? "…"}</span>
+          <span className="mx-2 text-muted">vs</span>
+          <span className="font-mono text-[14.5px]">{sum?.base ?? "…"}</span>
+        </h2>
+        {sum && (
+          <span className="text-[12.5px] text-muted">
+            {sum.commits.length} commit{sum.commits.length === 1 ? "" : "s"} · {sum.files.length} file{sum.files.length === 1 ? "" : "s"} ·{" "}
+            <span className="text-good">+{totals.add}</span> <span className="text-bad">−{totals.del}</span> · since{" "}
+            <span className="font-mono">{sum.mergeBase.slice(0, 7)}</span>
+          </span>
+        )}
+        {loading && !error && <span className="text-[12.5px] text-course/90">Building the branch's map…</span>}
+        <div className="ml-auto flex items-center gap-1.5 text-[13px]">
+          {sum && (
+            <>
+              <button onClick={() => setShowCommits((s) => !s)} aria-expanded={showCommits} className={`rounded px-2 py-0.5 hover:bg-white/5 ${showCommits ? "text-text" : "text-muted hover:text-text"}`}>
+                Commits
+              </button>
+              <button onClick={onCodeDiff} className="rounded px-2 py-0.5 text-muted hover:bg-white/5 hover:text-text" title="Every changed file's diff, side by side">
+                Code diff
+              </button>
+              <button onClick={onExplain} className="rounded-md bg-course px-2.5 py-0.5 font-cond text-[14.5px] font-semibold text-night hover:brightness-110">
+                Explain as a story
+              </button>
+            </>
+          )}
+          <button onClick={onClose} className="rounded px-2 py-0.5 text-muted hover:bg-white/5 hover:text-text" title="Back to the present (Esc)">
+            Close
+          </button>
+        </div>
+      </div>
+      {error && <p className="mt-1.5 text-[13px] text-bad">{error}</p>}
+      {showCommits && sum && (
+        <ul className="mt-2 max-h-[120px] space-y-0.5 overflow-y-auto">
+          {sum.commits.map((c) => (
+            <li key={c.sha} className="flex gap-2 text-[12.5px]">
+              <span className="shrink-0 font-mono text-muted">{c.sha.slice(0, 7)}</span>
+              <span className="min-w-0 flex-1 truncate">{c.subject}</span>
+              <span className="shrink-0 text-muted/70">{c.author}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {sum && files.length > 0 && (
+        <ul className="mt-2 flex max-h-[96px] flex-wrap gap-1 overflow-y-auto">
+          {files.map((f) => {
+            const st = STATUS[f.status[0]] ?? { label: f.status[0], tone: "text-muted" };
+            const here = onMapPaths.has(f.path);
+            return (
+              <li key={f.path}>
+                <button
+                  onClick={() => here && onFly(f.path)}
+                  disabled={!here}
+                  title={here ? `${f.path} — fly there` : `${f.path} — not on the map (filtered out, or not a source file)`}
+                  className="flex items-baseline gap-1.5 rounded border border-line bg-panelsolid/60 px-1.5 py-0.5 text-[12px] hover:border-course/60 disabled:opacity-40"
+                >
+                  <span className={`font-mono text-[10.5px] font-semibold ${st.tone}`}>{st.label}</span>
+                  <span className="font-mono">{f.path.split("/").pop()}</span>
+                  <span className="font-mono text-[10.5px] tabular-nums">
+                    <span className="text-good">+{f.add}</span> <span className="text-bad">−{f.del}</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}

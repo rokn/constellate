@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
-import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type Span } from "./lib/history";
+import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type HeatEntry, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
 import { ChartChanges } from "./components/ChartChanges";
@@ -18,7 +18,7 @@ import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 import { StoryPlayer } from "./components/StoryPlayer";
 import { StoriesPanel } from "./components/StoriesPanel";
-import { BranchDiff } from "./components/BranchDiff";
+import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
 
 const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true };
 
@@ -104,8 +104,14 @@ export function App() {
   const [storiesOpen, setStoriesOpen] = useState(false);
   /** The story playing, the playlist it's in, and whether to start on its own. */
   const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean } | null>(null);
-  /** A branch's whole diff against its base, open over everything. A link can open it: /?diff=<branch>&base=<base>. */
-  const [branchDiff, setBranchDiff] = useState<{ branch: string; base?: string } | null>(() => {
+  /** A branch's code diff against its base, open over everything. */
+  const [branchDiff, setBranchDiff] = useState<{ branch: string; base?: string } | null>(null);
+  /**
+   * A branch on the map, the way History shows a commit: the map is the code
+   * at the branch's tip, lit against where it forked. A link opens it:
+   * /?diff=<branch>&base=<base>.
+   */
+  const [branchMap, setBranchMap] = useState<{ branch: string; base?: string } | null>(() => {
     const q = new URLSearchParams(location.search);
     const branch = q.get("diff");
     return branch ? { branch, base: q.get("base") || undefined } : null;
@@ -286,7 +292,50 @@ export function App() {
   const lastTimeMap = useRef<typeof timeMap>(null);
   if (!range) lastTimeMap.current = null;
   else if (timeMap) lastTimeMap.current = timeMap;
-  const shownTime = range ? (timeMap ?? lastTimeMap.current) : null;
+
+  /* ------------------------------ a branch, mapped ------------------------------ */
+
+  // The same machinery as a span of history: the map at the branch's tip,
+  // compared with the map at the merge base — what the branch did since it
+  // forked. The branch needn't be checked out; both maps come from git.
+  const [branchSum, setBranchSum] = useState<BranchSummary | null>(null);
+  const [branchError, setBranchError] = useState("");
+  useEffect(() => {
+    setBranchSum(null);
+    setBranchError("");
+    if (!branchMap || status === "idle" || status === "scanning") return;
+    let live = true;
+    const q = new URLSearchParams({ branch: branchMap.branch, ...(branchMap.base ? { base: branchMap.base } : {}) });
+    void fetch(`/api/branch-diff?${q}`)
+      .then(async (r) => {
+        const b = await r.json();
+        if (!r.ok) throw new Error(b.error);
+        if (live) setBranchSum(b as BranchSummary);
+      })
+      .catch((e) => live && setBranchError(String(e instanceof Error ? e.message : e)));
+    return () => {
+      live = false;
+    };
+  }, [branchMap, status, state?.graphVersion]);
+  const branchMaps = useGraphsAt(branchSum ? [branchSum.head, branchSum.mergeBase] : []);
+  const branchTime = useMemo(() => {
+    if (!branchSum) return null;
+    const after = branchMaps.get(branchSum.head);
+    const before = branchMaps.get(branchSum.mergeBase);
+    return after && before ? mapAcross(after, before) : null;
+  }, [branchSum, branchMaps]);
+  /** The branch's churn, per file, in the shape History's heat takes. */
+  const branchHeat = useMemo(
+    () =>
+      branchSum
+        ? new Map<string, HeatEntry>(
+            branchSum.files.map((f) => [f.path, { add: f.add, del: f.del, commits: 1, status: f.status === "A" ? "A" : f.status === "D" ? "D" : "M", authors: new Set<string>() }]),
+          )
+        : null,
+    [branchSum],
+  );
+
+  const shownTime = branchMap ? branchTime : range ? (timeMap ?? lastTimeMap.current) : null;
   const mapGraph = shownTime?.graph ?? graph;
 
   const onMap = useMemo(() => new Set(mapGraph?.files.map((f) => f.path) ?? []), [mapGraph]);
@@ -583,7 +632,13 @@ export function App() {
       touring: tour !== null,
       lens: lensTitle,
       lensId,
-      range: range ? describeRange(range, rangeCommits) : undefined,
+      range: branchMap
+        ? branchSum
+          ? `the branch ${branchSum.branch} compared with ${branchSum.base} (since they forked): ${branchSum.commits.length} commits, ${branchSum.files.length} files changed`
+          : `the branch ${branchMap.branch}`
+        : range
+          ? describeRange(range, rangeCommits)
+          : undefined,
       filter: isActive(filter) ? describe(filter) : undefined,
       visibleFiles: visible?.size,
     }),
@@ -606,6 +661,8 @@ export function App() {
    */
   const showRange = useCallback((r: TimeRange | null) => {
     setRange(r);
+    // One span of change on the map at a time: a commit replaces a branch.
+    if (r) setBranchMap(null);
     if (!r) {
       // Back to the present: what the last commit lit goes dark again.
       setPlaying(false);
@@ -646,6 +703,31 @@ export function App() {
     },
     [listed, range, selectCommit],
   );
+
+  // A branch's map arriving flies to what the branch changed, as Follow does for a commit.
+  useEffect(() => {
+    if (!branchTime || !branchSum) return;
+    const ends = [...branchTime.delta.addedEdges, ...branchTime.delta.removedEdges].flatMap((k) => k.split(">"));
+    const changed = [...new Set([...branchSum.files.map((f) => f.path), ...ends])].filter((p) => (visible ?? onMap).has(p));
+    if (changed.length) focus(changed, `${branchSum.branch} vs ${branchSum.base}`);
+    // Only the branch's map arriving moves the camera.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchTime]);
+
+  /** Put a branch on the map (History steps aside: one span of change at a time). */
+  const showBranch = useCallback((branch: string, base?: string) => {
+    setIntroDone(true);
+    setHistoryOpen(false);
+    setRange(null);
+    setPlaying(false);
+    setBranchMap({ branch, base });
+  }, []);
+  const closeBranch = useCallback(() => {
+    setBranchMap(null);
+    setEmphasis([]);
+    setFocusLabel(undefined);
+    if (new URLSearchParams(location.search).has("diff")) window.history.replaceState(null, "", location.pathname);
+  }, []);
 
   // Follow: once a commit's map is up, fly to what it changed.
   useEffect(() => {
@@ -981,6 +1063,7 @@ export function App() {
         else if (pointer) setPointer(null);
         else if (frameId) setFrameId(null);
         else if (file) setFile(null);
+        else if (branchMap) closeBranch();
         else if (range) showRange(null);
         else if (emphasis.length) {
           setEmphasis([]);
@@ -1068,11 +1151,11 @@ export function App() {
           overview={overview}
           grouping={grouping}
           overlays={shownOverlays}
-          heat={heat}
+          heat={branchMap ? branchHeat : heat}
           delta={shownTime?.delta ?? null}
-          pinned={!!range}
+          pinned={!!range || !!branchMap}
           // The history panel (up to 380px, or 46% of the view) and the bar under it.
-          insetBottom={historyOpen ? (Math.min(380, window.innerHeight * 0.46) + 90) / window.innerHeight : 0}
+          insetBottom={historyOpen ? (Math.min(380, window.innerHeight * 0.46) + 90) / window.innerHeight : branchMap && !story ? 260 / window.innerHeight : 0}
           couplings={couplings}
           tuning={tuning}
           visible={visible}
@@ -1315,7 +1398,10 @@ export function App() {
               playStory(id, queue);
             }}
             onPlayIntro={playIntro}
-            onDiff={(branch, base) => setBranchDiff({ branch, base })}
+            onDiff={(branch, base) => {
+              setStoriesOpen(false);
+              showBranch(branch, base);
+            }}
             onClose={() => setStoriesOpen(false)}
           />
         )}
@@ -1545,7 +1631,7 @@ export function App() {
             }}
             onOpenFile={(p, l, e) => openFile(p, l, e)}
             onPick={(id, autoplay) => playStory(id, story.queue, autoplay)}
-            onDiff={s.branch ? () => setBranchDiff({ branch: s.branch!.name, base: s.branch!.base }) : undefined}
+            onDiff={s.branch ? () => showBranch(s.branch!.name, s.branch!.base) : undefined}
             onClose={() => setStory(null)}
           />
         );
@@ -1586,6 +1672,18 @@ export function App() {
             total={modules.length}
             onNext={() => setTour((i) => (i === null ? null : i + 1))}
             onStop={() => setTour(null)}
+          />
+        )}
+        {branchMap && !story && (
+          <BranchMapBar
+            sum={branchSum}
+            error={branchError}
+            loading={!!branchSum && !branchTime}
+            onMapPaths={visible ?? onMap}
+            onFly={(p) => focus([p], p.split("/").pop())}
+            onCodeDiff={() => branchSum && setBranchDiff({ branch: branchSum.branch, base: branchSum.base })}
+            onExplain={() => branchSum && void post("/api/stories/branch", { branch: branchSum.branch, base: branchSum.base, settings: "mine" })}
+            onClose={closeBranch}
           />
         )}
         {historyOpen && gitHistory?.available && graph && (

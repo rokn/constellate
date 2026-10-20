@@ -364,9 +364,9 @@ function Branches({ stories, onPlay, onDiff }: { stories: Story[]; onPlay: (id: 
             onClick={() => pick && onDiff(pick, list.base)}
             disabled={!pick}
             className="shrink-0 rounded-md border border-line px-2.5 text-[13px] text-muted hover:border-course/60 hover:text-text disabled:opacity-40"
-            title={`Every change ${pick || "the branch"} makes relative to ${list.base}`}
+            title={`Show what ${pick || "the branch"} changes against ${list.base} on the map, the way History shows a commit`}
           >
-            Diff
+            On the map
           </button>
           <button
             onClick={() => void explain()}
