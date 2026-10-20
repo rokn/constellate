@@ -53,6 +53,7 @@ export type Tuning = {
   zoomToCursor: boolean;
   dollyThrough: boolean;
   autoAim: boolean;
+  dragBodies: boolean;
   flySeconds: number;
   focusDistance: number;
   autoRotate: boolean;
@@ -119,6 +120,7 @@ export const DEFAULT_TUNING: Tuning = {
   zoomToCursor: true,
   dollyThrough: true,
   autoAim: true,
+  dragBodies: true,
   flySeconds: 1.6,
   focusDistance: 1,
   autoRotate: true,
@@ -224,6 +226,7 @@ export const SECTIONS: Section[] = [
       r("panSpeed", "Pan speed", 0.2, 4, 0.05),
       r("damping", "Glide", 0.02, 0.5, 0.01, "Lower glides longer after you let go"),
       t("zoomToCursor", "Zoom toward pointer"),
+      t("dragBodies", "Drag bodies", "Drag files and beacons around; the rest of the map gives way"),
       t("autoAim", "Auto-aim", "Scrolling toward a module or a file turns the view onto it and eases to a stop where it's framed (needs Dolly through)"),
       t("dollyThrough", "Dolly through", "Scroll keeps going past what you zoom into, at a pace set by how far away it is. Off: classic orbit zoom, which slows to a stop at the pivot"),
       r("flySeconds", "Flight time (s)", 0.2, 5, 0.1),

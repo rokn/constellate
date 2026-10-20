@@ -8,6 +8,7 @@ import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js
 import type { Layer, LogicalEdge, LogicalModule, Note, Overview, RepoGraph } from "../../shared/types";
 import { COURSE, RUNTIME, STATIC, territoryColors } from "../lib/colors";
 import { FORCE_KNOBS, SHAPE_KNOBS, type Tuning } from "../lib/tuning";
+import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { Coupling, Heat, MapDelta } from "../lib/history";
 
 /**
@@ -133,6 +134,38 @@ export type SpaceHandle = {
   /** Fly to where a note is pinned. */
   flyToNote: (id: string) => void;
 };
+
+/**
+ * The graph library drags bodies with three's DragControls, which acts on
+ * every button: right-drag would spin the body and middle-drag move it. Here
+ * right is flying and middle is panning, so drags start on the left button
+ * only. Patched once, before the library creates its controls.
+ */
+{
+  type Patched = { _onPointerDown: ((e: PointerEvent) => void) & { leftOnly?: boolean } };
+  const connect = DragControls.prototype.connect;
+  DragControls.prototype.connect = function (this: DragControls, element: HTMLElement) {
+    const self = this as unknown as Patched;
+    const down = self._onPointerDown;
+    if (down && !down.leftOnly) {
+      const leftOnly = Object.assign((e: PointerEvent) => e.button === 0 && down(e), { leftOnly: true });
+      self._onPointerDown = leftOnly;
+    }
+    connect.call(this, element);
+  };
+  // At the end of a drag the library dispatches a fake touch "pointerup" to
+  // settle the orbit controls. The real pointerup that ended the drag reaches
+  // them right after and settles them properly; the fake one only makes them
+  // look up a touch pointer they never saw — the error, and once the crash,
+  // that had dragging switched off. Drop it before anything hears it.
+  window.addEventListener(
+    "pointerup",
+    (e) => {
+      if (!e.isTrusted && e.pointerType === "touch") e.stopImmediatePropagation();
+    },
+    true,
+  );
+}
 
 /** The sticky-note colour: nothing else on the map is this yellow. */
 const NOTE_BG = "#ffd75e";
@@ -363,10 +396,10 @@ export function Space({
         if (n.type === "file") handlers.current.onHide({ file: n.id });
         else if (n.type === "dir" && n.id !== "dir:.") handlers.current.onHide({ dir: n.id.slice(4) });
       })
-      // No dragging bodies around: a press on a body should orbit like
-      // anywhere else, and the library's drag-end path fakes a touch pointerup
-      // that crashes the orbit controls.
-      .enableNodeDrag(false)
+      // Dragging bodies is a knob (Tune -> Camera -> Drag bodies). It was off
+      // for a while: the library's drag-end path fakes a touch pointerup that
+      // once crashed the orbit controls. If that comes back, turn the knob off.
+      .enableNodeDrag(tu().dragBodies)
       // Import lines are a pixel wide; give the pointer some slack.
       .linkHoverPrecision(4)
       // Only lit import lines (both ends in the focus) answer the pointer; the
@@ -1524,6 +1557,7 @@ export function Space({
     ctl.panSpeed = k.panSpeed;
     ctl.dampingFactor = k.damping;
     ctl.zoomToCursor = k.zoomToCursor;
+    fg.current?.enableNodeDrag(k.dragBodies);
     // With dolly through on, the wheel is ours (see onWheel).
     ctl.enableZoom = !k.dollyThrough;
     ctl.autoRotateSpeed = k.autoRotateSpeed;
