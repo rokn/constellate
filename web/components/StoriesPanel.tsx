@@ -4,7 +4,7 @@ import { post } from "../lib/api";
 import { clock, storyMs } from "../lib/story";
 
 type VoiceOption = { id: string; name: string; description: string };
-type BranchInfo = { name: string; current: boolean; ahead: number; behind: number; subject: string; at: number };
+type BranchInfo = { name: string; current: boolean; remote: boolean; ahead: number; behind: number; subject: string; at: number };
 
 /**
  * Your stories: the repo's intro three, the ones you asked for, a box to ask
@@ -288,22 +288,39 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
   const [error, setError] = useState("");
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    void fetch("/api/branches")
+  const [fetching, setFetching] = useState(false);
+  const take = (b: { base: string; branches: BranchInfo[] }) => {
+    setList(b);
+    // Keep the pick if it's still there; else the branch you're on, if it has work of its own; else the newest that does.
+    const candidates = b.branches.filter((x) => x.name !== b.base && x.ahead > 0);
+    setPick((p) => (candidates.some((x) => x.name === p) ? p : (candidates.find((x) => x.current) ?? candidates[0])?.name ?? ""));
+  };
+  const load = (req: Promise<Response>) =>
+    req
       .then(async (r) => {
         const b = await r.json();
         if (!r.ok) throw new Error(b.error);
         return b as { base: string; branches: BranchInfo[] };
       })
       .then((b) => {
-        setList(b);
-        // The branch you're on, if it has work of its own; else the newest that does.
-        const candidates = b.branches.filter((x) => x.name !== b.base && x.ahead > 0);
-        setPick((candidates.find((x) => x.current) ?? candidates[0])?.name ?? "");
+        setError("");
+        take(b);
       })
       .catch((e) => setError(String(e instanceof Error ? e.message : e)));
-  }, []);
+  useEffect(() => void load(fetch("/api/branches")), []);
+  const refresh = async () => {
+    setFetching(true);
+    await load(post("/api/branches/fetch"));
+    setFetching(false);
+  };
   const candidates = list?.branches.filter((x) => x.name !== list.base && x.ahead > 0) ?? [];
+  const local = candidates.filter((x) => !x.remote);
+  const remote = candidates.filter((x) => x.remote);
+  const option = (b: BranchInfo) => (
+    <option key={b.name} value={b.name}>
+      {b.name} · {b.ahead} ahead{b.current ? " · checked out" : ""}
+    </option>
+  );
 
   const explain = async () => {
     if (!pick) return;
@@ -316,7 +333,12 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
 
   return (
     <section>
-      <h3 className="font-cond text-[14px] font-semibold uppercase tracking-wider text-muted">Branches</h3>
+      <div className="flex items-baseline justify-between">
+        <h3 className="font-cond text-[14px] font-semibold uppercase tracking-wider text-muted">Branches</h3>
+        <button onClick={() => void refresh()} disabled={fetching} className="text-[12.5px] text-muted hover:text-text disabled:opacity-50" title="git fetch --all --prune: bring remote branches up to date">
+          {fetching ? "Fetching…" : "Fetch remotes"}
+        </button>
+      </div>
       {error ? (
         <p className="mt-1 text-[12.5px] text-bad">{error}</p>
       ) : !list ? null : candidates.length ? (
@@ -327,11 +349,8 @@ function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) 
             className="min-w-0 flex-1 rounded-md border border-line bg-panelsolid px-2 py-1 font-mono text-[12.5px] focus:border-course/60 focus:outline-none"
             aria-label="Branch to explain"
           >
-            {candidates.map((b) => (
-              <option key={b.name} value={b.name}>
-                {b.name} · {b.ahead} ahead{b.current ? " · checked out" : ""}
-              </option>
-            ))}
+            {local.length > 0 && <optgroup label="Local">{local.map(option)}</optgroup>}
+            {remote.length > 0 && <optgroup label="Remote">{remote.map(option)}</optgroup>}
           </select>
           <button
             onClick={() => void explain()}

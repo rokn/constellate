@@ -32,7 +32,7 @@ import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
-import { listBranches } from "./branch";
+import { fetchRemotes, listBranches } from "./branch";
 
 /**
  * One process: the API, the live stream, the voice bridge and (in dev) Vite.
@@ -356,6 +356,16 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         json(res, 200, await listBranches(session.idx.graph.root, url.searchParams.get("base") || undefined));
       } catch (err) {
         json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    case "POST /api/branches/fetch":
+      // Remote branches as they are now, for explaining someone else's work.
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      try {
+        await fetchRemotes(session.idx.graph.root);
+        json(res, 200, await listBranches(session.idx.graph.root));
+      } catch (err) {
+        json(res, 502, { error: err instanceof Error ? err.message.split("\n")[0] : String(err) });
       }
       return true;
     case "GET /api/story": {

@@ -78,7 +78,9 @@ base): what it's for, how the change works, and what a reviewer should notice. I
 what the branch did since it forked (merge base → tip), not what main did since. The
 branch needn't be checked out — the writer reads it from git (`read_at`, `branch_diff`),
 code excerpts are cut from the branch's version, and **diff** visuals show git's own diff
-of a file. In the Stories panel, pick a branch under *Branches* and *Explain vs main*.
+of a file. In the Stories panel, pick a branch under *Branches* — yours, or a remote one
+(*Fetch remotes* runs `git fetch --all --prune` first) — and *Explain vs main*. A remote
+branch works the same as a local one: `"branch": "origin/feature/x"`.
 
 **Hearing a voice.** Picking a voice plays a short line in it (so does letting go of the
 pace slider, and *Hear it*); previews are cached like everything else.
@@ -106,7 +108,9 @@ curl -X POST localhost:4317/api/stories/branch -H 'content-type: application/jso
 It answers `{ id, state, url, status }` — `url` opens the app straight into the story
 (`/?story=<id>`), `GET /api/story?id=` reports progress. With `wait`, it answers with the
 finished story (200), its error (500), or 202 if it ran out of time. `GET /api/branches`
-lists local branches with how far each is ahead of and behind the base.
+lists local and remote branches with how far each is ahead of and behind the base
+(a remote one at the same commit as a local one is listed once); `POST /api/branches/fetch`
+fetches first.
 
 ## Go: VS Code's editor with gopls
 

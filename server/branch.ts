@@ -27,7 +27,16 @@ const safePath = (p: string) => {
   return p.replace(/^\.?\//, "");
 };
 
-export type BranchInfo = { name: string; current: boolean; ahead: number; behind: number; subject: string; at: number };
+export type BranchInfo = {
+  name: string;
+  current: boolean;
+  /** A remote-tracking branch (origin/…), not one of yours. */
+  remote: boolean;
+  ahead: number;
+  behind: number;
+  subject: string;
+  at: number;
+};
 
 /** The branch to compare against when none is named: main, else master, else the remote's default. */
 export async function defaultBase(root: string): Promise<string> {
@@ -39,24 +48,46 @@ export async function defaultBase(root: string): Promise<string> {
   throw new Error("No main or master branch to compare with; name a base.");
 }
 
-/** Local branches, newest first, with how far each is from the base. */
+/**
+ * Local and remote-tracking branches, newest first, with how far each is from
+ * the base. A remote branch that's the same commit as a local one of the same
+ * name is left out: it's the same branch.
+ */
 export async function listBranches(root: string, base?: string): Promise<{ base: string; branches: BranchInfo[] }> {
   const b = base ? safeRef(base) : await defaultBase(root);
   const current = (await git(root, ["branch", "--show-current"]).catch(() => "")).trim();
-  const out = await git(root, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(committerdate:unix)%09%(subject)", "refs/heads"]);
+  const out = await git(root, [
+    "for-each-ref",
+    "--sort=-committerdate",
+    "--format=%(refname)%09%(refname:short)%09%(objectname)%09%(committerdate:unix)%09%(subject)",
+    "refs/heads",
+    "refs/remotes",
+  ]);
+  const rows = out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [ref, name, sha, at, ...subject] = line.split("\t");
+      return { ref, name, sha, at: Number(at) * 1000, subject: subject.join("\t"), remote: ref.startsWith("refs/remotes/") };
+    })
+    // origin/HEAD is a pointer, not a branch.
+    .filter((r) => !(r.remote && r.ref.endsWith("/HEAD")));
+  const localSha = new Map(rows.filter((r) => !r.remote).map((r) => [r.name, r.sha]));
+  const kept = rows.filter((r) => !r.remote || localSha.get(r.name.slice(r.name.indexOf("/") + 1)) !== r.sha);
   const branches = await Promise.all(
-    out
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map(async (line) => {
-        const [name, at, ...subject] = line.split("\t");
-        const counts = await git(root, ["rev-list", "--left-right", "--count", `${b}...${name}`]).catch(() => "0\t0");
-        const [behind, ahead] = counts.trim().split(/\s+/).map(Number);
-        return { name, current: name === current, ahead: ahead || 0, behind: behind || 0, subject: subject.join("\t"), at: Number(at) * 1000 };
-      }),
+    kept.map(async (r) => {
+      const counts = await git(root, ["rev-list", "--left-right", "--count", `${b}...${r.sha}`]).catch(() => "0\t0");
+      const [behind, ahead] = counts.trim().split(/\s+/).map(Number);
+      return { name: r.name, current: !r.remote && r.name === current, remote: r.remote, ahead: ahead || 0, behind: behind || 0, subject: r.subject, at: r.at };
+    }),
   );
   return { base: b, branches };
+}
+
+/** Bring the remote-tracking branches up to date. */
+export async function fetchRemotes(root: string): Promise<void> {
+  await run("git", ["fetch", "--all", "--prune", "--quiet"], { cwd: root, timeout: 120_000 });
 }
 
 export type BranchDiff = {
