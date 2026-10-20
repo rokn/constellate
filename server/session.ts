@@ -194,7 +194,7 @@ export function getFrame(id: string) {
 
 let viewSeq = 0;
 /** Ids are assigned here — asking a model for unique ids invites collisions. */
-const VIEW_PREFIX: Record<View["kind"], string> = { text: "t", code: "c", diagram: "d", custom: "x" };
+const VIEW_PREFIX: Record<View["kind"], string> = { text: "t", code: "c", diagram: "d", diff: "f", custom: "x" };
 export function viewId(kind: View["kind"]) {
   return `${VIEW_PREFIX[kind]}${(viewSeq++).toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
 }

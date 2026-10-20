@@ -6,6 +6,7 @@ import type { Lens, ScreenContext, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
+import { commitMessage, diffFile, loadHistory } from "./history";
 import { addOverlay, dropOverview, openRepo, putLens, removeLens, removeOverlay, session, setView, subscribe, updateOverlay } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
@@ -144,6 +145,30 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         json(res, 200, { text: await externalGoFile(url.searchParams.get("path") ?? "") });
       } catch (err) {
         json(res, 403, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+    case "GET /api/history":
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      json(res, 200, await loadHistory(session.idx.graph.root));
+      return true;
+    case "GET /api/diff": {
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      const q = url.searchParams;
+      try {
+        const diff = await diffFile(session.idx.graph.root, q.get("path") ?? "", q.get("from") ?? "", q.get("to") ?? "");
+        json(res, 200, { diff });
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+    case "GET /api/commit": {
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      try {
+        json(res, 200, { message: await commitMessage(session.idx.graph.root, url.searchParams.get("sha") ?? "") });
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
       }
       return true;
     }

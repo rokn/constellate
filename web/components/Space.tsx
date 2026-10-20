@@ -8,6 +8,7 @@ import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js
 import type { Layer, LogicalEdge, LogicalModule, Overview, RepoGraph } from "../../shared/types";
 import { COURSE, RUNTIME, STATIC, territoryColors } from "../lib/colors";
 import { FORCE_KNOBS, SHAPE_KNOBS, type Tuning } from "../lib/tuning";
+import type { Coupling, Heat } from "../lib/history";
 
 /**
  * The space you fly through.
@@ -36,17 +37,22 @@ type N = {
   y?: number;
   z?: number;
 };
-type LinkType = "import" | "contains" | "member" | "logical";
+type LinkType = "import" | "contains" | "member" | "logical" | "cochange";
 type L = {
   source: string | N;
   target: string | N;
   type: LinkType;
   label?: string;
+  weight?: number;
   /** Import links: what travels them, and where the import is written. */
   names?: string[];
   line?: number;
 };
 
+const COUPLING = "#b48cff";
+
+/** How hot a changed file glows: 0 for a one-line touch, 1 for a rewrite. */
+const churnHeat = (add: number, del: number) => Math.min(1, Math.log10(add + del + 1) / 3);
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 /** The hover tag on an import line: who imports whom, where, and what. */
@@ -134,6 +140,8 @@ export function Space({
   grouping,
   overlays,
   visible,
+  heat,
+  couplings,
   tuning,
   layers,
   emphasis,
@@ -157,6 +165,10 @@ export function Space({
   overlays: Overlay[];
   /** Files the filter keeps; null means all of them. */
   visible: Set<string> | null;
+  /** What changed in the chosen span of history; null when showing the present. */
+  heat: Heat | null;
+  /** Files that change together, drawn as threads that don't pull on the layout. */
+  couplings: Coupling[];
   tuning: Tuning;
   layers: Record<Layer, boolean>;
   /** Files to keep lit; everything else dims. Empty means nothing dims. */
@@ -205,6 +217,7 @@ export function Space({
     inDegree: new Map<string, number>(),
     /** The map's clusters — modules, or the groups when organized by them — for auto-aim. */
     clusters: [] as { id: string; label: string; members: string[] }[],
+    heat: null as Heat | null,
   });
   /** The current knob values, read at the moment of use. */
   const tu = () => state.current.tuning;
@@ -893,12 +906,12 @@ export function Space({
         const o = objs.current.get(id);
         const k = (now - t0) / 1600;
         if (!o || k >= 1) {
-          if (o) o.mesh.scale.setScalar(1);
+          if (o) o.mesh.scale.setScalar(baseScale(id));
           pulses.current.delete(id);
           if (o) applyOne(id);
           continue;
         }
-        o.mesh.scale.setScalar(1 + 2.2 * Math.sin(Math.PI * k) * (1 - k));
+        o.mesh.scale.setScalar(baseScale(id) * (1 + 2.2 * Math.sin(Math.PI * k) * (1 - k)));
         (o.mesh.material as THREE.MeshBasicMaterial).opacity = 1;
       }
 
@@ -1071,9 +1084,19 @@ export function Space({
     if (!o || !n) return;
     const { emphasis: emph, layers: lay, active: act } = state.current;
     const mat = o.mesh.material as THREE.MeshBasicMaterial;
-    const lit = emph.size === 0 || emph.has(id) || id === act;
+    const heat = state.current.heat;
+    const lit = (emph.size === 0 || emph.has(id) || id === act) && (!heat || n.type !== "file" || heat.has(id));
 
     if (n.type === "file") {
+      // In history, changed files wear the change: green if born in the span,
+      // warm to hot by churn otherwise, and swell with it. Untouched ones fade.
+      const h = heat?.get(id);
+      if (h) {
+        mat.color.set(h.status === "A" ? "#6ee7a8" : new THREE.Color("#ffd27a").lerp(new THREE.Color("#ff4a2e"), churnHeat(h.add, h.del)));
+      } else {
+        mat.color.set(state.current.fileColor.get(id) ?? "#9aa");
+      }
+      if (!pulses.current.has(id)) o.mesh.scale.setScalar(baseScale(id));
       mat.opacity = lit ? tu().bodyOpacity : tu().dimOpacity;
       // Names appear on the bodies you're looking at, never on all of them:
       // a focus within the limit is named in full; a bigger one gets names on
@@ -1123,6 +1146,12 @@ export function Space({
     labelled.current = new Set(ranked.slice(0, limit));
   }
 
+  /** A body's resting scale: 1, or larger by its churn while history is shown. */
+  function baseScale(id: string) {
+    const h = state.current.heat?.get(id);
+    return h ? 1 + 1.4 * churnHeat(h.add, h.del) : 1;
+  }
+
   function applyAll() {
     pickLabelled();
     for (const id of objs.current.keys()) applyOne(id);
@@ -1132,7 +1161,8 @@ export function Space({
     const both = (l: L) => emph.has(endId(l.source)) && emph.has(endId(l.target));
     // Fresh accessor functions, so the library re-evaluates every link.
     g.linkVisibility((l) =>
-      l.type === "member" ? false
+      l.type === "cochange" ? true
+        : l.type === "member" ? false
         : l.type === "logical" ? lay.logical
           : l.type === "import" ? lay.imports || both(l)
             : lay.folders !== false,
@@ -1141,12 +1171,14 @@ export function Space({
         // While focused, the runtime arcs step back to a dim ember so the
         // constellation you flew to is the brightest thing in view.
         l === hoverLink.current ? "#eafcff"
+        : l.type === "cochange" ? (emph.size && !both(l) ? "#2e2447" : COUPLING)
         : l.type === "logical" ? (emph.size ? "#4a3510" : RUNTIME)
           : l.type === "import" ? (both(l) ? STATIC : mix("#060b16", STATIC, tu().importBrightness * (emph.size ? 0.35 : 0.9)))
             : mix("#060b16", "#3a4f7a", tu().folderLinkBrightness * (emph.size ? 0.4 : 1)),
       )
       .linkWidth((l) =>
         l === hoverLink.current ? 1.4
+          : l.type === "cochange" ? 0.3 + 1.6 * (l.weight ?? 0.5)
           : l.type === "logical" ? tu().runtimeWidth
             : l.type === "import" && both(l) ? tu().importWidth : 0,
       )
@@ -1263,6 +1295,9 @@ export function Space({
     for (const e of graph.imports) {
       if (next.has(e.from) && next.has(e.to)) links.push({ source: e.from, target: e.to, type: "import", names: e.names, line: e.line });
     }
+    for (const c of couplings) {
+      if (next.has(c.a) && next.has(c.b)) links.push({ source: c.a, target: c.b, type: "cochange", weight: c.strength, label: `changed together ${c.count}×` });
+    }
 
     // Same nodes and links as last time: nothing to rebuild. Feeding the
     // library new graph data reheats the simulation and throws every body
@@ -1290,7 +1325,9 @@ export function Space({
     }
     nodes.current = next;
     g.graphData({ nodes: [...next.values()], links });
-    g.linkLabel((l) => (l.type === "import" ? (litImport(l) ? importTag(l) : "") : l.type === "logical" && l.label ? l.label : ""));
+    g.linkLabel((l) =>
+      l.type === "import" ? (litImport(l) ? importTag(l) : "") : (l.type === "logical" || l.type === "cochange") && l.label ? l.label : "",
+    );
     applyAll();
 
     // A filter or regrouping changes the map's shape; once it has mostly
@@ -1306,7 +1343,14 @@ export function Space({
     built.current = true;
     // centroid reads refs only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, overview, grouping, visible]);
+  }, [graph, overview, grouping, visible, couplings]);
+
+  // History lights the map without moving it: colours, sizes and fades only.
+  useEffect(() => {
+    state.current.heat = heat;
+    applyAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heat]);
 
   useEffect(() => {
     state.current.emphasis = new Set(emphasis);
@@ -1333,11 +1377,11 @@ export function Space({
     link
       ?.distance((l) =>
         l.type === "member" && state.current.grouped ? k.clusterDistance
-          : { contains: k.folderDistance, import: k.importDistance, member: 26, logical: k.runtimeDistance }[l.type],
+          : { contains: k.folderDistance, import: k.importDistance, member: 26, logical: k.runtimeDistance, cochange: 50 }[l.type],
       )
       .strength((l) =>
         l.type === "member" && state.current.grouped ? k.clusterTightness
-          : { contains: k.folderPull, import: k.importPull, member: 0.12, logical: k.runtimePull }[l.type],
+          : { contains: k.folderPull, import: k.importPull, member: 0.12, logical: k.runtimePull, cochange: 0 }[l.type],
       );
   }
 

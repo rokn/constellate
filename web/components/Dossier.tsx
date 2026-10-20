@@ -6,6 +6,7 @@ import type { Activity, Frame, View } from "../../shared/types";
 import { CodeBlock } from "./CodeBlock";
 import { CustomView } from "./CustomView";
 import { DiagramView } from "./DiagramView";
+import { DiffStat, DiffView, parseDiff } from "./DiffView";
 
 export type Pointer = { viewId?: string; nodeIds?: string[]; lines?: number[] } | null;
 
@@ -113,6 +114,7 @@ const KIND: Record<View["kind"], string> = {
   text: "Note",
   code: "Code",
   diagram: "Diagram",
+  diff: "Diff",
   custom: "Visualization",
 };
 
@@ -127,7 +129,7 @@ function ViewCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const title =
-    view.kind === "code" ? view.title ?? view.path : view.kind === "text" ? view.title : view.title;
+    view.kind === "code" || view.kind === "diff" ? view.title ?? view.path : view.title;
   const tag =
     view.kind === "diagram" ? (view.layer === "logical" ? "Runtime" : "Static") : KIND[view.kind];
   const tagTone =
@@ -196,6 +198,17 @@ function ViewCard({
             }}
           />
         </div>
+      )}
+
+      {view.kind === "diff" && (
+        <>
+          <div className="flex items-baseline gap-3 px-3 pt-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted/80">{view.path}</span>
+            <DiffStat {...parseDiff(view.diff)} />
+          </div>
+          {view.note && <p className="px-3 pt-1 text-[13px] text-muted">{view.note}</p>}
+          <DiffView diff={view.diff} lang={view.lang} maxHeight="28rem" />
+        </>
       )}
 
       {view.kind === "custom" && <CustomView html={view.html} height={view.height} onOpen={(p, l) => onOpenFile(p, l)} />}

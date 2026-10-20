@@ -154,6 +154,42 @@ export type MapFilter = {
   isolate?: Isolated[];
 };
 
+/* ------------------------------ history ------------------------------ */
+
+export type CommitFile = {
+  path: string;
+  /** Added, modified, or deleted in this commit. */
+  status: "A" | "M" | "D";
+  add: number;
+  del: number;
+};
+
+export type Commit = {
+  /** "worktree" for the uncommitted slice at the top of history. */
+  sha: string;
+  short: string;
+  author: string;
+  /** Epoch milliseconds. */
+  at: number;
+  parents: string[];
+  subject: string;
+  files: CommitFile[];
+  worktree?: boolean;
+};
+
+/** Newest first. */
+export type History = {
+  head?: string;
+  commits: Commit[];
+  /** More history exists than was loaded. */
+  truncated: boolean;
+  /** False when the repo isn't a git repository. */
+  available: boolean;
+};
+
+/** A span of history, both ends inclusive: `from` is the older commit. */
+export type TimeRange = { from: string; to: string; label?: string };
+
 /* ----------------------------- the views ----------------------------- */
 
 export type DiagramNode = {
@@ -194,6 +230,19 @@ export type View =
       dir: "TD" | "LR";
       nodes: DiagramNode[];
       edges: DiagramEdge[];
+    }
+  | {
+      kind: "diff";
+      id: string;
+      title?: string;
+      path: string;
+      lang: string;
+      /** The range, so the reader can widen it or open it on the map. */
+      from: string;
+      to: string;
+      /** Unified diff, exactly as git printed it. */
+      diff: string;
+      note?: string;
     }
   | {
       kind: "custom";
@@ -250,7 +299,12 @@ export type UiCommand =
   | { cmd: "filter"; filter: Partial<MapFilter> }
   | { cmd: "clear_filter" }
   /** Organize the map by a lens: "folders", "modules", or a lens id. */
-  | { cmd: "set_lens"; lensId: string };
+  | { cmd: "set_lens"; lensId: string }
+  /** Light up what changed in a span of history. */
+  | { cmd: "set_range"; range: TimeRange }
+  | { cmd: "clear_range" }
+  /** Fly through the commits in the current range, one by one. */
+  | { cmd: "replay" };
 
 export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons";
 
@@ -325,4 +379,6 @@ export type ScreenContext = {
   lensId?: string;
   filter?: string;
   visibleFiles?: number;
+  /** The span of history lit on the map, described. */
+  range?: string;
 };

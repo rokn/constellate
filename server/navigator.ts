@@ -7,6 +7,7 @@ import { z } from "zod";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import type { Lens, LogicalEdge, Overview, ScreenContext, View } from "../shared/types";
 import { loadFile, slice } from "./repo";
+import { WORKTREE, diffFile, loadHistory } from "./history";
 import { digest, findPath, neighbourhood } from "./scan";
 import {
   addLens,
@@ -59,6 +60,9 @@ const FLIGHT_TOOLS = [
   "revise_lens",
   "remove_lens",
   "add_groups",
+  "history",
+  "show_diff",
+  "set_time_range",
   "set_overview",
 ];
 const mcpName = (t: string) => `mcp__flight__${t}`;
@@ -521,6 +525,103 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
     );
   }
 
+  if (mode === "ask") {
+    const resolveRev = async (rev: string) => {
+      if (rev === WORKTREE || rev === "HEAD") return rev === "HEAD" ? (await loadHistory(idx().graph.root)).head ?? rev : rev;
+      const h = await loadHistory(idx().graph.root);
+      return h.commits.find((c) => c.sha.startsWith(rev) || c.short === rev)?.sha ?? rev;
+    };
+    tools.push(
+      tool(
+        "history",
+        "Recent git history: commits with the files they touched and lines in/out, optionally only those touching a path (a file, or a directory prefix ending in '/'), and for a single file the files it most often changes together with (coupling that imports don't show). Commit 'worktree' is uncommitted work.",
+        {
+          path: z.string().optional(),
+          limit: z.number().int().min(1).max(80).default(25),
+          sinceDays: z.number().min(0).optional(),
+        },
+        async (a) => {
+          const h = await loadHistory(idx().graph.root);
+          if (!h.available) return fail("This repository has no git history.");
+          const target = a.path ? (a.path.endsWith("/") ? a.path : findPath(idx(), a.path) ?? a.path) : null;
+          const touches = (c: (typeof h.commits)[number]) =>
+            !target || c.files.some((f) => (target.endsWith("/") ? f.path.startsWith(target) : f.path === target));
+          const since = a.sinceDays !== undefined ? Date.now() - a.sinceDays * 86_400_000 : 0;
+          const list = h.commits.filter((c) => c.at >= since && touches(c)).slice(0, a.limit);
+          const lines = list.map((c) => {
+            const add = c.files.reduce((s, f) => s + f.add, 0);
+            const del = c.files.reduce((s, f) => s + f.del, 0);
+            const files = c.files.slice(0, 8).map((f) => `${f.status} ${f.path} +${f.add}/-${f.del}`).join("; ");
+            return `${c.short} ${new Date(c.at).toISOString().slice(0, 10)} ${c.author}: ${c.subject} (+${add}/-${del}, ${c.files.length} files) — ${files}${c.files.length > 8 ? "; …" : ""}`;
+          });
+          let coupling = "";
+          if (target && !target.endsWith("/")) {
+            const together = new Map<string, number>();
+            let mine = 0;
+            for (const c of h.commits) {
+              if (c.files.length > 40 || !c.files.some((f) => f.path === target)) continue;
+              mine++;
+              for (const f of c.files) if (f.path !== target) together.set(f.path, (together.get(f.path) ?? 0) + 1);
+            }
+            const top = [...together.entries()].filter(([, n]) => n >= 2).sort((x, y) => y[1] - x[1]).slice(0, 10);
+            if (top.length) coupling = `\nChanges together with ${target} (of its ${mine} commits): ${top.map(([p, n]) => `${p} ×${n}`).join(", ")}`;
+          }
+          return ok((lines.join("\n") || "No commits match.") + coupling);
+        },
+      ),
+      tool(
+        "show_diff",
+        "Put a real diff of one file on screen, across a span of history: from just before `from` (the older commit) to `to` (the newer commit, or 'worktree' for uncommitted changes). For a single commit, pass the same sha as both. The text comes straight from git.",
+        {
+          path: z.string(),
+          from: z.string().describe("Older commit sha (short is fine)"),
+          to: z.string().describe("Newer commit sha, or 'worktree'"),
+          title: z.string().optional(),
+          note: z.string().optional().describe("One line on what to notice"),
+        },
+        async (a) => {
+          // A path that appears in history is used exactly: it may have been
+          // moved or deleted since, and a fuzzy match would find today's
+          // namesake — a different file. Only unknown paths get the fuzzy lookup.
+          const asked = a.path.replace(/^\.?\//, "");
+          const h = await loadHistory(idx().graph.root);
+          const inHistory = h.commits.some((c) => c.files.some((f) => f.path === asked));
+          const path = inHistory || idx().byPath.has(asked) ? asked : findPath(idx(), asked) ?? asked;
+          const [from, to] = await Promise.all([resolveRev(a.from), resolveRev(a.to)]);
+          let diff: string;
+          try {
+            diff = await diffFile(idx().graph.root, path, from, to);
+          } catch (err) {
+            return fail(err instanceof Error ? err.message : String(err));
+          }
+          if (!diff.trim()) return fail(`${path} didn't change in that range.`);
+          const clipped = diff.length > 60_000 ? `${diff.slice(0, 60_000)}\n… (diff truncated)` : diff;
+          return show({
+            kind: "diff",
+            id: viewId("diff"),
+            title: a.title,
+            path,
+            lang: idx().byPath.get(path)?.lang ?? "text",
+            from,
+            to,
+            diff: clipped,
+            note: a.note,
+          });
+        },
+      ),
+      tool(
+        "set_time_range",
+        "Light up a span of history on the reader's map: everything changed between `from` (older commit) and `to` (newer, or 'worktree') glows by how much it changed, and the rest fades. Use it whenever an answer is about what changed.",
+        { from: z.string(), to: z.string(), label: z.string().describe("Short name, e.g. 'The auth rewrite'") },
+        async (a) => {
+          const [from, to] = await Promise.all([resolveRev(a.from), resolveRev(a.to)]);
+          pushCommand({ cmd: "set_range", range: { from, to, label: a.label } });
+          return ok("Range lit on the map.");
+        },
+      ),
+    );
+  }
+
   if (mode === "intro") {
     tools.push(
       tool(
@@ -608,6 +709,8 @@ Static vs logical: static dependencies are the import graph. Logical dependencie
 Shaping the map: when a question is about part of the codebase, filter_map can hide the rest so the reader only flies through what matters. When they want the code organized differently from folders — layers, features, services, data flow — publish a grouping with set_lens; the map regroups itself.
 
 Changing a grouping they already have is not a new grouping. If they're in a grouping (or in Modules) and ask for something that reads as a change to it — split this group, merge those, move these files over, rename it, add a group for X, take Y out — revise it in place with revise_lens (get_lens first, to see what it holds). The screen note says which grouping is showing and its id; "this module", "that group" and the like mean that grouping. Only publish a new grouping with set_lens when they ask for a different way of organizing the code altogether. When it's unclear, prefer the in-place edit: a duplicate grouping with one change is clutter they have to clean up. remove_lens is for when they ask to delete one. To point out a set of files without disturbing the layout — or when they ask to group or mark something but not to reorganize — use add_groups, which draws beacons on top of whatever organization they're in. Both are cheap; use them when they help.
+
+History: you can read git history (history), show real diffs (show_diff), and light a span of history on the map (set_time_range). For questions about what changed, when, why, or what tends to change together, ground the answer in commits and diffs rather than the current code alone.
 
 Pick the picture that explains best. A request flowing through layers might be a sequence (show_custom). A lifecycle is a state machine. A config surface is a table. A hot path is a code excerpt with highlighted lines. Use show_custom freely — make it look good: clean, legible, a bit of motion where motion carries meaning, and data-path on anything that stands for code.
 
@@ -720,6 +823,7 @@ function screenNote(screen?: ScreenContext): string {
     screen.openFile ? `They have ${screen.openFile.path}${screen.openFile.line ? ` open at line ${screen.openFile.line}` : ""} in the code panel.` : "",
     screen.focusLabel ? `The camera is on: ${screen.focusLabel}.` : "",
     screen.lens ? `The map is organized by ${screen.lens}${screen.lensId && screen.lensId !== "folders" ? ` (grouping id: ${screen.lensId})` : ""}.` : "",
+    screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
     screen.selection ? `They have selected this text — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 2000)}\n"""` : "",
   ].filter(Boolean);
@@ -769,6 +873,12 @@ function narrate(msg: SDKMessage, root: string) {
         break;
       case "filter_map":
         pushActivity({ kind: "tool", detail: `Filtering the map: ${String(input.label ?? "")}` });
+        break;
+      case "history":
+        pushActivity({ kind: "search", detail: `Reading history${input.path ? ` of ${String(input.path)}` : ""}` });
+        break;
+      case "show_diff":
+        pushActivity({ kind: "tool", detail: `Cutting the diff of ${String(input.path)}` });
         break;
       case "add_groups":
         pushActivity({ kind: "tool", detail: "Marking groups on the map" });

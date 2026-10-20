@@ -64,6 +64,11 @@ const TOOLS = [
     hideDocs: { type: "boolean" },
   }, ["label"]),
   fn("clear_filter", "Show the whole map again."),
+  fn("show_history", "Light up what changed in a span of history on the map: the last commit, the last day/week/month, everything loaded, or the uncommitted changes. Instant. For a specific commit or a question about what changed, ask the navigator.", {
+    span: { type: "string", enum: ["last_commit", "day", "week", "month", "all", "uncommitted"] },
+  }, ["span"]),
+  fn("clear_history", "Back to the present: stop showing history on the map."),
+  fn("replay_history", "Fly through the commits in the current history span, one by one, oldest first."),
   fn("mark_group", "Mark a group of files on top of the map by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a group that needs the code read to choose, ask the navigator.", {
     label: { type: "string" },
     include: { type: "array", items: { type: "string" } },
@@ -81,7 +86,7 @@ const TOOLS = [
 ];
 
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "remove_group"]);
+const SILENT = new Set(["clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "remove_group"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
 
@@ -104,6 +109,11 @@ function viewLines(v: View): string[] {
       ];
     case "custom":
       return [`[view ${v.id}] custom visualization: ${v.title}`];
+    case "diff":
+      return [
+        `[view ${v.id}] diff of ${v.path}${v.note ? ` — ${v.note}` : ""}`,
+        v.diff.split("\n").filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).slice(0, 40).join("\n"),
+      ];
   }
 }
 
@@ -155,6 +165,7 @@ function instructions(screen: ScreenContext): string {
     s.overlays.length
       ? `Groups marked on the map (for remove_group): ${s.overlays.map((g) => `[${g.id}] ${g.label} — ${g.paths.length} files${g.visible ? "" : " (hidden)"}`).join("; ")}`
       : "",
+    screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.lens ? `The map is organized by: ${screen.lens}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
     s.frames.length
@@ -370,6 +381,18 @@ function bridge(client: WebSocket) {
       case "clear_filter":
         command({ cmd: "clear_filter" });
         return { ok: true };
+      case "show_history": {
+        const span = str("span");
+        // Resolved in the browser, which holds the loaded history.
+        command({ cmd: "set_range", range: { from: `span:${span}`, to: `span:${span}` } });
+        return { ok: true };
+      }
+      case "clear_history":
+        command({ cmd: "clear_range" });
+        return { ok: true };
+      case "replay_history":
+        command({ cmd: "replay" });
+        return { ok: true, say: "Narrate each commit briefly as it flies by." };
       case "mark_group": {
         const include = Array.isArray(args.include) ? args.include.map(String).filter(Boolean) : [];
         const paths = idx ? [...(applyFilter(idx.graph.files, { ...EMPTY_FILTER, include }) ?? [])] : [];

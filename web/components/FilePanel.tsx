@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchFile, type FileData } from "../lib/api";
 import { CodeBlock } from "./CodeBlock";
 import { GoEditor } from "./GoEditor";
+import { DiffStat, DiffView } from "./DiffView";
+
+/** The open file's change in the span of history shown on the map. */
+export type FileChange = { from: string; to: string; add: number; del: number; status: "A" | "M" | "D"; label?: string };
 
 /**
  * The code panel. A file is never a dead end: everything it imports and
@@ -12,6 +16,7 @@ export function FilePanel({
   path,
   line,
   endLine,
+  change,
   onClose,
   onNavigate,
   onAsk,
@@ -26,6 +31,7 @@ export function FilePanel({
   path: string;
   line?: number;
   endLine?: number;
+  change?: FileChange;
   onClose: () => void;
   onNavigate: (path: string, line?: number) => void;
   onAsk: (request: string) => void;
@@ -42,6 +48,26 @@ export function FilePanel({
 }) {
   const [file, setFile] = useState<FileData | null | undefined>(undefined);
   const [jump, setJump] = useState<number | undefined>(line);
+  // A file that changed in the shown span opens on its diff.
+  const [tab, setTab] = useState<"changes" | "source">(change ? "changes" : "source");
+  const [diff, setDiff] = useState<string | null | undefined>(undefined);
+  const changeKey = change ? `${change.from}..${change.to}` : "";
+  // Keyed by the range, not the change object, which is rebuilt on every update.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setTab(change && !line ? "changes" : "source"), [path, changeKey, line]);
+  useEffect(() => {
+    if (!change || tab !== "changes") return;
+    let live = true;
+    setDiff(undefined);
+    fetch(`/api/diff?path=${encodeURIComponent(path)}&from=${change.from}&to=${change.to}`)
+      .then((r) => (r.ok ? r.json() : { diff: null }))
+      .then((b: { diff: string | null }) => live && setDiff(b.diff))
+      .catch(() => live && setDiff(null));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, changeKey, tab]);
 
   useEffect(() => {
     let live = true;
@@ -146,6 +172,37 @@ export function FilePanel({
         </div>
       )}
 
+      {change && (
+        <div className="flex items-center gap-1 border-b border-line px-3 py-1.5">
+          {(["changes", "source"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              aria-pressed={tab === t}
+              className={`rounded px-2 py-0.5 text-[12.5px] ${tab === t ? "bg-white/10 text-text" : "text-muted hover:text-text"}`}
+            >
+              {t === "changes" ? (change.status === "A" ? "Added" : "Changes") : "Source"}
+            </button>
+          ))}
+          <span className="ml-1"><DiffStat add={change.add} del={change.del} /></span>
+          {change.label && <span className="min-w-0 truncate text-[12px] text-muted">in {change.label}</span>}
+          <button
+            onClick={() => onAsk(`Explain what changed in ${path} between ${change.from === change.to ? `commit ${change.to.slice(0, 9)}` : `${change.from.slice(0, 9)} and ${change.to.slice(0, 9)}`}, and why. Show the diff that matters and light the range on the map.`)}
+            className="ml-auto shrink-0 rounded-md border border-course/50 px-2 py-0.5 text-[12.5px] text-course hover:bg-course/10"
+          >
+            Explain this change
+          </button>
+        </div>
+      )}
+
+      {change && tab === "changes" ? (
+        <div className="min-h-0 flex-1">
+          {diff === undefined && <p className="p-4 text-[13px] text-muted">Reading the diff…</p>}
+          {diff === null && <p className="p-4 text-[13px] text-bad">The diff couldn’t be read.</p>}
+          {diff && <DiffView diff={diff} lang={file?.lang ?? "text"} maxHeight="100%" />}
+          {diff === "" && <p className="p-4 text-[13px] text-muted">No changes to this file in the range.</p>}
+        </div>
+      ) : (
       <div className="min-h-0 flex-1" data-selectable="file">
         {file === undefined && <p className="p-4 text-[13px] text-muted">Opening…</p>}
         {file === null && <p className="p-4 text-[13px] text-bad">This file couldn’t be read. It may have moved since the scan.</p>}
@@ -164,6 +221,7 @@ export function FilePanel({
           )
         )}
       </div>
+      )}
     </aside>
   );
 }
