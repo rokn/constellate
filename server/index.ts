@@ -44,6 +44,22 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const dev = process.env.NODE_ENV !== "production";
 const port = Number(process.env.PORT ?? 4317);
+const httpsPort = Number(process.env.HTTPS_PORT ?? 4443);
+
+/**
+ * The certificate for https, if there is one: CODEFLIGHT_TLS_CERT and
+ * CODEFLIGHT_TLS_KEY, else .certs/codeflight.pem and .certs/codeflight-key.pem
+ * (what mkcert writes — see the README). No certificate, no https.
+ */
+async function loadTls(): Promise<{ cert: Buffer; key: Buffer } | null> {
+  const cert = process.env.CODEFLIGHT_TLS_CERT ?? path.join(ROOT, ".certs", "codeflight.pem");
+  const key = process.env.CODEFLIGHT_TLS_KEY ?? path.join(ROOT, ".certs", "codeflight-key.pem");
+  try {
+    return { cert: await readFile(cert), key: await readFile(key) };
+  } catch {
+    return null;
+  }
+}
 
 async function loadEnv() {
   for (const name of [".env.local", ".env"]) {
@@ -545,7 +561,7 @@ async function main() {
     };
   }
 
-  server.on("request", (req, res) => {
+  const handle = (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     api(req, res, url)
       .then((handled) => {
@@ -555,8 +571,20 @@ async function main() {
         console.error("[http]", err);
         if (!res.headersSent) json(res, 500, { error: String(err) });
       });
-  });
+  };
+  server.on("request", handle);
   attachVoice(server);
+
+  // HTTPS alongside, when there's a certificate: browsers only allow the
+  // microphone, installing the app and the clipboard on a secure origin, and
+  // over the LAN that means https. http keeps working on its own port.
+  const tls = await loadTls();
+  if (tls) {
+    const { createServer: createHttps } = await import("node:https");
+    const secure = createHttps(tls, handle);
+    attachVoice(secure);
+    secure.listen(httpsPort, () => console.log(`  🔒 https on https://localhost:${httpsPort} (and your LAN address)\n`));
+  }
 
   server.listen(port, () => {
     console.log(`\n  ✈  Codeflight on http://localhost:${port}\n`);

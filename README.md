@@ -266,8 +266,25 @@ theme's colours are injected as CSS variables, and any element with `data-path`
 ## As an app, and with less UI
 
 Codeflight is a PWA: from `http://localhost:4317` in Chrome or Edge, use *Install* in the
-address bar to get its own window and icon. (Browsers only allow installing from https or
-localhost, so other devices on the LAN can use it in a browser tab but can't install it.)
+address bar to get its own window and icon.
+
+**On other devices (LAN), use https.** Browsers only allow installing, the microphone (voice)
+and the clipboard on https or localhost. With a certificate in `.certs/` the server also
+serves https on port 4443 (`HTTPS_PORT`), next to http on 4317:
+
+```
+brew install mkcert
+mkcert -install            # trust it on this Mac (asks for your password)
+mkdir -p .certs && cd .certs
+mkcert -cert-file codeflight.pem -key-file codeflight-key.pem <LAN-IP> localhost "$(scutil --get LocalHostName).local"
+```
+
+Then on each other device, trust mkcert's root certificate — `rootCA.pem` in
+`mkcert -CAROOT` (never the `rootCA-key.pem` next to it): on iPhone/iPad install it as a
+profile and turn on full trust under Settings → General → About → Certificate Trust
+Settings; on Android install it as a CA certificate; on another Mac add it to the keychain
+as trusted. Open `https://<LAN-IP>:4443`. `CODEFLIGHT_TLS_CERT` / `CODEFLIGHT_TLS_KEY`
+point at a certificate elsewhere.
 
 **Hide UI** (`u`, or the button beside the search bar) leaves just the map, the search bar
 and the voice button; files and answers still open in their panels. On touch devices the
