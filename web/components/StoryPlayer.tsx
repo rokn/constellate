@@ -7,6 +7,7 @@ import { SPEEDS, useStoryPlayer } from "../lib/useStoryPlayer";
 import { CodeBlock } from "./CodeBlock";
 import { CustomView } from "./CustomView";
 import { DiagramView } from "./DiagramView";
+import { DiffStat, DiffView, parseDiff } from "./DiffView";
 
 const SPEED_KEY = "codeflight.storySpeed";
 const STOP_KEY = "codeflight.storyStopEachBeat";
@@ -167,7 +168,7 @@ export function StoryPlayer({
         <aside className="glass rise pointer-events-auto flex h-full flex-col overflow-hidden rounded-xl shadow-[0_20px_60px_-20px_rgba(0,0,0,.7)]">
           <header className="flex items-center gap-2 border-b border-line px-4 py-3">
             <span className="rounded border border-course/50 px-1.5 font-cond text-[11.5px] font-medium tracking-wide text-course">
-              {story.intro ? `Intro ${story.intro}/${queue.length || 3}` : "Story"}
+              {story.intro ? `Intro ${story.intro}/${queue.length || 3}` : story.branch ? `${story.branch.name} vs ${story.branch.base}` : "Story"}
             </span>
             <h2 className="min-w-0 flex-1 truncate font-cond text-[19px] font-semibold tracking-wide">{story.title}</h2>
             {story.context.length > 0 && (
@@ -455,6 +456,16 @@ function StageView({
             }}
           />
         </div>
+      )}
+      {view.kind === "diff" && (
+        <>
+          <div className="flex items-baseline gap-3 px-3 pt-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted/80">{view.path}</span>
+            <DiffStat {...parseDiff(view.diff)} />
+          </div>
+          {view.note && <p className="px-3 pt-1 text-[13px] text-muted">{view.note}</p>}
+          <DiffView diff={view.diff} lang={view.lang} maxHeight={`${Math.max(160, room - 32 - 40 - 64)}px`} />
+        </>
       )}
       {view.kind === "custom" && <CustomView html={view.html} height={view.height} step={step} onOpen={(p, l) => onOpenFile(p, l)} />}
       {view.kind === "text" && (

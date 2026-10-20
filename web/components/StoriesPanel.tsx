@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Story, StorySettings } from "../../shared/types";
 import { post } from "../lib/api";
 import { clock, storyMs } from "../lib/story";
 
 type VoiceOption = { id: string; name: string; description: string };
+type BranchInfo = { name: string; current: boolean; ahead: number; behind: number; subject: string; at: number };
 
 /**
  * Your stories: the repo's intro three, the ones you asked for, a box to ask
@@ -28,7 +29,8 @@ export function StoriesPanel({
   const [request, setRequest] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const intro = stories.filter((s) => s.intro).sort((a, b) => a.intro! - b.intro!);
-  const mine = stories.filter((s) => !s.intro).sort((a, b) => b.createdAt - a.createdAt);
+  const branchStories = stories.filter((s) => s.branch).sort((a, b) => b.createdAt - a.createdAt);
+  const mine = stories.filter((s) => !s.intro && !s.branch).sort((a, b) => b.createdAt - a.createdAt);
 
   const write = () => {
     if (!request.trim()) return;
@@ -105,6 +107,8 @@ export function StoriesPanel({
           )}
         </section>
 
+        <Branches stories={branchStories} onPlay={onPlay} />
+
         {mine.length > 0 && (
           <section>
             <h3 className="font-cond text-[14px] font-semibold uppercase tracking-wider text-muted">Yours</h3>
@@ -134,6 +138,11 @@ function Row({ story, onPlay }: { story: Story; onPlay: () => void }) {
       </button>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[14px] font-medium leading-tight">{story.title}</p>
+        {story.branch && (
+          <p className="truncate font-mono text-[11.5px] text-muted/80">
+            {story.branch.name} vs {story.branch.base} · {story.branch.head.slice(0, 7)}
+          </p>
+        )}
         <p className="truncate text-[12.5px] text-muted">
           {story.state === "writing" ? (
             <span className="text-course/90">{story.progress ?? "Writing…"}</span>
@@ -180,16 +189,40 @@ function Settings({ settings }: { settings: StorySettings }) {
   const save = (patch: Partial<StorySettings>) => void post("/api/story-settings", { settings: patch });
   const current = voices?.find((v) => v.id === settings.voiceId);
 
+  // Hear a voice: a short line in it, synthesized once and cached.
+  const player = useRef<HTMLAudioElement | null>(null);
+  const [previewing, setPreviewing] = useState<string | null>(null);
+  const preview = async (voiceId: string, rate = settings.rate) => {
+    player.current?.pause();
+    setPreviewing(voiceId);
+    try {
+      const r = await post("/api/story-voice-preview", { voiceId, rate });
+      const b = (await r.json()) as { key?: string; error?: string };
+      if (!b.key) throw new Error(b.error);
+      const el = (player.current ??= new Audio());
+      el.src = `/api/story-audio?key=${b.key}`;
+      el.onended = () => setPreviewing(null);
+      await el.play();
+    } catch {
+      setPreviewing(null);
+    }
+  };
+  useEffect(() => () => player.current?.pause(), []);
+
   return (
     <div className="space-y-2.5 rounded-lg border border-line bg-panelsolid/50 p-3">
       {!available && <p className="text-[12.5px] text-muted">Set INWORLD_API_KEY on the server to voice stories. Without it they play silently, with captions.</p>}
       <label className="block">
         <span className="text-[12.5px] text-muted">Voice</span>
+        <div className="mt-0.5 flex gap-1.5">
         <select
           value={settings.voiceId}
-          onChange={(e) => save({ voiceId: e.target.value })}
+          onChange={(e) => {
+            save({ voiceId: e.target.value });
+            void preview(e.target.value);
+          }}
           disabled={!available || !voices?.length}
-          className="mt-0.5 w-full rounded-md border border-line bg-panelsolid px-2 py-1 text-[13.5px] focus:border-course/60 focus:outline-none"
+          className="min-w-0 flex-1 rounded-md border border-line bg-panelsolid px-2 py-1 text-[13.5px] focus:border-course/60 focus:outline-none"
         >
           {!voices?.some((v) => v.id === settings.voiceId) && <option value={settings.voiceId}>{settings.voiceId}</option>}
           {voices?.map((v) => (
@@ -198,6 +231,16 @@ function Settings({ settings }: { settings: StorySettings }) {
             </option>
           ))}
         </select>
+        <button
+          type="button"
+          onClick={() => (previewing ? (player.current?.pause(), setPreviewing(null)) : void preview(settings.voiceId))}
+          disabled={!available}
+          className="shrink-0 rounded-md border border-line px-2.5 text-[12.5px] text-muted hover:border-course/60 hover:text-text disabled:opacity-40"
+          title="Hear this voice"
+        >
+          {previewing ? "■ Stop" : "▶ Hear it"}
+        </button>
+        </div>
         {current?.description && <span className="mt-0.5 block text-[12px] text-muted/80">{current.description}</span>}
       </label>
       <label className="block">
@@ -213,6 +256,8 @@ function Settings({ settings }: { settings: StorySettings }) {
           value={settings.rate}
           disabled={!available}
           onChange={(e) => save({ rate: Number(e.target.value) })}
+          // Hear the pace once you let go.
+          onPointerUp={(e) => void preview(settings.voiceId, Number((e.target as HTMLInputElement).value))}
           className="w-full accent-[var(--course)]"
         />
         <span className="block text-[12px] text-muted/80">How the voice is synthesized. Playback speed is in the player.</span>
@@ -230,5 +275,83 @@ function Settings({ settings }: { settings: StorySettings }) {
         <span className="block text-[12px] text-muted/80">Applies to stories written from now on. A new voice re-voices a story the next time it plays.</span>
       </label>
     </div>
+  );
+}
+
+/**
+ * Explain a branch: a story of what it changes relative to the base (main),
+ * told with your voice and style. Scripts can do the same through
+ * POST /api/stories/branch, with the default voice and style.
+ */
+function Branches({ stories, onPlay }: { stories: Story[]; onPlay: (id: string) => void }) {
+  const [list, setList] = useState<{ base: string; branches: BranchInfo[] } | null>(null);
+  const [error, setError] = useState("");
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void fetch("/api/branches")
+      .then(async (r) => {
+        const b = await r.json();
+        if (!r.ok) throw new Error(b.error);
+        return b as { base: string; branches: BranchInfo[] };
+      })
+      .then((b) => {
+        setList(b);
+        // The branch you're on, if it has work of its own; else the newest that does.
+        const candidates = b.branches.filter((x) => x.name !== b.base && x.ahead > 0);
+        setPick((candidates.find((x) => x.current) ?? candidates[0])?.name ?? "");
+      })
+      .catch((e) => setError(String(e instanceof Error ? e.message : e)));
+  }, []);
+  const candidates = list?.branches.filter((x) => x.name !== list.base && x.ahead > 0) ?? [];
+
+  const explain = async () => {
+    if (!pick) return;
+    setBusy(true);
+    setError("");
+    const r = await post("/api/stories/branch", { branch: pick, base: list?.base, settings: "mine" });
+    setBusy(false);
+    if (!r.ok) setError(((await r.json()) as { error?: string }).error ?? "Couldn't start it.");
+  };
+
+  return (
+    <section>
+      <h3 className="font-cond text-[14px] font-semibold uppercase tracking-wider text-muted">Branches</h3>
+      {error ? (
+        <p className="mt-1 text-[12.5px] text-bad">{error}</p>
+      ) : !list ? null : candidates.length ? (
+        <div className="mt-1 flex gap-1.5">
+          <select
+            value={pick}
+            onChange={(e) => setPick(e.target.value)}
+            className="min-w-0 flex-1 rounded-md border border-line bg-panelsolid px-2 py-1 font-mono text-[12.5px] focus:border-course/60 focus:outline-none"
+            aria-label="Branch to explain"
+          >
+            {candidates.map((b) => (
+              <option key={b.name} value={b.name}>
+                {b.name} · {b.ahead} ahead{b.current ? " · checked out" : ""}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => void explain()}
+            disabled={!pick || busy}
+            className="shrink-0 rounded-md bg-course px-3 py-1 font-cond text-[15px] font-semibold text-night hover:brightness-110 disabled:opacity-40"
+            title={`A story of what ${pick || "the branch"} changes relative to ${list.base}`}
+          >
+            Explain vs {list.base}
+          </button>
+        </div>
+      ) : (
+        <p className="mt-1 text-[13px] text-muted">No branches with commits that {list.base} doesn't have.</p>
+      )}
+      {stories.length > 0 && (
+        <ul className="mt-1.5 space-y-1">
+          {stories.map((s) => (
+            <Row key={s.id} story={s} onPlay={() => onPlay(s.id)} />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

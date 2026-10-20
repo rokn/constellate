@@ -26,11 +26,13 @@ import {
   updateOverlay,
   loadStorySettings,
   setStorySettings,
+  getStory,
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
-import { cancel as cancelStory, cancelAll as cancelStories, retryStory, revoiceIfStale, writeIntroStories, writeStory } from "./stories";
-import { listVoices, readAudio, ttsAvailable } from "./tts";
+import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
+import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
+import { listBranches } from "./branch";
 
 /**
  * One process: the API, the live stream, the voice bridge and (in dev) Vite.
@@ -333,6 +335,82 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       // Before playing: a story voiced with other settings is voiced again.
       if (b.action === "voice" && b.id) return json(res, 200, { ok: true, revoicing: revoiceIfStale(b.id) }), true;
       return json(res, 400, { error: "Unknown action." }), true;
+    }
+    case "POST /api/story-voice-preview": {
+      // Hear a voice before choosing it.
+      if (!ttsAvailable()) return json(res, 400, { error: "INWORLD_API_KEY is not set." }), true;
+      const b = await body<{ voiceId?: string; rate?: number }>(req);
+      if (!b.voiceId?.trim()) return json(res, 400, { error: "Which voice?" }), true;
+      const rate = typeof b.rate === "number" ? Math.max(0.5, Math.min(1.5, b.rate)) : session.state.storySettings.rate;
+      try {
+        const v = await previewVoice({ ...session.state.storySettings, voiceId: b.voiceId.trim(), rate });
+        json(res, 200, { key: v.key });
+      } catch (err) {
+        json(res, 502, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+    case "GET /api/branches":
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      try {
+        json(res, 200, await listBranches(session.idx.graph.root, url.searchParams.get("base") || undefined));
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    case "GET /api/story": {
+      const s = getStory(url.searchParams.get("id") ?? "");
+      if (!s) return json(res, 404, { error: "No such story." }), true;
+      json(res, 200, s);
+      return true;
+    }
+    case "POST /api/stories/branch": {
+      // A story explaining what a branch changes relative to its base (main
+      // by default). Made for scripts: it uses the default voice and style
+      // unless told otherwise, opens the repo if a path is given, and with
+      // `wait` answers only once the story is ready to play.
+      const b = await body<{
+        branch?: string;
+        base?: string;
+        repo?: string;
+        voiceId?: string;
+        style?: string;
+        rate?: number;
+        /** "mine": the app's current settings instead of the defaults (the panel uses this). */
+        settings?: "default" | "mine";
+        wait?: boolean | number;
+      }>(req);
+      if (!b.branch?.trim()) return json(res, 400, { error: "Name a branch." }), true;
+      if (b.repo?.trim() && path.resolve(b.repo.trim().replace(/^~(?=$|\/)/, process.env.HOME ?? "~")) !== session.state.repo?.root) {
+        await open(b.repo.trim());
+      }
+      if (!session.idx) return json(res, 400, { error: session.state.error ?? "No repository open." }), true;
+      const overrides = Object.fromEntries(
+        Object.entries({ voiceId: b.voiceId, style: b.style, rate: b.rate }).filter(([, v]) => v !== undefined),
+      );
+      const settings = b.settings === "mine" ? undefined : defaultSettings(overrides);
+      let story;
+      try {
+        story = await writeBranchStory(b.branch.trim(), { base: b.base?.trim() || undefined, settings });
+      } catch (err) {
+        return json(res, 400, { error: err instanceof Error ? err.message : String(err) }), true;
+      }
+      const link = `http://localhost:${port}/?story=${story.id}`;
+      if (!b.wait) return json(res, 202, { ok: true, id: story.id, state: story.state, url: link, status: `/api/story?id=${story.id}` }), true;
+      // Wait (up to `wait` seconds, default ten minutes) for it to be written and voiced.
+      const deadline = Date.now() + (typeof b.wait === "number" ? b.wait : 600) * 1000;
+      const done = await new Promise<boolean>((resolve) => {
+        const check = () => {
+          const s = getStory(story.id);
+          if (!s || s.state === "ready" || s.state === "error") return resolve(true);
+          if (Date.now() > deadline) return resolve(false);
+          setTimeout(check, 1000);
+        };
+        check();
+      });
+      const s = getStory(story.id);
+      json(res, done && s?.state === "ready" ? 200 : done ? 500 : 202, { ok: s?.state === "ready", id: story.id, state: s?.state, error: s?.error, title: s?.title, url: link, story: s });
+      return true;
     }
     case "POST /api/story-settings": {
       const b = await body<{ settings?: Partial<StorySettings> }>(req);

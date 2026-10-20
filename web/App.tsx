@@ -702,6 +702,16 @@ export function App() {
     if (ids.length) playStory(ids[0], ids);
   }, [introStories, playStory]);
 
+  // A link to a story (/?story=<id>, as the branch-story API hands out) opens it.
+  const linked = useRef(new URLSearchParams(location.search).get("story"));
+  useEffect(() => {
+    const id = linked.current;
+    if (!id || !stories.some((s) => s.id === id)) return;
+    linked.current = null;
+    window.history.replaceState(null, "", location.pathname);
+    playStory(id);
+  }, [stories, playStory]);
+
   // A story you just asked for opens as it's being written, and plays once it's voiced.
   const storiesSeen = useRef(new Set<string>());
   useEffect(() => {
@@ -1513,7 +1523,7 @@ export function App() {
         if (!s) return null;
         // Voiced with other settings (or not at all): the server is voicing it again, so wait for that.
         // (The key is server/tts.ts's voiceKey.)
-        const ss = state.storySettings;
+        const ss = s.voice ?? state.storySettings;
         const stale = ttsAvailable && s.state === "ready" && (s.silent || s.voiceKey !== `${ss.ttsModel}|${ss.voiceId}|${ss.rate}`);
         return (
           <StoryPlayer
