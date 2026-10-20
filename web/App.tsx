@@ -3,6 +3,7 @@ import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, No
 import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
+import { ChartChanges } from "./components/ChartChanges";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
@@ -86,6 +87,8 @@ export function App() {
   const [tuneOpen, setTuneOpen] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  /** The "what changed since the chart" list under the re-chart prompt. */
+  const [changesOpen, setChangesOpen] = useState(false);
   /** The note being written or edited, and what it's pinned to. */
   const [noteEdit, setNoteEdit] = useState<{ target: NoteTarget; note?: Note } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1221,12 +1224,28 @@ export function App() {
           />
         )}
         {state.stale && (
-          <p className="glass pointer-events-auto max-w-[340px] rounded-md px-3 py-1.5 text-[12.5px] text-text/90">
+          <div className={`glass pointer-events-auto rounded-md px-3 py-1.5 text-[12.5px] text-text/90 ${changesOpen ? "w-[min(440px,calc(100vw-2rem))]" : "max-w-[340px]"}`}>
             The code has changed since this map was charted. Your groupings, groups and answers are kept.{" "}
+            <button onClick={() => setChangesOpen((o) => !o)} aria-expanded={changesOpen} className="text-text underline-offset-2 hover:underline">
+              {changesOpen ? "Hide changes" : "What changed?"}
+            </button>{" "}
+            ·{" "}
             <button onClick={() => void post("/api/reanalyze")} disabled={state.busy} className="text-course underline-offset-2 hover:underline disabled:opacity-50">
               Re-chart the overview
             </button>
-          </p>
+            {changesOpen && (
+              <ChartChanges
+                version={state.graphVersion}
+                onMap={visible ?? onMap}
+                onOpenFile={(p) => openFile(p)}
+                onLight={(paths) => focus(paths, "Changed since the chart")}
+                onHistory={(to, from) => {
+                  setHistoryOpen(true);
+                  showRange({ from, to, label: "Since the chart" });
+                }}
+              />
+            )}
+          </div>
         )}
         {status === "error" && state.error && (
           <p className="glass pointer-events-auto max-w-[340px] rounded-md px-3 py-2 text-[12.5px] text-bad">

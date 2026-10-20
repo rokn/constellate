@@ -7,7 +7,7 @@ import type { Lens, Note, NoteTarget, ScreenContext, ViewSettings } from "../sha
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
-import { commitMessage, diffFile, graphAt, loadHistory } from "./history";
+import { changesSince, commitMessage, diffFile, graphAt, loadHistory } from "./history";
 import {
   addNote,
   addOverlay,
@@ -164,6 +164,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       }
       return true;
     }
+    case "GET /api/chart-changes":
+      // What changed since the map was charted — shown with "Re-chart".
+      if (!session.idx || !session.chartedHead) return json(res, 404, { error: "No charted commit to compare with." }), true;
+      try {
+        json(res, 200, await changesSince(session.idx.graph.root, session.chartedHead));
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
     case "GET /api/history":
       if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
       json(res, 200, await loadHistory(session.idx.graph.root));

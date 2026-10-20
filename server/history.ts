@@ -246,3 +246,41 @@ export function graphAt(root: string, sha: string): Promise<RepoGraph> {
   while (graphs.size > GRAPHS_MAX) graphs.delete(graphs.keys().next().value!);
   return built;
 }
+
+/* ------------------------- since the map was charted ------------------------- */
+
+export type ChartChanges = {
+  /** The commit the map was charted at. */
+  since: { sha: string; short: string; at: number; subject: string };
+  /** Commits since then, newest first. */
+  commits: { sha: string; short: string; subject: string; author: string; at: number }[];
+  /** Every file that differs from the charted commit, uncommitted work included. */
+  files: CommitFile[];
+  uncommitted: boolean;
+};
+
+/** What the code did since `since`: for deciding whether to re-chart, and what to look at. */
+export async function changesSince(root: string, since: string): Promise<ChartChanges> {
+  if (!SHA.test(since)) throw new Error("Bad revision.");
+  const [base, log, raw, num, dirty] = await Promise.all([
+    git(root, ["show", "-s", "--format=%H%x1f%h%x1f%at%x1f%s", since]),
+    git(root, ["log", "-n200", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%at", `${since}..HEAD`]),
+    git(root, ["diff", "--no-renames", "--raw", since]),
+    git(root, ["diff", "--no-renames", "--numstat", since]),
+    git(root, ["status", "--porcelain", "--untracked-files=no"]),
+  ]);
+  const [sha, short, at, subject] = base.trim().split("\x1f");
+  const [parsed] = parseLog(`\x1ex\x1fx\x1fx\x1f0\x1f\x1fx\n${raw}${num}`);
+  return {
+    since: { sha, short, at: Number(at) * 1000, subject },
+    commits: log
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const [sha, short, subject, author, at] = l.split("\x1f");
+        return { sha, short, subject, author, at: Number(at) * 1000 };
+      }),
+    files: (parsed?.files ?? []).sort((a, b) => b.add + b.del - (a.add + a.del)),
+    uncommitted: !!dirty.trim(),
+  };
+}
