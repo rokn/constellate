@@ -279,21 +279,20 @@ export function App() {
     return m;
   }, [graph]);
 
-  const openFile = useCallback(
-    (path: string, line?: number, endLine?: number, fly = true) => {
-      setIntroDone(true);
-      setTour(null);
-      setFile({ path, line, endLine });
-      panels.current.file = true;
-      // The open file and its neighbourhood stay lit, with the import routes
-      // between them flowing — the ways out of here are always visible.
-      setEmphasis([path, ...(neighbours.get(path) ?? [])]);
-      setFocusLabel(path.split("/").pop());
-      if (fly) space.current?.flyTo(path, shiftFor(panels.current));
-      record({ kind: "file", path, line, endLine });
-    },
-    [neighbours],
-  );
+  /**
+   * Select a file: open it in the code panel, with the halo on its body.
+   * Selecting never changes what's focused — that's focusFile, on purpose.
+   * `fly` takes the camera there (search, links, the navigator); a click on
+   * the map doesn't, since the file is already in view.
+   */
+  const openFile = useCallback((path: string, line?: number, endLine?: number, fly = true) => {
+    setIntroDone(true);
+    setTour(null);
+    setFile({ path, line, endLine });
+    panels.current.file = true;
+    if (fly) space.current?.flyTo(path, shiftFor(panels.current));
+    record({ kind: "file", path, line, endLine });
+  }, []);
 
   const focus = useCallback((paths: string[], label?: string) => {
     setIntroDone(true);
@@ -302,6 +301,16 @@ export function App() {
     space.current?.focus(paths, shiftFor(panels.current));
     record({ kind: "focus", paths, label });
   }, []);
+
+  /**
+   * Focus a file — explicitly (double-click, Enter, the panel's Focus): it and
+   * the files it imports or is imported by stay lit, with the import routes
+   * between them flowing, and the rest dims.
+   */
+  const focusFile = useCallback(
+    (path: string) => focus([path, ...(neighbours.get(path) ?? [])], `${path.split("/").pop()} and its imports`),
+    [focus, neighbours],
+  );
 
   const showFrame = useCallback(
     (id: string) => {
@@ -669,6 +678,8 @@ export function App() {
           setEmphasis([]);
           setFocusLabel(undefined);
         } else setIntroDone(true);
+      } else if (e.key === "Enter" && file && !(e.target instanceof HTMLButtonElement)) {
+        focusFile(file.path);
       } else if (e.key === " " || e.code === "Space") {
         // Space recenters even if a button has focus — it shouldn't also press it.
         e.preventDefault();
@@ -696,7 +707,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull, focusFile]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -738,7 +749,11 @@ export function App() {
           layers={layers}
           emphasis={emphasis}
           active={file?.path ?? null}
-          onPick={(p) => openFile(p)}
+          onPick={(p) => openFile(p, undefined, undefined, false)}
+          onFocusFile={(p) => {
+            openFile(p, undefined, undefined, false);
+            focusFile(p);
+          }}
           onPickModule={(id, isolate) => {
             if (!isolate) return focusModule(id);
             // Shift+click a beacon: isolate that module (or group).
@@ -1007,6 +1022,7 @@ export function App() {
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}
             onHide={() => hide([file.path], file.path.split("/").pop()!)}
+            onFocus={() => focusFile(file.path)}
             goEditor={goplsReady}
             onReferences={(name, paths) => {
               // Light who uses it on the map, without moving the camera off the code.
