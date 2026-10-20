@@ -46,7 +46,7 @@ export function matcher(pattern: string): (path: string) => boolean {
 }
 
 export function isActive(f: MapFilter): boolean {
-  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length);
+  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length || f.isolate?.length);
 }
 
 /** The files a filter keeps, or null when the filter keeps everything. */
@@ -58,8 +58,14 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
   const tops = new Set(f.tops);
   const only = f.paths ? new Set(f.paths) : null;
   const hidden = new Set(f.hidden ?? []);
+  const iso = f.isolate?.length ? f.isolate : null;
+  const isoFiles = new Set(iso?.flatMap((i) => (i.kind === "module" ? (i.paths ?? []) : [])));
+  // "." is the files at the root itself, not everything under it.
+  const isoDirs = iso?.filter((i) => i.kind === "dir").map((i) => i.id) ?? [];
+  const inDir = (p: string, d: string) => (d === "." ? !p.includes("/") : p.startsWith(`${d}/`));
   const out = new Set<string>();
   for (const file of files) {
+    if (iso && !isoFiles.has(file.path) && !isoDirs.some((d) => inDir(file.path, d))) continue;
     if (only && !only.has(file.path)) continue;
     if (hidden.has(file.path)) continue;
     if (langs.size && !langs.has(file.lang)) continue;
@@ -75,8 +81,10 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
 
 /** A short human description, for chips and for the voice. */
 export function describe(f: MapFilter): string {
-  if (f.label) return f.hidden?.length ? `${f.label} · ${f.hidden.length} hidden` : f.label;
+  const only = f.isolate?.length ? `only ${f.isolate.map((i) => i.label).join(", ")}` : "";
+  if (f.label) return [only, f.label, f.hidden?.length ? `${f.hidden.length} hidden` : ""].filter(Boolean).join(" · ");
   const bits = [
+    only,
     f.include.length ? `only ${f.include.join(", ")}` : "",
     f.exclude.length ? `without ${f.exclude.join(", ")}` : "",
     f.langs.length ? f.langs.join("/") : "",

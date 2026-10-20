@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Frame, Layer, LogicalModule, MapFilter, SavedFilter, ScreenContext, Topic, UiCommand, ViewSettings } from "../shared/types";
+import type { Frame, Isolated, Layer, LogicalModule, MapFilter, SavedFilter, ScreenContext, Topic, UiCommand, ViewSettings } from "../shared/types";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
+import { territoryColors } from "./lib/colors";
 import { Space, type Grouping, type Overlay, type SpaceHandle } from "./components/Space";
 import { FilterPanel, GroupsPanel, Legend, OTHER, OrganizeBar } from "./components/MapControls";
 import { TuningPanel } from "./components/TuningPanel";
@@ -210,14 +211,26 @@ export function App() {
   const lensTitle = lensId === "folders" ? "folders" : lensId === "modules" ? "modules" : lenses.find((l) => l.id === lensId)?.title;
 
   // The legend: each group with how many of the visible files it holds.
+  // The legend counts without the isolation, so what you haven't isolated
+  // stays listed for adding.
+  const unisolated = useMemo(() => (graph ? applyFilter(graph.files, { ...filter, isolate: undefined }) : null), [graph, filter]);
   const legend = useMemo(() => {
-    if (!grouping || !graph) return null;
+    if (!graph) return null;
+    if (!grouping) {
+      // By folder: the top-level folders, in the map's own colours.
+      const counts = new Map<string, number>();
+      for (const f of graph.files) if (!unisolated || unisolated.has(f.path)) counts.set(f.top, (counts.get(f.top) ?? 0) + 1);
+      const groups: LogicalModule[] = [...counts.keys()]
+        .sort((a, b) => counts.get(b)! - counts.get(a)!)
+        .map((t) => ({ id: t, label: t === "." ? "files at the root" : `${t}/`, summary: "", paths: [] }));
+      return { kind: "dir" as const, groups, counts, colors: territoryColors(graph.files.map((f) => f.top)) };
+    }
     const groupOf = new Map<string, string>();
     for (const g of grouping.groups) for (const p of g.paths) if (!groupOf.has(p)) groupOf.set(p, g.id);
     const counts = new Map<string, number>();
     const others: string[] = [];
     for (const f of graph.files) {
-      if (visible && !visible.has(f.path)) continue;
+      if (unisolated && !unisolated.has(f.path)) continue;
       const id = groupOf.get(f.path);
       if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
       else others.push(f.path);
@@ -227,8 +240,19 @@ export function App() {
       counts.set(OTHER, others.length);
       groups.push({ id: OTHER, label: "Other", summary: "Not part of any group", paths: others });
     }
-    return { groups, counts };
-  }, [grouping, graph, visible]);
+    return { kind: "module" as const, groups, counts, colors: undefined };
+  }, [grouping, graph, unisolated]);
+
+  /** Add a module or folder to what the map is isolated to, or take it out. */
+  const toggleIsolate = useCallback((item: Isolated) => {
+    setFilter((f) => {
+      const cur = f.isolate ?? [];
+      const has = cur.some((i) => i.kind === item.kind && i.id === item.id);
+      const next = has ? cur.filter((i) => !(i.kind === item.kind && i.id === item.id)) : [...cur, item];
+      return { ...f, isolate: next.length ? next : undefined };
+    });
+  }, []);
+  const isolatedIds = useMemo(() => new Set((filter.isolate ?? []).filter((i) => i.kind === legend?.kind).map((i) => i.id)), [filter, legend?.kind]);
 
   /* ------------------------------ navigation ------------------------------ */
 
@@ -715,7 +739,12 @@ export function App() {
           emphasis={emphasis}
           active={file?.path ?? null}
           onPick={(p) => openFile(p)}
-          onPickModule={focusModule}
+          onPickModule={(id, isolate) => {
+            if (!isolate) return focusModule(id);
+            // Shift+click a beacon: isolate that module (or group).
+            const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
+            if (m) toggleIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths });
+          }}
           onOpenImport={(from, line) => openFile(from, line)}
           onHideOverlay={(id) => {
             const g = overlays.find((o) => o.id === id);
@@ -734,7 +763,11 @@ export function App() {
             const under = graph.files.map((f) => f.path).filter((p) => p.startsWith(`${t.dir}/`) && (!visible || visible.has(p)));
             hide(under, `${t.dir}/ (${under.length} file${under.length === 1 ? "" : "s"})`);
           }}
-          onPickDir={(d) => focus(graph.files.filter((f) => f.path.startsWith(`${d}/`)).map((f) => f.path), `${d}/`)}
+          onPickDir={(d, isolate) =>
+            isolate
+              ? toggleIsolate({ kind: "dir", id: d, label: d === "." ? "files at the root" : `${d}/` })
+              : focus(graph.files.filter((f) => f.path.startsWith(`${d}/`)).map((f) => f.path), `${d}/`)
+          }
           onBackground={() => setPointer(null)}
         />
       )}
@@ -873,7 +906,19 @@ export function App() {
             onClose={() => setGroupsOpen(false)}
           />
         )}
-        {!showIntro && !filterOpen && !groupsOpen && legend && !file && <Legend groups={legend.groups} counts={legend.counts} onPick={(g) => focusModule(g.id)} />}
+        {!showIntro && !filterOpen && !groupsOpen && legend && !file && (
+          <Legend
+            groups={legend.groups}
+            counts={legend.counts}
+            colors={legend.colors}
+            isolated={isolatedIds}
+            onPick={(g) =>
+              legend.kind === "dir" ? focus(graph!.files.filter((f) => (g.id === "." ? !f.path.includes("/") : f.path.startsWith(`${g.id}/`)) && (!visible || visible.has(f.path))).map((f) => f.path), g.label) : focusModule(g.id)
+            }
+            onIsolate={(g) => toggleIsolate(legend.kind === "dir" ? { kind: "dir", id: g.id, label: g.label } : { kind: "module", id: g.id, label: g.label, paths: g.paths })}
+            onShowAll={() => setFilter((f) => ({ ...f, isolate: undefined }))}
+          />
+        )}
         {state.stale && (
           <p className="glass pointer-events-auto max-w-[340px] rounded-md px-3 py-1.5 text-[12.5px] text-text/90">
             The code has changed since this map was charted. Your groupings, groups and answers are kept.{" "}

@@ -93,30 +93,69 @@ export function OrganizeBar({
 export function Legend({
   groups,
   counts,
+  colors: given,
+  isolated,
   onPick,
+  onIsolate,
+  onShowAll,
 }: {
   groups: LogicalModule[];
   counts: Map<string, number>;
+  /** Folder mode passes the map's own territory colours. */
+  colors?: Map<string, string>;
+  /** Ids of the rows the map is isolated to. */
+  isolated: Set<string>;
   onPick: (g: LogicalModule) => void;
+  onIsolate: (g: LogicalModule) => void;
+  onShowAll: () => void;
 }) {
   // Same inputs as the space uses, so a legend dot and its cluster always match.
   const colors = useMemo(() => {
+    if (given) return given;
     const c = territoryColors(groups.filter((g) => g.id !== OTHER).map((g) => g.id));
     c.set(OTHER, "#5d6a85");
     return c;
-  }, [groups]);
+  }, [groups, given]);
+  const any = isolated.size > 0;
   return (
-    <ul className="glass pointer-events-auto max-h-[38vh] w-[250px] overflow-y-auto rounded-lg py-1.5">
-      {groups.map((g) => (
-        <li key={g.id}>
-          <button onClick={() => onPick(g)} className="flex w-full items-start gap-2 px-3 py-1 text-left hover:bg-white/5" title={g.summary}>
-            <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: colors.get(g.id) }} />
-            <span className="min-w-0 flex-1 truncate text-[13px]">{g.label}</span>
-            <span className="text-[11.5px] tabular-nums text-muted">{counts.get(g.id) ?? 0}</span>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <div className="glass pointer-events-auto w-[250px] rounded-lg py-1.5">
+      <p className="flex items-baseline justify-between px-3 pb-1 text-[11.5px] text-muted">
+        {any ? (
+          <>
+            <span>Showing only {isolated.size}</span>
+            <button onClick={onShowAll} className="text-course hover:underline">Show all</button>
+          </>
+        ) : (
+          <span title="Shift+click a module beacon or folder on the map to isolate it too">Dot: show only this · several at once</span>
+        )}
+      </p>
+      <ul className="max-h-[38vh] overflow-y-auto">
+        {groups.map((g) => {
+          const on = isolated.has(g.id);
+          const c = colors.get(g.id);
+          return (
+            <li key={g.id} className={`flex items-center ${any && !on ? "opacity-45" : ""}`}>
+              <button
+                onClick={() => onIsolate(g)}
+                aria-pressed={on}
+                title={on ? `Stop isolating ${g.label}` : `Show only ${g.label} (click others to add them)`}
+                className="grid h-6 w-7 shrink-0 place-items-center rounded hover:bg-white/10"
+              >
+                <span className="h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: c, background: !any || on ? c : "transparent" }} />
+              </button>
+              <button
+                onClick={(e) => (e.shiftKey ? onIsolate(g) : onPick(g))}
+                className="flex min-w-0 flex-1 items-baseline gap-2 py-1 pr-3 text-left hover:bg-white/5"
+                title={`${g.summary ? `${g.summary}\n` : ""}Click to fly there · Shift+click to isolate`}
+              >
+                <span className={`min-w-0 flex-1 truncate text-[13px] ${on ? "text-text" : ""}`}>{g.label}</span>
+                <span className="text-[11.5px] tabular-nums text-muted">{counts.get(g.id) ?? 0}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -247,6 +286,35 @@ export function FilterPanel({
           naming === null && <p className="mt-1 text-[12px] text-muted">Set up a filter below, then save it to switch back to it in one click.</p>
         )}
       </div>
+
+      {!!filter.isolate?.length && (
+        <div className="rounded-md border border-line px-2.5 py-2">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[12.5px] text-muted">Showing only</span>
+            <button onClick={() => onChange({ ...filter, isolate: undefined })} className="text-[12.5px] text-course hover:underline">
+              Show all
+            </button>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {filter.isolate.map((i) => (
+              <span key={`${i.kind}:${i.id}`} className="inline-flex items-center gap-1 rounded-full border border-course/50 bg-course/10 px-2 py-0.5 text-[12px]">
+                {i.label}
+                <button
+                  onClick={() => {
+                    const next = filter.isolate!.filter((x) => x !== i);
+                    onChange({ ...filter, isolate: next.length ? next : undefined });
+                  }}
+                  className="text-muted hover:text-text"
+                  aria-label={`Stop isolating ${i.label}`}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+          <p className="mt-1 text-[11.5px] text-muted">Add more with the legend's dots, or Shift+click a beacon or folder on the map.</p>
+        </div>
+      )}
 
       {!!filter.hidden?.length && (
         <div className="rounded-md border border-line px-2.5 py-2">

@@ -150,6 +150,8 @@ export type MapFilter = {
   hidden?: string[];
   /** A name for the filter, when the navigator made it. */
   label?: string;
+  /** Show only these modules and folders (any number of them). */
+  isolate?: Isolated[];
 };
 
 /* ----------------------------- the views ----------------------------- */
@@ -267,6 +269,12 @@ export type ViewSettings = {
 };
 
 export type SavedFilter = { name: string; filter: MapFilter };
+
+/**
+ * One thing the map is isolated to. A folder is matched by prefix, so files
+ * added under it later are included; a module or group carries its files.
+ */
+export type Isolated = { kind: "module" | "dir"; id: string; label: string; paths?: string[] };
 
 export type SessionStatus = "idle" | "scanning" | "analyzing" | "ready" | "error";
 

@@ -163,8 +163,9 @@ export function Space({
   /** The file open in the code panel — gets the course halo. */
   active: string | null;
   onPick: (path: string) => void;
-  onPickModule: (id: string) => void;
-  onPickDir: (dir: string) => void;
+  /** `isolate`: Shift was held — add it to (or take it out of) what the map is isolated to. */
+  onPickModule: (id: string, isolate?: boolean) => void;
+  onPickDir: (dir: string, isolate?: boolean) => void;
   onPickOverlay: (id: string) => void;
   /** Right-click on a group's beacon: hide that group from view. */
   onHideOverlay: (id: string) => void;
@@ -280,11 +281,11 @@ export function Space({
       .warmupTicks(40)
       .cooldownTime(tu().settleSeconds * 1000)
       .d3VelocityDecay(tu().friction)
-      .onNodeClick((n) => {
+      .onNodeClick((n, e) => {
         if (beaconJustClicked()) return;
         if (n.type === "file") handlers.current.onPick(n.id);
-        else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4));
-        else handlers.current.onPickDir(n.id.slice(4));
+        else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4), e.shiftKey);
+        else handlers.current.onPickDir(n.id.slice(4), e.shiftKey);
       })
       // A right-click that isn't a pan hides what's under it.
       .onNodeRightClick((n) => {
