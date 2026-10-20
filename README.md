@@ -73,9 +73,40 @@ whiteboard”). These are yours, not the repo's (`.cache/story-settings.json`); 
 voiced with other settings is voiced again the next time it plays. Audio is cached by
 what was said and how, in `.cache/audio/`.
 
+**Branches.** A branch story explains what a branch changes relative to main (or another
+base): what it's for, how the change works, and what a reviewer should notice. It covers
+what the branch did since it forked (merge base → tip), not what main did since. The
+branch needn't be checked out — the writer reads it from git (`read_at`, `branch_diff`),
+code excerpts are cut from the branch's version, and **diff** visuals show git's own diff
+of a file. In the Stories panel, pick a branch under *Branches* and *Explain vs main*.
+
+**Hearing a voice.** Picking a voice plays a short line in it (so does letting go of the
+pace slider, and *Hear it*); previews are cached like everything else.
+
 Ask for one in the panel (“the story of how a request is served”); it opens while it's
 being written and plays when it's voiced. Stories write in their own agent session, so
 you can keep asking the navigator meanwhile.
+
+### The branch-story API
+
+```bash
+curl -X POST localhost:4317/api/stories/branch -H 'content-type: application/json' \
+  -d '{"branch": "feature/x", "wait": true}'
+```
+
+| Field | |
+| --- | --- |
+| `branch` | required — the branch to explain |
+| `base` | what to compare with; default `main`, else `master`, else `origin/HEAD` |
+| `repo` | a local path; opens that repo first if it isn't the one open |
+| `voiceId`, `style`, `rate` | override the defaults — otherwise the story uses the **default voice and style**, not the app's settings, and keeps them |
+| `settings: "mine"` | use the app's current voice and style instead (the panel does this) |
+| `wait` | `true` (or seconds) to answer only when it's written and voiced |
+
+It answers `{ id, state, url, status }` — `url` opens the app straight into the story
+(`/?story=<id>`), `GET /api/story?id=` reports progress. With `wait`, it answers with the
+finished story (200), its error (500), or 202 if it ran out of time. `GET /api/branches`
+lists local branches with how far each is ahead of and behind the base.
 
 ## Go: VS Code's editor with gopls
 
@@ -261,7 +292,8 @@ server/session.ts    the session singleton, mutations, command queue, per-commit
 server/navigator.ts  Claude Agent SDK: intro, asks, the flight MCP tools
 server/voice.ts      Inworld realtime bridge and its navigation tools
 server/stories.ts    story writing (its own agent session), script checks, voicing
-server/tts.ts        Inworld text-to-speech with word timings, audio cache, voice list
+server/tts.ts        Inworld text-to-speech with word timings, audio cache, voice list, previews
+server/branch.ts     a branch against its base, read from git without checking it out
 server/repo.ts       contained file reads and verbatim slicing
 server/history.ts    git log with per-file status and churn, range diffs, the map at a commit
 shared/types.ts      every shape that crosses a process or model boundary
