@@ -54,6 +54,8 @@ type L = {
 
 const COUPLING = "#b48cff";
 const ADDED = "#6ee7a8";
+/** Import lines brought up by hovering: a brighter, whiter cyan than the lit ones. */
+const BUMP = "#b4f0ff";
 const REMOVED = "#ff6b6b";
 
 /** How hot a changed file glows: 0 for a one-line touch, 1 for a rewrite. */
@@ -322,6 +324,10 @@ export function Space({
   handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground };
   /** Files close enough to the camera to be named (Tune -> Name nearby files). */
   const near = useRef(new Set<string>());
+  /** What hovering is bringing up: one file's import lines, or a module's lines out. */
+  const bump = useRef<{ node?: string; members?: Set<string> } | null>(null);
+  const hoveredNode = useRef<N | null>(null);
+  const shiftHeld = useRef(false);
   /** The last beacon clicked, to tell a double-click (show only it) from a click. */
   const lastBeaconClick = useRef<{ id: string; at: number } | null>(null);
   /** Note cards on the map, by note id. */
@@ -424,6 +430,12 @@ export function Space({
       // Import lines are hovered by our own screen-space pick (linkNear, in
       // the pointer handlers): lit lines are thin cylinders, and the library
       // only hits them dead on.
+      // Hovering a file brings up its import lines; Shift on a module's
+      // beacon brings up every line from the module to the rest.
+      .onNodeHover((n) => {
+        hoveredNode.current = n;
+        updateBump();
+      })
       .onLinkRightClick((l) => {
         if (beaconJustClicked() || l.type !== "import") return;
         handlers.current.onNoteOnLink(endId(l.source), endId(l.target));
@@ -501,6 +513,27 @@ export function Space({
      * The lit import line nearest the pointer on screen, within LINE_HOVER_PX.
      * Lit lines are the focus's neighbourhood, so this is a short loop.
      */
+    const updateBump = () => {
+      const n = hoveredNode.current;
+      let next: typeof bump.current = null;
+      if (n?.type === "file") next = { node: n.id };
+      else if (n?.type === "module" && shiftHeld.current) {
+        const c = state.current.clusters.find((x) => x.id === n.id.slice(4));
+        if (c) next = { members: new Set(c.members) };
+      }
+      const cur = bump.current;
+      if (cur?.node === next?.node && cur?.members === next?.members) return;
+      if (cur?.members && next?.members && cur.members.size === next.members.size && [...next.members].every((m) => cur.members!.has(m))) return;
+      bump.current = next;
+      applyAll();
+    };
+    const onShift = (e: KeyboardEvent) => {
+      if (e.key !== "Shift" || shiftHeld.current === (e.type === "keydown")) return;
+      shiftHeld.current = e.type === "keydown";
+      updateBump();
+    };
+    window.addEventListener("keydown", onShift);
+    window.addEventListener("keyup", onShift);
     /** Whether the pointer is on a body: then the body's tag shows, not a line's. */
     const onBody = (e: PointerEvent) => {
       const rect = host.getBoundingClientRect();
@@ -1249,6 +1282,8 @@ export function Space({
       window.removeEventListener("keydown", onFlyKey, true);
       window.removeEventListener("keyup", onFlyKey, true);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("keydown", onShift);
+      window.removeEventListener("keyup", onShift);
       tip.remove();
       layer.remove();
       hint.remove();
@@ -1383,6 +1418,19 @@ export function Space({
     }
   }
 
+  /**
+   * An import line brought up by hovering: touching the hovered file, or —
+   * Shift-hovering a module's beacon — leaving that module for another.
+   */
+  function bumped(l: L) {
+    const b = bump.current;
+    if (!b || l.type !== "import") return false;
+    const from = endId(l.source);
+    const to = endId(l.target);
+    if (b.node) return from === b.node || to === b.node;
+    return !!b.members && b.members.has(from) !== b.members.has(to);
+  }
+
   /** An import line both of whose ends are in the focus — the lit ones. */
   function litImport(l: L) {
     const emph = state.current.emphasis;
@@ -1416,7 +1464,7 @@ export function Space({
       l.type === "cochange" ? true
         : l.type === "member" ? false
         : l.type === "logical" ? lay.logical
-          : l.type === "import" ? lay.imports || both(l) || !!l.change
+          : l.type === "import" ? lay.imports || both(l) || !!l.change || bumped(l)
             : lay.folders !== false,
     )
       .linkColor((l) =>
@@ -1425,6 +1473,7 @@ export function Space({
         l === hoverLink.current ? "#eafcff"
         : l.change === "added" ? ADDED
         : l.change === "removed" ? REMOVED
+        : bumped(l) ? BUMP
         : l.type === "cochange" ? (emph.size && !both(l) ? "#2e2447" : COUPLING)
         : l.type === "logical" ? (emph.size ? "#4a3510" : RUNTIME)
           : l.type === "import"
@@ -1436,6 +1485,7 @@ export function Space({
       .linkWidth((l) =>
         l === hoverLink.current ? 1.4
           : l.change ? tu().importWidth
+          : bumped(l) ? tu().importWidth
           : l.type === "cochange" ? 0.3 + 1.6 * (l.weight ?? 0.5)
           : l.type === "logical" ? tu().runtimeWidth
             : l.type === "import" && both(l) ? tu().importWidth : 0,
@@ -1444,6 +1494,7 @@ export function Space({
         l === hoverLink.current ? 4
           : l.change === "added" ? 3
           : l.change === "removed" ? 0
+          : bumped(l) ? Math.min(2, Math.max(1, tu().particles))
           : l.type === "logical" ? (emph.size ? 0 : tu().particles)
             : l.type === "import" && both(l) ? Math.min(2, tu().particles) : 0,
       );
