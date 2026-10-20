@@ -35,6 +35,23 @@ Voice is optional: put `INWORLD_API_KEY` in `.env` (see `.env.example`).
    The overview is cached per commit in `.cache/`, so reopening is instant.
 3. **Explore.** Take the tour, pick a destination, click anything, or ask.
 
+## Go: VS Code's editor with gopls
+
+Go files open in Monaco — the editor inside VS Code — with **gopls**, Go's language server,
+behind it, so navigation is the compiler's, not a guess:
+
+- **⌘/Ctrl-click** a name: go to its definition. Another repo file opens in the panel and
+  the map flies there (Back with `[` retraces it); a jump into the standard library or the
+  module cache opens read-only in place, with a way back.
+- **⇧F12 or right-click → references**: the peek view lists every usage, and the files that
+  use it light up on the map as a constellation.
+- **Hover** for types and docs; also go-to-implementation, find, folding, sticky scroll.
+
+The server starts gopls for the open repo on first use (every `go.mod` becomes a workspace
+folder) and stops it when you switch repos. It needs `gopls` on your PATH or in
+`$(go env GOPATH)/bin` (`go install golang.org/x/tools/gopls@latest`); without it, Go files
+use the plain viewer. Monaco is loaded only when a Go file opens.
+
 ## Shaping the map
 
 **Filter** (`f`) narrows the map to what you care about: include/exclude globs
@@ -155,6 +172,7 @@ web/components/Space.tsx      the 3D map (3d-force-graph + bloom), flights, cour
 web/components/Dossier.tsx    the navigator's answers and their views
 web/components/FilePanel.tsx  source with imports / used-by / symbols
 web/components/CommandBar.tsx jump-or-ask box
+web/components/GoEditor.tsx   Monaco for Go files; providers and editor opener in web/lib/monaco.ts
 web/components/MapControls.tsx organize-by switcher, filter, groups panel, legend
 web/components/TuningPanel.tsx every map knob, with presets (web/lib/tuning.ts)
 ```

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchFile, type FileData } from "../lib/api";
 import { CodeBlock } from "./CodeBlock";
+import { GoEditor } from "./GoEditor";
 
 /**
  * The code panel. A file is never a dead end: everything it imports and
@@ -15,6 +16,9 @@ export function FilePanel({
   onNavigate,
   onAsk,
   onHide,
+  goEditor,
+  onReferences,
+  onSelection,
 }: {
   path: string;
   line?: number;
@@ -23,6 +27,10 @@ export function FilePanel({
   onNavigate: (path: string, line?: number) => void;
   onAsk: (request: string) => void;
   onHide: () => void;
+  /** Use VS Code's editor with gopls for Go files. */
+  goEditor?: boolean;
+  onReferences?: (name: string, paths: string[]) => void;
+  onSelection?: (text: string) => void;
 }) {
   const [file, setFile] = useState<FileData | null | undefined>(undefined);
   const [jump, setJump] = useState<number | undefined>(line);
@@ -103,7 +111,18 @@ export function FilePanel({
         {file === undefined && <p className="p-4 text-[13px] text-muted">Opening…</p>}
         {file === null && <p className="p-4 text-[13px] text-bad">This file couldn’t be read. It may have moved since the scan.</p>}
         {file && (
-          <CodeBlock code={file.text} lang={file.lang} highlight={range} scrollTo={jump} maxHeight="100%" />
+          goEditor && file.lang === "go" ? (
+            <GoEditor
+              path={file.path}
+              line={jump}
+              endLine={jump === line ? endLine : undefined}
+              onOpenRepoFile={(p, l) => onNavigate(p, l)}
+              onReferences={(n, ps) => onReferences?.(n, ps)}
+              onSelection={(t) => onSelection?.(t)}
+            />
+          ) : (
+            <CodeBlock code={file.text} lang={file.lang} highlight={range} scrollTo={jump} maxHeight="100%" />
+          )
         )}
       </div>
     </aside>

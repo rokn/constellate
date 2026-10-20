@@ -140,6 +140,8 @@ export function Space({
     fileColor: new Map<string, string>(),
     groupColor: new Map<string, string>(),
     tuning,
+    /** How many files import each file, for the size-by-importers knob. */
+    inDegree: new Map<string, number>(),
   });
   /** The current knob values, read at the moment of use. */
   const tu = () => state.current.tuning;
@@ -396,7 +398,10 @@ export function Space({
     let label: SpriteText | undefined;
 
     if (n.type === "file") {
-      base = Math.min(7, 1.1 + (Math.sqrt(n.loc ?? 1) / 5.5) * tu().sizeByLines) * tu().nodeSize;
+      // Importers boost on a log scale: a file 7 others import doubles at 1×,
+      // and a 300-importer hub grows a few times over rather than swallowing the map.
+      const boost = 1 + (tu().sizeByImporters * Math.log2(1 + (state.current.inDegree.get(n.id) ?? 0))) / 3;
+      base = Math.min(7, 1.1 + (Math.sqrt(n.loc ?? 1) / 5.5) * tu().sizeByLines) * tu().nodeSize * boost;
       mesh = new THREE.Mesh(
         new THREE.SphereGeometry(base, 14, 10),
         new THREE.MeshBasicMaterial({ color: state.current.fileColor.get(n.id) ?? "#9aa", transparent: true, opacity: 0.92 }),
@@ -518,6 +523,9 @@ export function Space({
     if (!g) return;
     const grouped = !!grouping;
     const shown = (p: string) => !visible || visible.has(p);
+    const inDegree = new Map<string, number>();
+    for (const e of graph.imports) inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
+    state.current.inDegree = inDegree;
     const files = graph.files.filter((f) => shown(f.path));
 
     // Which group each file belongs to (first group wins), and the colours.

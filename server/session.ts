@@ -23,7 +23,9 @@ import { indexGraph, scanRepo, type GraphIndex } from "./scan";
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CACHE_DIR = path.join(HERE, "..", ".cache");
+// Overridable so a second server (a test run, another worktree) can work on
+// the same repo without writing over the main session's saved state.
+const CACHE_DIR = process.env.CODEFLIGHT_CACHE_DIR ?? path.join(HERE, "..", ".cache");
 
 const MAX_ACTIVITY = 60;
 const MAX_COMMANDS = 30;

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ScreenContext, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
+import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
 import { addOverlay, dropOverview, openRepo, removeOverlay, session, setView, subscribe, updateOverlay } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
@@ -50,6 +51,8 @@ async function body<T>(req: IncomingMessage): Promise<T> {
 
 /** Open a repo and, unless the cache already knew it, run the intro analysis. */
 async function open(root: string) {
+  // The language server belongs to the repo it was started on.
+  stopGo();
   try {
     await openRepo(root);
     if (session.state.status === "analyzing") void runIntro();
@@ -114,6 +117,31 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         imports: session.idx.out.get(file.path) ?? [],
         importers: session.idx.in.get(file.path) ?? [],
       });
+      return true;
+    }
+    case "GET /api/lsp/status":
+      json(res, 200, { go: await goStatus(session.idx?.graph.root) });
+      return true;
+    case "POST /api/lsp/go": {
+      // Go intelligence from gopls: definition, references, implementation, hover.
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      const q = await body<Partial<GoQuery>>(req);
+      if (!q.path || !q.line || !q.column || !["definition", "references", "implementation", "hover"].includes(q.method ?? "")) {
+        return json(res, 400, { error: "Need method, path, line and column." }), true;
+      }
+      try {
+        json(res, 200, await goRequest(session.idx.graph.root, q as GoQuery));
+      } catch (err) {
+        json(res, 502, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+    case "GET /api/lsp/external": {
+      try {
+        json(res, 200, { text: await externalGoFile(url.searchParams.get("path") ?? "") });
+      } catch (err) {
+        json(res, 403, { error: err instanceof Error ? err.message : String(err) });
+      }
       return true;
     }
     case "POST /api/ask": {
@@ -235,6 +263,13 @@ async function main() {
     console.log(`\n  ✈  Codeflight on http://localhost:${port}\n`);
     if (!process.env.INWORLD_API_KEY) console.log("     (INWORLD_API_KEY not set — voice is off; everything else works)\n");
   });
+
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      stopGo();
+      process.exit(0);
+    });
+  }
 
   const repo = process.argv[2] ?? process.env.CODEFLIGHT_REPO;
   if (repo) void open(repo);

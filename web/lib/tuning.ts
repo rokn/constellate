@@ -12,6 +12,7 @@ export type Tuning = {
   // Bodies
   nodeSize: number;
   sizeByLines: number;
+  sizeByImporters: number;
   bodyOpacity: number;
   dimOpacity: number;
   beaconSize: number;
@@ -73,6 +74,7 @@ export const DEFAULT_TUNING: Tuning = {
   bloomThreshold: 0.2,
   nodeSize: 1,
   sizeByLines: 1,
+  sizeByImporters: 0,
   bodyOpacity: 0.88,
   dimOpacity: 0.08,
   beaconSize: 1,
@@ -124,7 +126,7 @@ export const DEFAULT_TUNING: Tuning = {
 };
 
 /** Knobs whose change means rebuilding the 3D objects rather than nudging them. */
-export const SHAPE_KNOBS: (keyof Tuning)[] = ["nodeSize", "sizeByLines", "beaconSize", "labelSize", "folderLabelDepth"];
+export const SHAPE_KNOBS: (keyof Tuning)[] = ["nodeSize", "sizeByLines", "sizeByImporters", "beaconSize", "labelSize", "folderLabelDepth"];
 /** Knobs that change the forces, so the layout is reheated to show the effect. */
 export const FORCE_KNOBS: (keyof Tuning)[] = [
   "repulsion", "folderPull", "folderDistance", "importPull", "importDistance",
@@ -155,6 +157,7 @@ export const SECTIONS: Section[] = [
     knobs: [
       r("nodeSize", "File size", 0.3, 3, 0.05),
       r("sizeByLines", "Size by length", 0, 2, 0.05, "0 makes every file the same size"),
+      r("sizeByImporters", "Size by importers", 0, 3, 0.05, "Grow files that many others import — hubs stand out"),
       r("bodyOpacity", "File brightness", 0.2, 1, 0.01),
       r("dimOpacity", "Dimmed files", 0, 0.6, 0.01, "Files outside the focus"),
       r("beaconSize", "Beacon size", 0.3, 3, 0.05, "Module and group beacons"),

@@ -28,6 +28,14 @@ export function App() {
   const status = state?.status ?? "idle";
   const graph = useGraph(state?.graphVersion, status !== "idle" && status !== "scanning");
   const [voiceAvailable, setVoiceAvailable] = useState(false);
+  // gopls on the server: Go files then open in VS Code's editor with real navigation.
+  const [goplsReady, setGoplsReady] = useState(false);
+  useEffect(() => {
+    void fetch("/api/lsp/status")
+      .then((r) => r.json())
+      .then((s: { go?: { available?: boolean } }) => setGoplsReady(!!s.go?.available))
+      .catch(() => setGoplsReady(false));
+  }, [state?.repo?.root]);
   useEffect(() => void config().then((c) => setVoiceAvailable(c.voice)).catch(() => {}), []);
 
   const space = useRef<SpaceHandle>(null);
@@ -464,6 +472,8 @@ export function App() {
       const text = sel?.toString().trim() ?? "";
       const anchor = sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement;
       // Only what is selected inside the panels is context; the ask box isn't.
+      // The Go editor reports its own selection; DOM selection inside it is noise.
+      if (anchor?.closest(".monaco-editor")) return;
       setSelection(text && anchor?.closest("aside") ? text.slice(0, 2000) : "");
     };
     document.addEventListener("selectionchange", onSel);
@@ -765,6 +775,13 @@ export function App() {
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}
             onHide={() => hide([file.path], file.path.split("/").pop()!)}
+            goEditor={goplsReady}
+            onReferences={(name, paths) => {
+              // Light who uses it on the map, without moving the camera off the code.
+              setEmphasis([...new Set([file.path, ...paths])]);
+              setFocusLabel(`References to ${name}`);
+            }}
+            onSelection={setSelection}
           />
         </div>
       )}

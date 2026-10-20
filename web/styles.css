@@ -136,6 +136,12 @@ body,
   animation: ring 1.2s ease-out 2;
 }
 
+/* The line range a jump landed on, in the Go editor. */
+.cf-line-range {
+  background: color-mix(in oklab, var(--course) 12%, transparent);
+  box-shadow: inset 3px 0 0 var(--course);
+}
+
 /* Answer prose in the dossier. */
 .prose-nav {
   line-height: 1.6;
