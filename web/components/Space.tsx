@@ -8,7 +8,7 @@ import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js
 import type { Layer, LogicalEdge, LogicalModule, Overview, RepoGraph } from "../../shared/types";
 import { COURSE, RUNTIME, STATIC, territoryColors } from "../lib/colors";
 import { FORCE_KNOBS, SHAPE_KNOBS, type Tuning } from "../lib/tuning";
-import type { Coupling, Heat } from "../lib/history";
+import type { Coupling, Heat, MapDelta } from "../lib/history";
 
 /**
  * The space you fly through.
@@ -47,9 +47,13 @@ type L = {
   /** Import links: what travels them, and where the import is written. */
   names?: string[];
   line?: number;
+  /** In history: an import the selected commits added, or one they removed (drawn one last time). */
+  change?: "added" | "removed";
 };
 
 const COUPLING = "#b48cff";
+const ADDED = "#6ee7a8";
+const REMOVED = "#ff6b6b";
 
 /** How hot a changed file glows: 0 for a one-line touch, 1 for a rewrite. */
 const churnHeat = (add: number, del: number) => Math.min(1, Math.log10(add + del + 1) / 3);
@@ -62,6 +66,7 @@ function importTag(l: L): string {
   const names = l.names ?? [];
   const shown = names.slice(0, 10).map(esc).join(", ");
   return [
+    ...(l.change === "added" ? [`<b style="color:${ADDED}">+ import added here</b>`] : l.change === "removed" ? [`<b style="color:${REMOVED}">− import removed here</b>`] : []),
     `<b>${esc(from.split("/").pop()!)}</b>${l.line ? `<span style="opacity:.55">:${l.line}</span>` : ""} → <b>${esc(to.split("/").pop()!)}</b>`,
     `<span style="opacity:.55">${esc(from)} → ${esc(to)}</span>`,
     names.length ? `<span style="color:#5bd6ff">${shown}${names.length > 10 ? ` +${names.length - 10} more` : ""}</span>` : `<span style="opacity:.55">side-effect import</span>`,
@@ -141,6 +146,9 @@ export function Space({
   overlays,
   visible,
   heat,
+  delta,
+  pinned,
+  insetBottom = 0,
   couplings,
   tuning,
   layers,
@@ -167,6 +175,15 @@ export function Space({
   visible: Set<string> | null;
   /** What changed in the chosen span of history; null when showing the present. */
   heat: Heat | null;
+  /** What the selected commits did to the map's structure: born and deleted files, added and dropped imports. */
+  delta: MapDelta | null;
+  /**
+   * Hold the bodies where they are while the graph changes under them (history
+   * steps): only newly born ones move, settling in beside their folder.
+   */
+  pinned: boolean;
+  /** How much of the view's height a panel covers from below (0–1); flights frame what's above it. */
+  insetBottom?: number;
   /** Files that change together, drawn as threads that don't pull on the layout. */
   couplings: Coupling[];
   tuning: Tuning;
@@ -218,6 +235,7 @@ export function Space({
     /** The map's clusters — modules, or the groups when organized by them — for auto-aim. */
     clusters: [] as { id: string; label: string; members: string[] }[],
     heat: null as Heat | null,
+    delta: null as MapDelta | null,
   });
   /** The current knob values, read at the moment of use. */
   const tu = () => state.current.tuning;
@@ -253,6 +271,8 @@ export function Space({
    * click handling ignores the same click for a moment.
    */
   const beaconClickAt = useRef(0);
+  const inset = useRef(insetBottom);
+  inset.current = insetBottom;
   /** Where the dolly-through wheel is easing the camera to, if anywhere. */
   const dollyGoal = useRef<{ cam: THREE.Vector3; target: THREE.Vector3; at: number } | null>(null);
   /**
@@ -1091,13 +1111,16 @@ export function Space({
       // In history, changed files wear the change: green if born in the span,
       // warm to hot by churn otherwise, and swell with it. Untouched ones fade.
       const h = heat?.get(id);
-      if (h) {
-        mat.color.set(h.status === "A" ? "#6ee7a8" : new THREE.Color("#ffd27a").lerp(new THREE.Color("#ff4a2e"), churnHeat(h.add, h.del)));
+      const ghost = state.current.delta?.removedFiles.has(id) || h?.status === "D";
+      if (ghost) mat.color.set(REMOVED);
+      else if (h) {
+        mat.color.set(h.status === "A" ? ADDED : new THREE.Color("#ffd27a").lerp(new THREE.Color("#ff4a2e"), churnHeat(h.add, h.del)));
       } else {
         mat.color.set(state.current.fileColor.get(id) ?? "#9aa");
       }
-      if (!pulses.current.has(id)) o.mesh.scale.setScalar(baseScale(id));
-      mat.opacity = lit ? tu().bodyOpacity : tu().dimOpacity;
+      if (!pulses.current.has(id)) o.mesh.scale.setScalar(ghost ? 0.8 : baseScale(id));
+      // A deleted file is drawn once more, faintly, so you see what left.
+      mat.opacity = ghost ? Math.max(tu().dimOpacity, 0.4) : lit ? tu().bodyOpacity : tu().dimOpacity;
       // Names appear on the bodies you're looking at, never on all of them:
       // a focus within the limit is named in full; a bigger one gets names on
       // its most-imported files, up to the limit, rather than none at all.
@@ -1134,7 +1157,7 @@ export function Space({
   /** An import line both of whose ends are in the focus — the lit ones. */
   function litImport(l: L) {
     const emph = state.current.emphasis;
-    return l.type === "import" && emph.has(endId(l.source)) && emph.has(endId(l.target));
+    return l.type === "import" && (!!l.change || (emph.has(endId(l.source)) && emph.has(endId(l.target))));
   }
 
   /** The files that keep a name when the focus outgrows the label limit. */
@@ -1164,26 +1187,34 @@ export function Space({
       l.type === "cochange" ? true
         : l.type === "member" ? false
         : l.type === "logical" ? lay.logical
-          : l.type === "import" ? lay.imports || both(l)
+          : l.type === "import" ? lay.imports || both(l) || !!l.change
             : lay.folders !== false,
     )
       .linkColor((l) =>
         // While focused, the runtime arcs step back to a dim ember so the
         // constellation you flew to is the brightest thing in view.
         l === hoverLink.current ? "#eafcff"
+        : l.change === "added" ? ADDED
+        : l.change === "removed" ? REMOVED
         : l.type === "cochange" ? (emph.size && !both(l) ? "#2e2447" : COUPLING)
         : l.type === "logical" ? (emph.size ? "#4a3510" : RUNTIME)
-          : l.type === "import" ? (both(l) ? STATIC : mix("#060b16", STATIC, tu().importBrightness * (emph.size ? 0.35 : 0.9)))
+          : l.type === "import"
+            ? both(l) ? STATIC
+              // Looking at a commit, the imports it didn't touch step far back so its own read clearly.
+              : mix("#060b16", STATIC, tu().importBrightness * (state.current.delta ? 0.12 : emph.size ? 0.35 : 0.9))
             : mix("#060b16", "#3a4f7a", tu().folderLinkBrightness * (emph.size ? 0.4 : 1)),
       )
       .linkWidth((l) =>
         l === hoverLink.current ? 1.4
+          : l.change ? tu().importWidth
           : l.type === "cochange" ? 0.3 + 1.6 * (l.weight ?? 0.5)
           : l.type === "logical" ? tu().runtimeWidth
             : l.type === "import" && both(l) ? tu().importWidth : 0,
       )
       .linkDirectionalParticles((l) =>
         l === hoverLink.current ? 4
+          : l.change === "added" ? 3
+          : l.change === "removed" ? 0
           : l.type === "logical" ? (emph.size ? 0 : tu().particles)
             : l.type === "import" && both(l) ? Math.min(2, tu().particles) : 0,
       );
@@ -1234,13 +1265,25 @@ export function Space({
     // Reuse node objects across rebuilds: they carry their positions, so the
     // map *moves* into a new organization instead of exploding and resettling.
     const next = new Map<string, N>();
-    const keep = (n: N) => {
-      const prev = nodes.current.get(n.id);
-      next.set(n.id, prev ? Object.assign(prev, { label: n.label, loc: n.loc, top: n.top, depth: n.depth }) : n);
-    };
     const parent = (p: string) => {
       const i = p.lastIndexOf("/");
       return i < 0 ? "dir:." : `dir:${p.slice(0, i)}`;
+    };
+    /** Where a body new to the map appears while pinned: by its nearest folder that's already there. */
+    const birthplace = (id: string) => {
+      if (!pinned || id === "dir:.") return null;
+      for (let d = parent(id.startsWith("dir:") ? id.slice(4) : id); ; d = parent(d.slice(4))) {
+        const at = nodes.current.get(d);
+        if (at?.x !== undefined) {
+          const j = () => (Math.random() - 0.5) * 24;
+          return { x: at.x + j(), y: at.y! + j(), z: at.z! + j() };
+        }
+        if (d === "dir:.") return null;
+      }
+    };
+    const keep = (n: N) => {
+      const prev = nodes.current.get(n.id);
+      next.set(n.id, prev ? Object.assign(prev, { label: n.label, loc: n.loc, top: n.top, depth: n.depth }) : { ...(n.x === undefined ? birthplace(n.id) : null), ...n });
     };
     const links: L[] = [];
 
@@ -1293,7 +1336,10 @@ export function Space({
     }
 
     for (const e of graph.imports) {
-      if (next.has(e.from) && next.has(e.to)) links.push({ source: e.from, target: e.to, type: "import", names: e.names, line: e.line });
+      if (!next.has(e.from) || !next.has(e.to)) continue;
+      const k = `${e.from}>${e.to}`;
+      const change = delta?.addedEdges.has(k) ? "added" : delta?.removedEdges.has(k) ? "removed" : undefined;
+      links.push({ source: e.from, target: e.to, type: "import", names: e.names, line: e.line, ...(change ? { change } : {}) });
     }
     for (const c of couplings) {
       if (next.has(c.a) && next.has(c.b)) links.push({ source: c.a, target: c.b, type: "cochange", weight: c.strength, label: `changed together ${c.count}×` });
@@ -1302,7 +1348,12 @@ export function Space({
     // Same nodes and links as last time: nothing to rebuild. Feeding the
     // library new graph data reheats the simulation and throws every body
     // around, so only a real change in structure is allowed to do that.
-    const key = `${[...next.keys()].join("|")}#${links.map((l) => `${l.source as string}>${l.target as string}:${l.type}`).join("|")}`;
+    const key = `${[...next.keys()].join("|")}#${links.map((l) => `${l.source as string}>${l.target as string}:${l.type}${l.change ?? ""}`).join("|")}`;
+    // Pinned, the bodies already placed hold still; the rest find their place.
+    for (const n of next.values()) {
+      if (pinned && nodes.current.get(n.id) === n && n.x !== undefined) Object.assign(n, { fx: n.x, fy: n.y, fz: n.z });
+      else if (!pinned) delete (n as { fx?: number }).fx, delete (n as { fy?: number }).fy, delete (n as { fz?: number }).fz;
+    }
     if (key === builtKey.current) {
       for (const [id, o] of objs.current) {
         const c = fileColor.get(id);
@@ -1334,7 +1385,7 @@ export function Space({
     // settled, reframe it — unless the reader is looking at something.
     // (The first build is framed by the warp instead.)
     clearTimeout(refit.current);
-    if (built.current && state.current.emphasis.size === 0 && tu().autoRefit) {
+    if (built.current && !pinned && state.current.emphasis.size === 0 && tu().autoRefit) {
       refit.current = setTimeout(
         unlessTouched(() => state.current.emphasis.size === 0 && fitView(1200, 90)),
         2200,
@@ -1343,7 +1394,7 @@ export function Space({
     built.current = true;
     // centroid reads refs only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, overview, grouping, visible, couplings]);
+  }, [graph, overview, grouping, visible, couplings, delta, pinned]);
 
   // History lights the map without moving it: colours, sizes and fades only.
   useEffect(() => {
@@ -1351,6 +1402,14 @@ export function Space({
     applyAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heat]);
+
+  // Files a commit brings into the world announce themselves.
+  useEffect(() => {
+    state.current.delta = delta;
+    for (const p of delta?.addedFiles ?? []) pulses.current.set(p, performance.now());
+    applyAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delta]);
 
   useEffect(() => {
     state.current.emphasis = new Set(emphasis);
@@ -1579,7 +1638,13 @@ export function Space({
     if (dir.lengthSq() < 1) dir.set(0, 0, 1);
     dir.normalize();
     const right = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
-    const look = new THREE.Vector3(c.x, c.y, c.z).addScaledVector(right, -shift * distance);
+    // Lower the aim by the panel's share of the view, so the subject sits in
+    // the middle of what's still visible above it.
+    const up = new THREE.Vector3().crossVectors(dir, right).normalize();
+    const fov = THREE.MathUtils.degToRad((camera as THREE.PerspectiveCamera).fov ?? 50) / 2;
+    const look = new THREE.Vector3(c.x, c.y, c.z)
+      .addScaledVector(right, -shift * distance)
+      .addScaledVector(up, -inset.current * distance * Math.tan(fov));
     const pos = look.clone().addScaledVector(dir, distance);
     const ctl = controls();
     if (ctl) ctl.autoRotate = false;

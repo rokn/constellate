@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
-import { commitsIn, couplingsOf, describeRange, heatOf, resolveSpan, useHistory, type Span } from "./lib/history";
-import { TimeBar } from "./components/TimeBar";
+import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type Span } from "./lib/history";
+import { CommitList } from "./components/CommitList";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
@@ -87,8 +87,14 @@ export function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [range, setRange] = useState<TimeRange | null>(null);
   const [coupling, setCoupling] = useState(false);
-  /** Commits being replayed, oldest first, and where we are in them. */
-  const [replay, setReplay] = useState<{ list: Commit[]; i: number } | null>(null);
+  /** Stepping forward through the commits on its own. */
+  const [playing, setPlaying] = useState(false);
+  /** Fly to what each selected commit changed. */
+  const [follow, setFollow] = useState(true);
+  /** List commits that only touch filtered-out files too. */
+  const [allCommits, setAllCommits] = useState(false);
+  /** Where a Shift-selection started, and where its moving end is. */
+  const anchor = useRef<string | null>(null);
   /** Opening one left-hand panel closes the other; they share the column. */
   const openPanel = (which: "filter" | "groups" | null) => {
     setFilterOpen(which === "filter");
@@ -210,13 +216,47 @@ export function App() {
 
   const gitHistory = useHistory(historyOpen || !!range, state?.graphVersion);
   const rangeCommits = useMemo(() => (gitHistory && range ? commitsIn(gitHistory, range) : []), [gitHistory, range]);
-  // During a replay the map shows history *accumulating*: everything up to the
-  // commit on screen, so you watch the span get written.
-  const heat = useMemo(() => {
-    if (replay) return heatOf(replay.list.slice(0, replay.i + 1));
-    return range ? heatOf(rangeCommits) : null;
-  }, [range, rangeCommits, replay]);
-  const onMap = useMemo(() => new Set(graph?.files.map((f) => f.path) ?? []), [graph]);
+  const heat = useMemo(() => (range ? heatOf(rangeCommits) : null), [range, rangeCommits]);
+
+  // The commit list: only commits that touch something the filter shows.
+  const relevant = useMemo(() => (gitHistory && graph ? relevantPaths(gitHistory, graph, filter) : null), [gitHistory, graph, filter]);
+  const listed = useMemo(
+    () => (!gitHistory ? [] : allCommits || !relevant ? gitHistory.commits : gitHistory.commits.filter((c) => c.files.some((f) => relevant.has(f.path)))),
+    [gitHistory, relevant, allCommits],
+  );
+
+  // The map at the selection: built from the newest selected commit, compared
+  // with the map just before the oldest. Uncommitted work is the live map,
+  // compared with HEAD. The neighbours in the list load ahead, so stepping
+  // with the arrows doesn't wait.
+  const newest = rangeCommits[0];
+  const oldest = rangeCommits.at(-1);
+  const headSha = gitHistory?.commits.find((c) => !c.worktree)?.sha;
+  const atSha = newest && !newest.worktree ? newest.sha : null;
+  const beforeSha = oldest ? (oldest.worktree ? headSha : oldest.parents[0]) : undefined;
+  const ahead = useMemo(() => {
+    const i = newest ? listed.findIndex((c) => c.sha === newest.sha) : -1;
+    if (i < 0) return [];
+    return [listed[i - 1], listed[i + 1], listed[i + 2]].filter(Boolean).flatMap((c) => (c.worktree ? [] : [c.sha, c.parents[0]]));
+  }, [listed, newest]);
+  const maps = useGraphsAt([atSha, beforeSha, ...ahead]);
+  const timeMap = useMemo(() => {
+    if (!newest) return null;
+    const after = newest.worktree ? graph : maps.get(atSha!);
+    // A root commit has nothing before it.
+    const before = beforeSha ? maps.get(beforeSha) : null;
+    if (!after || before === undefined) return null;
+    return mapAcross(after, before);
+  }, [newest, graph, maps, atSha, beforeSha]);
+  // While the next commit's map loads, the last one stays up rather than
+  // flashing back to the present.
+  const lastTimeMap = useRef<typeof timeMap>(null);
+  if (!range) lastTimeMap.current = null;
+  else if (timeMap) lastTimeMap.current = timeMap;
+  const shownTime = range ? (timeMap ?? lastTimeMap.current) : null;
+  const mapGraph = shownTime?.graph ?? graph;
+
+  const onMap = useMemo(() => new Set(mapGraph?.files.map((f) => f.path) ?? []), [mapGraph]);
   const couplings = useMemo(
     () => (coupling && gitHistory ? couplingsOf(range ? rangeCommits : gitHistory.commits, onMap) : []),
     [coupling, gitHistory, range, rangeCommits, onMap],
@@ -224,7 +264,7 @@ export function App() {
 
   /* ------------------------------ map shape ------------------------------- */
 
-  const visible = useMemo(() => (graph ? applyFilter(graph.files, filter) : null), [graph, filter]);
+  const visible = useMemo(() => (mapGraph ? applyFilter(mapGraph.files, filter) : null), [mapGraph, filter]);
 
   const grouping: Grouping | null = useMemo(() => {
     if (lensId === "modules" && overview) return { key: "modules", groups: overview.modules, edges: overview.edges };
@@ -496,37 +536,81 @@ export function App() {
    * picked commit or a named span; a drag on the timeline only relights the
    * map, so scrubbing doesn't yank the view around.
    */
-  const showRange = useCallback(
-    (r: TimeRange | null, fly = false) => {
-      setReplay(null);
-      setRange(r);
-      if (!r) return;
-      setHistoryOpen(true);
-      setIntroDone(true);
-      if (fly && gitHistory) {
-        const changed = [...new Set(commitsIn(gitHistory, r).flatMap((c) => c.files.map((f) => f.path)))].filter((p) => onMap.has(p));
-        if (changed.length) focus(changed, r.label ?? "Changed in this span");
+  const showRange = useCallback((r: TimeRange | null) => {
+    setRange(r);
+    if (!r) {
+      // Back to the present: what the last commit lit goes dark again.
+      setPlaying(false);
+      anchor.current = null;
+      setEmphasis([]);
+      setFocusLabel(undefined);
+      return;
+    }
+    anchor.current ??= r.to;
+    setHistoryOpen(true);
+    setIntroDone(true);
+  }, []);
+
+  /** Select a commit, or (extend) widen the selection from the anchor to it. */
+  const selectCommit = useCallback(
+    (c: Commit, extend = false) => {
+      if (!gitHistory) return;
+      const label = c.worktree ? "Uncommitted changes" : c.subject;
+      if (!extend || !anchor.current) {
+        anchor.current = c.sha;
+        return showRange({ from: c.sha, to: c.sha, label });
       }
+      const order = (sha: string) => gitHistory.commits.findIndex((x) => x.sha === sha);
+      const [to, from] = [anchor.current, c.sha].sort((a, b) => order(a) - order(b));
+      showRange({ from, to });
     },
-    [gitHistory, onMap, focus],
+    [gitHistory, showRange],
   );
+  /** The arrows: +1 an older commit, -1 a newer one. The moving end of a span is the one away from the anchor. */
+  const cursor = useRef<string | null>(null);
+  const step = useCallback(
+    (dir: 1 | -1, extend = false) => {
+      if (!listed.length) return;
+      const at = cursor.current && range ? listed.findIndex((c) => c.sha === cursor.current) : -1;
+      const next = at < 0 ? listed[0] : listed[Math.max(0, Math.min(listed.length - 1, at + dir))];
+      cursor.current = next.sha;
+      selectCommit(next, extend);
+    },
+    [listed, range, selectCommit],
+  );
+
+  // Follow: once a commit's map is up, fly to what it changed.
+  useEffect(() => {
+    if (!follow || !range || !timeMap) return;
+    // What changed, and what its new and dropped imports connect it to.
+    const ends = [...timeMap.delta.addedEdges, ...timeMap.delta.removedEdges].flatMap((k) => k.split(">"));
+    const changed = [...new Set([...rangeCommits.flatMap((c) => c.files.map((f) => f.path)), ...ends])].filter((p) => (visible ?? onMap).has(p));
+    if (changed.length) focus(changed, range.label ?? "Changed in this span");
+    // Only a new selection (or its map arriving) moves the camera.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeMap, follow]);
 
   const showSpan = useCallback(
     (span: Span) => {
       const r = gitHistory ? resolveSpan(gitHistory, span) : null;
-      if (r) showRange(r, true);
+      if (r) showRange(r);
     },
     [gitHistory, showRange],
   );
 
-  const startReplay = useCallback(() => {
-    if (replay) return setReplay(null);
-    if (!rangeCommits.length) return;
+  /** Play from the selection (or a few weeks of commits back) toward the present. */
+  const startPlay = useCallback(() => {
+    if (playing) return setPlaying(false);
+    if (!listed.length) return;
     setTour(null);
-    setFile(null);
     setFrameId(null);
-    setReplay({ list: [...rangeCommits].reverse(), i: 0 });
-  }, [replay, rangeCommits]);
+    if (!range || listed.findIndex((c) => c.sha === range.to) <= 0) {
+      const from = listed[Math.min(listed.length - 1, 20)];
+      cursor.current = from.sha;
+      selectCommit(from);
+    }
+    setPlaying(true);
+  }, [playing, listed, range, selectCommit]);
 
   const goTopic = useCallback(
     (t: Topic) => {
@@ -599,14 +683,15 @@ export function App() {
             setHistoryOpen(true);
             return showSpan(c.range.from.slice(5) as Span);
           }
-          return showRange(c.range, true);
+          cursor.current = c.range.to;
+          return showRange(c.range);
         case "clear_range":
           return showRange(null);
         case "replay":
-          return startReplay();
+          return startPlay();
       }
     },
-    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startReplay],
+    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay],
   );
   const runRef = useRef(run);
   runRef.current = run;
@@ -706,27 +791,22 @@ export function App() {
     return () => clearTimeout(t);
   }, [graph]);
 
-  /* -------------------------------- replay -------------------------------- */
+  /* --------------------------------- play --------------------------------- */
 
-  // One commit at a time, oldest first: its files pulse and the camera goes to
-  // them, while the heat accumulates behind.
-  const REPLAY_STEP_MS = 2600;
+  // One commit at a time toward the present. Each step waits for its map, so
+  // playback never outruns what's drawn.
+  const PLAY_STEP_MS = 1800;
   useEffect(() => {
-    if (!replay) return;
-    const c = replay.list[replay.i];
-    if (!c) {
-      setReplay(null);
+    if (!playing || !timeMap) return;
+    const at = listed.findIndex((c) => c.sha === range?.to);
+    if (at <= 0) {
+      setPlaying(false);
       return;
     }
-    const files = c.files.map((f) => f.path).filter((p) => onMap.has(p));
-    for (const p of files) space.current?.pulse(p);
-    if (files.length) space.current?.focus(files, shiftFor(panels.current));
-    setEmphasis(files);
-    setFocusLabel(c.subject);
-    const t = setTimeout(() => setReplay((r) => (r ? { ...r, i: r.i + 1 } : r)), REPLAY_STEP_MS);
+    const t = setTimeout(() => step(-1), PLAY_STEP_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replay?.i, replay?.list]);
+  }, [playing, timeMap]);
 
   /* --------------------------------- tour --------------------------------- */
 
@@ -778,17 +858,23 @@ export function App() {
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Escape") {
         if (panelFull) setPanelFull(false);
-        else if (replay) setReplay(null);
+        else if (playing) setPlaying(false);
         else if (tour !== null) setTour(null);
         else if (pointer) setPointer(null);
         else if (frameId) setFrameId(null);
         else if (file) setFile(null);
+        else if (range) showRange(null);
         else if (emphasis.length) {
           setEmphasis([]);
           setFocusLabel(undefined);
         } else setIntroDone(true);
       } else if (e.key === "Enter" && file && !(e.target instanceof HTMLButtonElement)) {
         focusFile(file.path);
+      } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && historyOpen && listed.length) {
+        // Down is older, as the list reads.
+        e.preventDefault();
+        setPlaying(false);
+        step(e.key === "ArrowDown" ? 1 : -1, e.shiftKey);
       } else if (e.key === " " || e.code === "Space") {
         // Space recenters even if a button has focus — it shouldn't also press it.
         e.preventDefault();
@@ -807,7 +893,10 @@ export function App() {
       else if (e.key === "f") openPanel(filterOpen ? null : "filter");
       else if (e.key === "g") openPanel(groupsOpen ? null : "groups");
       else if (e.key === ",") setTuneOpen((o) => !o);
-      else if (e.key === "h") setHistoryOpen((o) => !o);
+      else if (e.key === "h") {
+        if (historyOpen) showRange(null);
+        setHistoryOpen(!historyOpen);
+      }
       else if (e.key === "v" && voiceAvailable) {
         if (voice.state === "idle" || voice.state === "error") startVoice();
         else voice.stop();
@@ -817,7 +906,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull, focusFile, replay]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull, focusFile, playing, range, historyOpen, listed, step, showRange]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -850,11 +939,15 @@ export function App() {
       {graph && fontsReady && (
         <Space
           ref={space}
-          graph={graph}
+          graph={mapGraph!}
           overview={overview}
           grouping={grouping}
           overlays={shownOverlays}
           heat={heat}
+          delta={shownTime?.delta ?? null}
+          pinned={!!range}
+          // The history panel (up to 380px, or 46% of the view) and the bar under it.
+          insetBottom={historyOpen ? (Math.min(380, window.innerHeight * 0.46) + 90) / window.innerHeight : 0}
           couplings={couplings}
           tuning={tuning}
           visible={visible}
@@ -989,7 +1082,10 @@ export function App() {
               Tune
             </button>
             <button
-              onClick={() => setHistoryOpen((o) => !o)}
+              onClick={() => {
+                if (historyOpen) showRange(null);
+                setHistoryOpen(!historyOpen);
+              }}
               aria-expanded={historyOpen}
               title="History: what changed, when, and what changes together (h)"
               className={`rounded-md px-2.5 py-0.5 text-[13px] ${historyOpen || range ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
@@ -1146,7 +1242,7 @@ export function App() {
             endLine={file.endLine}
             change={(() => {
               const h = heat?.get(file.path);
-              if (!h || !range || replay) return undefined;
+              if (!h || !range) return undefined;
               return { from: range.from, to: range.to, add: h.add, del: h.del, status: h.status, label: range.label };
             })()}
             onClose={() => setFile(null)}
@@ -1209,28 +1305,44 @@ export function App() {
             onStop={() => setTour(null)}
           />
         )}
-        {replay && replay.list[replay.i] && (
-          <ReplayCaption
-            commit={replay.list[replay.i]}
-            index={replay.i}
-            total={replay.list.length}
-            onNext={() => setReplay((r) => (r ? { ...r, i: r.i + 1 } : r))}
-            onStop={() => setReplay(null)}
-          />
-        )}
-        {historyOpen && gitHistory?.available && (
-          <TimeBar
-            history={gitHistory}
-            range={range}
-            replaying={!!replay}
+        {historyOpen && gitHistory?.available && graph && (
+          <CommitList
+            commits={listed}
+            total={gitHistory.commits.length}
+            showAll={allCommits}
+            selected={range}
+            span={rangeCommits}
+            delta={timeMap?.delta ?? null}
+            loading={!!range && !timeMap}
+            onMapPaths={visible ?? onMap}
+            follow={follow}
+            playing={playing}
             coupling={coupling}
-            onRange={(r) => showRange(r)}
-            onSpan={showSpan}
-            onPickCommit={(c) => showRange({ from: c.sha, to: c.sha, label: c.worktree ? "Uncommitted changes" : c.subject }, true)}
-            onClear={() => showRange(null)}
-            onReplay={startReplay}
+            onSelect={(c, extend) => {
+              setPlaying(false);
+              cursor.current = c.sha;
+              selectCommit(c, extend);
+            }}
+            onOpenFile={(p) => openFile(p)}
+            onExplain={() => {
+              const [a, b] = [rangeCommits.at(-1)!, rangeCommits[0]];
+              askNavigator(
+                rangeCommits.length > 1
+                  ? `Explain the ${rangeCommits.length} commits from ${a.short} to ${b.short}: what changed, why, and how it reshaped the code around it.`
+                  : b.worktree
+                    ? "Explain my uncommitted changes: what they change and what they touch."
+                    : `Explain commit ${b.short} ("${b.subject}"): what it changed, why, and how it affects the code around it.`,
+              );
+            }}
+            onShowAll={setAllCommits}
+            onFollow={setFollow}
+            onPlay={startPlay}
             onCoupling={setCoupling}
-            onClose={() => setHistoryOpen(false)}
+            onClear={() => showRange(null)}
+            onClose={() => {
+              showRange(null);
+              setHistoryOpen(false);
+            }}
           />
         )}
         {historyOpen && gitHistory && !gitHistory.available && (
@@ -1318,45 +1430,3 @@ function Btn({ onClick, hint, children }: { onClick: () => void; hint?: string; 
   );
 }
 
-function ReplayCaption({
-  commit,
-  index,
-  total,
-  onNext,
-  onStop,
-}: {
-  commit: Commit;
-  index: number;
-  total: number;
-  onNext: () => void;
-  onStop: () => void;
-}) {
-  const add = commit.files.reduce((s, f) => s + f.add, 0);
-  const del = commit.files.reduce((s, f) => s + f.del, 0);
-  return (
-    <div key={commit.sha} className="glass rise pointer-events-auto w-full max-w-[520px] rounded-xl px-5 py-3.5">
-      <div className="flex items-baseline gap-3">
-        <span className="font-cond text-[14px] tabular-nums text-course">
-          {index + 1}/{total}
-        </span>
-        <span className="font-mono text-[12px] text-muted">{commit.worktree ? "uncommitted" : commit.short}</span>
-        <span className="ml-auto text-[12px] text-muted">
-          {commit.author} · {new Date(commit.at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-        </span>
-      </div>
-      <h2 className="mt-1 font-cond text-[22px] font-semibold leading-tight">{commit.subject}</h2>
-      <p className="mt-1 font-mono text-[12px]">
-        <span className="text-good">+{add}</span> <span className="text-bad">−{del}</span>
-        <span className="text-muted"> · {commit.files.length} files</span>
-      </p>
-      <div className="mt-2.5 flex gap-2">
-        <button onClick={onNext} className="rounded-md bg-white/5 px-3 py-1 text-[13px] hover:bg-white/10">
-          {index + 1 < total ? "Next commit" : "Finish"}
-        </button>
-        <button onClick={onStop} className="rounded-md px-3 py-1 text-[13px] text-muted hover:text-text">
-          Stop replay
-        </button>
-      </div>
-    </div>
-  );
-}

@@ -386,11 +386,11 @@ function stripJsonComments(s: string) {
 }
 
 /** tsconfig/jsconfig `paths`, and workspace package names, become aliases. */
-async function loadAliases(root: string, files: Set<string>): Promise<Aliases> {
+async function loadAliases(read: (f: string) => Promise<string>, files: Set<string>): Promise<Aliases> {
   const aliases: Aliases = [];
   for (const cfg of [...files].filter((f) => /(^|\/)(tsconfig|jsconfig)(\.\w+)?\.json$/.test(f))) {
     try {
-      const json = JSON.parse(stripJsonComments(await readFile(path.join(root, cfg), "utf8")));
+      const json = JSON.parse(stripJsonComments(await read(cfg)));
       const dir = path.posix.dirname(cfg) === "." ? "" : path.posix.dirname(cfg);
       const base = path.posix.join(dir, json.compilerOptions?.baseUrl ?? ".");
       for (const [k, v] of Object.entries<string[]>(json.compilerOptions?.paths ?? {})) {
@@ -405,7 +405,7 @@ async function loadAliases(root: string, files: Set<string>): Promise<Aliases> {
   }
   for (const pkg of [...files].filter((f) => f.endsWith("package.json") && f !== "package.json")) {
     try {
-      const json = JSON.parse(await readFile(path.join(root, pkg), "utf8"));
+      const json = JSON.parse(await read(pkg));
       if (json.name) {
         const dir = path.posix.dirname(pkg);
         const entry = (json.source ?? json.module ?? json.main ?? "") as string;
@@ -481,7 +481,7 @@ function goDecls(text: string): string[] {
  * Blank and dot imports, and packages where nothing resolves, fall back to the
  * package's stand-in file.
  */
-function goTargets(raw: Raw, text: string, ctx: Ctx): Map<string, string[]> | null {
+function goTargets(raw: Raw, usages: Map<string, string[]>, ctx: Ctx): Map<string, string[]> | null {
   const dir = goPackageDir(raw, ctx);
   if (!dir) return null;
   const pkg = ctx.goPackages.get(dir);
@@ -490,12 +490,11 @@ function goTargets(raw: Raw, text: string, ctx: Ctx): Map<string, string[]> | nu
   if (alias === "_" || alias === ".") return new Map([[pkg.rep, [alias === "_" ? "(side effects only)" : "(dot import)"]]]);
   // Which declaring file each used name lives in — and the names, for the edge's tag.
   const used = new Map<string, Set<string>>();
-  const esc = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  for (const m of text.matchAll(new RegExp(`\\b${esc}\\.([A-Z]\\w*)`, "g"))) {
-    const file = pkg.decls.get(m[1]);
+  for (const name of usages.get(alias) ?? []) {
+    const file = pkg.decls.get(name);
     if (!file) continue;
     if (!used.has(file)) used.set(file, new Set());
-    used.get(file)!.add(m[1]);
+    used.get(file)!.add(name);
   }
   if (!used.size) return new Map([[pkg.rep, []]]);
   return new Map([...used].map(([f, names]) => [f, [...names]]));
@@ -586,25 +585,106 @@ function packageOf(spec: string): string | null {
 
 /* -------------------------------- scan -------------------------------- */
 
-export async function scanRepo(
-  root: string,
-  onProgress?: (done: number, total: number) => void,
-): Promise<RepoGraph> {
+/**
+ * Where the scan reads files from: the working tree, or the repo as it was at
+ * some commit (see history.ts). `id` names a file's exact content when it's
+ * known (a git blob), so its parse can be reused across commits.
+ */
+export type Source = {
+  name: string;
+  root: string;
+  list: () => Promise<string[]>;
+  /** The file's text, or "" when it's unreadable, binary or too big. */
+  read: (f: string) => Promise<string>;
+  id?: (f: string) => string | undefined;
+  info?: () => Promise<{ branch?: string; head?: string }>;
+};
+
+/** What the scan needs from one file's text. Nothing here depends on other files. */
+type Parsed = {
+  loc: number;
+  symbols: Symbol[];
+  raws: (Raw & { line?: number })[];
+  /** Go: exported names the file declares, its package clause, and every `x.Name` it uses, by `x`. */
+  decls: string[];
+  goPkg?: string;
+  usages?: Map<string, string[]>;
+};
+
+function parse(lang: string, text: string): Parsed {
+  const lineOf = lineIndex(text);
+  const parsed: Parsed = {
+    loc: text ? text.split("\n").length : 0,
+    symbols: extractSymbols(lang, text),
+    raws: text ? extractImports(lang, text).map((r) => ({ ...r, line: r.at !== undefined ? lineOf(r.at) : undefined })) : [],
+    decls: [],
+  };
+  if (lang === "go" && text) {
+    parsed.decls = goDecls(text);
+    parsed.goPkg = text.match(/^package\s+(\w+)/m)?.[1];
+    const usages = new Map<string, Set<string>>();
+    for (const m of text.matchAll(/\b([A-Za-z_]\w*)\.([A-Z]\w*)/g)) {
+      if (!usages.has(m[1])) usages.set(m[1], new Set());
+      usages.get(m[1])!.add(m[2]);
+    }
+    parsed.usages = new Map([...usages].map(([k, v]) => [k, [...v]]));
+  }
+  return parsed;
+}
+
+/**
+ * Parses by content id. A commit shares almost every file with its
+ * neighbours, so walking history only parses what each commit changed.
+ */
+const PARSED_MAX = 60_000;
+const parsedCache = new Map<string, Parsed>();
+function parseCached(lang: string, id: string | undefined, text: () => Promise<string>): Promise<Parsed> | Parsed {
+  const key = id && `${lang}:${id}`;
+  const hit = key && parsedCache.get(key);
+  if (hit) return hit;
+  return text().then((t) => {
+    const p = parse(lang, t.includes("\u0000") ? "" : t);
+    if (key) {
+      if (parsedCache.size >= PARSED_MAX) parsedCache.delete(parsedCache.keys().next().value!);
+      parsedCache.set(key, p);
+    }
+    return p;
+  });
+}
+
+/** The working tree, as the scan reads it. */
+function workingTree(abs: string): Source {
+  return {
+    name: path.basename(abs),
+    root: abs,
+    list: () => listFiles(abs),
+    read: async (f) => {
+      try {
+        const s = await stat(path.join(abs, f));
+        return s.size <= MAX_BYTES ? await readFile(path.join(abs, f), "utf8") : "";
+      } catch {
+        return ""; // vanished or unreadable — still on the map, just empty
+      }
+    },
+    info: () => gitInfo(abs),
+  };
+}
+
+export async function scanRepo(root: string, onProgress?: (done: number, total: number) => void): Promise<RepoGraph> {
   const abs = path.resolve(root);
   const info = await stat(abs);
   if (!info.isDirectory()) throw new Error(`${abs} is not a directory`);
+  return scanSource(workingTree(abs), onProgress);
+}
 
-  const all = await listFiles(abs);
+export async function scanSource(src: Source, onProgress?: (done: number, total: number) => void): Promise<RepoGraph> {
+  const all = await src.list();
   // Read before filtering: go.mod isn't a source file, but Go imports can't be
   // resolved without the module path it declares.
   const goModules: Ctx["goModules"] = [];
   for (const f of all.filter((x) => /(^|\/)go\.mod$/.test(x) && !x.split("/").some((seg) => SKIP_DIRS.has(seg)))) {
-    try {
-      const m = (await readFile(path.join(abs, f), "utf8")).match(/^module\s+(\S+)/m);
-      if (m) goModules.push({ name: m[1], dir: path.posix.dirname(f) });
-    } catch {
-      /* unreadable go.mod: that module's imports stay unresolved */
-    }
+    const m = (await src.read(f)).match(/^module\s+(\S+)/m);
+    if (m) goModules.push({ name: m[1], dir: path.posix.dirname(f) });
   }
   goModules.sort((a, b) => b.name.length - a.name.length);
 
@@ -619,28 +699,21 @@ export async function scanRepo(
   const skipped = listed.length - kept.length;
   const fileSet = new Set(kept);
 
-  const texts = new Map<string, string>();
+  const parsed = new Map<string, Parsed>();
   const files: FileInfo[] = [];
   let done = 0;
   const queue = [...kept];
   const worker = async () => {
     for (let f = queue.shift(); f; f = queue.shift()) {
       const lang = langOf(f)!;
-      let text = "";
-      try {
-        const s = await stat(path.join(abs, f));
-        if (s.size <= MAX_BYTES) text = await readFile(path.join(abs, f), "utf8");
-      } catch {
-        /* vanished or unreadable — still on the map, just empty */
-      }
-      if (text.includes("\u0000")) text = "";
-      texts.set(f, text);
+      const p = await parseCached(lang, src.id?.(f), () => src.read(f));
+      parsed.set(f, p);
       files.push({
         path: f,
         top: f.includes("/") ? f.split("/")[0] : ".",
         lang,
-        loc: text ? text.split("\n").length : 0,
-        symbols: extractSymbols(lang, text),
+        loc: p.loc,
+        symbols: p.symbols,
         externals: [],
       });
       if (++done % 200 === 0) onProgress?.(done, kept.length);
@@ -669,18 +742,18 @@ export async function scanRepo(
     byGoDir.set(d, [...(byGoDir.get(d) ?? []), f]);
   }
   for (const [d, list] of byGoDir) {
-    const name = path.posix.basename(d === "." ? abs : d);
+    const name = path.posix.basename(d === "." ? src.root : d);
     const pick =
       list.find((f) => path.posix.basename(f.path) === `${name}.go`) ??
       list.find((f) => path.posix.basename(f.path) === "doc.go") ??
       [...list].sort((a, b) => b.loc - a.loc)[0];
     const decls = new Map<string, string>();
-    for (const f of list) for (const n of goDecls(texts.get(f.path) ?? "")) if (!decls.has(n)) decls.set(n, f.path);
-    const declared = texts.get(pick.path)?.match(/^package\s+(\w+)/m)?.[1] ?? name;
+    for (const f of list) for (const n of parsed.get(f.path)?.decls ?? []) if (!decls.has(n)) decls.set(n, f.path);
+    const declared = parsed.get(pick.path)?.goPkg ?? name;
     goPackages.set(d, { name: declared, rep: pick.path, decls });
   }
 
-  const ctx: Ctx = { files: fileSet, aliases: await loadAliases(abs, fileSet), goModules, goPackages, byStem };
+  const ctx: Ctx = { files: fileSet, aliases: await loadAliases(src.read, fileSet), goModules, goPackages, byStem };
   const edges = new Map<string, ImportEdge>();
   const imports: ImportEdge[] = [];
   const externalCounts = new Map<string, number>();
@@ -694,13 +767,12 @@ export async function scanRepo(
   );
 
   for (const file of files) {
-    const text = texts.get(file.path);
-    if (!text) continue;
+    const p = parsed.get(file.path);
+    if (!p?.raws.length) continue;
     const ext = new Set<string>();
-    const lineOf = lineIndex(text);
-    for (const raw of extractImports(file.lang, text)) {
+    for (const raw of p.raws) {
       let targets: [string, string[]][] = [];
-      if (raw.kind === "go") targets = [...(goTargets(raw, text, ctx) ?? new Map())];
+      if (raw.kind === "go") targets = [...(goTargets(raw, p.usages ?? new Map(), ctx) ?? new Map())];
       else {
         const to = resolve(file.path, raw, ctx);
         if (to) targets = [[to, raw.names ?? []]];
@@ -709,7 +781,7 @@ export async function scanRepo(
       for (const [to, names] of targets) {
         if (to === file.path) continue;
         const key = `${file.path}>${to}`;
-        const line = raw.at !== undefined ? lineOf(raw.at) : undefined;
+        const line = raw.line;
         const existing = edges.get(key);
         if (existing) {
           // Two statements reaching the same file: one edge, all the names.
@@ -751,9 +823,9 @@ export async function scanRepo(
   }
 
   return {
-    name: path.basename(abs),
-    root: abs,
-    ...(await gitInfo(abs)),
+    name: src.name,
+    root: src.root,
+    ...((await src.info?.()) ?? {}),
     files,
     dirs: [...dirs].sort(),
     imports,

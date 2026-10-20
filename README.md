@@ -76,28 +76,40 @@ marks numbered stops). Toggle, fly to, or remove them in the panel; they're kept
 
 ## History
 
-**History** (`h`) adds time to the map. The timeline is the repo's recent commits as
-bars (a day each, or a week for long histories), as tall as their churn; uncommitted work
-is the last bar. Drag across bars — or pick Last commit / Week / Month / All /
-Uncommitted, or a commit chip — and the map lights up what changed: files born in the
-span glow green, changed files warm from amber to red with churn and swell with it,
-untouched code fades. Nothing moves; it's the same map, coloured by time.
+**History** (`h`) turns the map back in time. It lists the repo's recent commits —
+only the ones that touch files your filter shows (**All commits** lists the rest
+too). Pick one, or walk the list with **↑ / ↓**, and the map becomes the repo *as it
+was at that commit*: files that didn't exist yet leave, and the import lines are the
+imports written then. Over that, the commit itself:
+
+- files it created glow green and pulse in; files it changed warm from amber to red
+  with churn; files it deleted stay one step as faint red ghosts;
+- imports it added are green lines with particles flowing, imports it removed red —
+  hover either for what was imported and where;
+- everything it didn't touch steps back, so the change reads at a glance.
+
+Bodies that exist on both sides hold still while you step (only new ones move, born
+beside their folder), so you can compare commits on the same map. **Shift+↑ / ↓**
+widens the selection to a span, compared against the map before its oldest commit.
+**Follow** flies to what each commit changed and what its new and dropped imports
+connect to; **Play** steps toward the present on its own. **Esc** or **Now** returns to
+the present.
 
 - **Coupling** draws violet threads between files that keep changing *together* —
   dependencies the import graph can't see. Sweeping commits (more than 30 files) don't
-  count. Computed over the selected span, or all loaded history when none is selected.
-- **Replay** flies through the span's commits oldest first: each commit's files pulse,
-  the camera goes to them, the caption shows its message, and the heat accumulates
-  behind, so you watch the span get written.
-- **Diffs**: open a file that changed in the span and the code panel opens on its
-  **Changes** — git's own diff for that range, syntax-highlighted — with *Explain this
-  change* to hand it to the navigator.
-- The navigator has `history` (commits, optionally for a path, plus what that file
-  changes together with), `show_diff` (a real diff in the answer) and `set_time_range`
-  (lights a span on your map). The voice can show spans by name and start a replay.
+  count.
+- **Diffs**: open a changed file and the code panel opens on its **Changes**, git's own
+  diff, with *Explain this change*; *Explain this commit* hands the whole commit to the
+  navigator.
+- The navigator has `history`, `show_diff` and `set_time_range`; the voice can show
+  spans by name and play through them.
 
-History reads the last 800 commits with one `git log --raw --numstat`; renames show as a
-delete plus an add, since the map knows today's paths.
+The map at a commit is the same static scan as the live map — no model involved —
+read from git's objects (`git ls-tree`, one long-lived `git cat-file --batch`). Parses
+are cached by blob, so a step only parses what that commit changed: on a ~1,200-file
+repo the first map takes ~0.3 s and each step ~80 ms; the list's neighbours load ahead,
+and holding an arrow down asks for one map, not one per commit. History reads the last
+800 commits; renames show as a delete plus an add.
 
 ## Tuning
 
@@ -183,7 +195,7 @@ read-only code editor doesn't bring up the on-screen keyboard.
 | `,` | tune panel | — |
 | `u` | hide / show the UI | — |
 
-| `h` | history timeline | "show me what changed this week", "replay it" |
+| `h` | history: the map at each commit, ↑ ↓ to step | "show me what changed this week", "play it" |
 | `o` | overview | "zoom out" |
 | `[` / `]`, mouse back / forward | back and forward through what you've opened | "go back" |
 | `t` | guided tour of the modules | "give me the tour" |
@@ -206,7 +218,7 @@ server/session.ts    the session singleton, mutations, command queue, per-commit
 server/navigator.ts  Claude Agent SDK: intro, asks, the flight MCP tools
 server/voice.ts      Inworld realtime bridge and its navigation tools
 server/repo.ts       contained file reads and verbatim slicing
-server/history.ts    git log with per-file status and churn, range diffs, uncommitted slice
+server/history.ts    git log with per-file status and churn, range diffs, the map at a commit
 shared/types.ts      every shape that crosses a process or model boundary
 web/components/Space.tsx      the 3D map (3d-force-graph + bloom), flights, course line
 web/components/Dossier.tsx    the navigator's answers and their views
@@ -215,7 +227,7 @@ web/components/CommandBar.tsx jump-or-ask box
 web/components/GoEditor.tsx   Monaco for Go files; providers and editor opener in web/lib/monaco.ts
 web/components/MapControls.tsx organize-by switcher, filter, groups panel, legend
 web/components/TuningPanel.tsx every map knob, with presets (web/lib/tuning.ts)
-web/components/TimeBar.tsx    the history timeline; heat, coupling, replay live in web/lib/history.ts
+web/components/CommitList.tsx the history list; maps at commits, deltas, coupling live in web/lib/history.ts
 web/components/DiffView.tsx   unified diffs rendered with both line numbers and syntax colour
 ```
 

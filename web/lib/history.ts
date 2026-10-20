@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import type { Commit, History, TimeRange } from "../../shared/types";
+import { applyFilter } from "../../shared/filter";
+import type { Commit, FileInfo, History, MapFilter, RepoGraph, TimeRange } from "../../shared/types";
 
 /**
  * History, as the map uses it. Everything here is computed in the browser from
@@ -129,4 +130,105 @@ export function describeRange(r: TimeRange, commits: Commit[]): string {
   const when = commits.length === 1 ? day(commits[0].at) : `${day(commits.at(-1)!.at)} – ${day(commits[0].at)}`;
   const name = r.label ? `${r.label}: ` : "";
   return `${name}${s.commits} commit${s.commits === 1 ? "" : "s"}, ${s.files} files, +${s.add} −${s.del}, ${when}`;
+}
+
+/* --------------------------- the map at a commit --------------------------- */
+
+// Maps by commit, fetched once per session; a commit's map never changes.
+const maps = new Map<string, Promise<RepoGraph | null>>();
+
+export function fetchGraphAt(sha: string): Promise<RepoGraph | null> {
+  let p = maps.get(sha);
+  if (!p) {
+    p = fetch(`/api/graph-at?sha=${encodeURIComponent(sha)}`)
+      .then((r) => (r.ok ? (r.json() as Promise<RepoGraph>) : null))
+      .catch(() => null);
+    maps.set(sha, p);
+    void p.then((g) => g || maps.delete(sha));
+  }
+  return p;
+}
+
+/** The map at each of these commits (null: the live map), as they load. */
+export function useGraphsAt(shas: (string | null | undefined)[]) {
+  const [loaded, setLoaded] = useState(new Map<string, RepoGraph>());
+  const key = shas.join(",");
+  useEffect(() => {
+    let live = true;
+    const load = (sha: string) =>
+      void fetchGraphAt(sha).then((g) => {
+        if (live && g) setLoaded((m) => new Map(m).set(sha, g));
+      });
+    const wanted = shas.filter((x): x is string => !!x && !loaded.has(x));
+    // Fetched already: straight on. New ones wait until the arrows rest, so
+    // holding ↓ through a hundred commits asks for one map, not a hundred.
+    for (const sha of wanted) if (maps.has(sha)) load(sha);
+    const t = setTimeout(() => wanted.forEach(load), 140);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return loaded;
+}
+
+export type MapDelta = {
+  /** Files the span created, and the ones it deleted (drawn as ghosts). */
+  addedFiles: Set<string>;
+  removedFiles: Set<string>;
+  /** Import edges, as `from>to`. */
+  addedEdges: Set<string>;
+  removedEdges: Set<string>;
+};
+
+const EMPTY_GRAPH = { files: [], imports: [] } as unknown as RepoGraph;
+const edgeKey = (e: { from: string; to: string }) => `${e.from}>${e.to}`;
+
+/**
+ * The map after a span, with what the span did to it laid over: deleted
+ * files and dropped imports stay one more step, as ghosts, so you see them
+ * go. `before` is the map just before the span (missing for a root commit).
+ */
+export function mapAcross(after: RepoGraph, before: RepoGraph | null): { graph: RepoGraph; delta: MapDelta } {
+  const prev = before ?? EMPTY_GRAPH;
+  const now = new Set(after.files.map((f) => f.path));
+  const was = new Set(prev.files.map((f) => f.path));
+  const nowEdges = new Set(after.imports.map(edgeKey));
+  const wasEdges = new Set(prev.imports.map(edgeKey));
+  const ghosts = prev.files.filter((f) => !now.has(f.path));
+  const dropped = prev.imports.filter((e) => !nowEdges.has(edgeKey(e)));
+  return {
+    graph: { ...after, files: [...after.files, ...ghosts], imports: [...after.imports, ...dropped] },
+    delta: {
+      addedFiles: new Set(before ? after.files.filter((f) => !was.has(f.path)).map((f) => f.path) : []),
+      removedFiles: new Set(ghosts.map((f) => f.path)),
+      addedEdges: new Set(before ? after.imports.map(edgeKey).filter((k) => !wasEdges.has(k)) : []),
+      removedEdges: new Set(dropped.map(edgeKey)),
+    },
+  };
+}
+
+/**
+ * Which commits matter under the current filter: the ones that touch a file
+ * the filter would show. A file's language is guessed from its extension the
+ * way the live map labelled it; files the map would never draw don't count.
+ */
+export function relevantPaths(h: History, live: RepoGraph, filter: MapFilter): Set<string> {
+  const extLang = new Map<string, string>();
+  for (const f of live.files) {
+    const ext = f.path.slice(f.path.lastIndexOf("."));
+    if (!extLang.has(ext)) extLang.set(ext, f.lang);
+  }
+  const files: FileInfo[] = [];
+  const seen = new Set<string>();
+  for (const c of h.commits) {
+    for (const { path } of c.files) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const lang = extLang.get(path.slice(path.lastIndexOf(".")));
+      if (lang) files.push({ path, lang, top: path.includes("/") ? path.split("/")[0] : ".", loc: 0, symbols: [], externals: [] });
+    }
+  }
+  return applyFilter(files, filter) ?? new Set(files.map((f) => f.path));
 }

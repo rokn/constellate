@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
@@ -6,7 +7,7 @@ import type { Lens, ScreenContext, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
-import { commitMessage, diffFile, loadHistory } from "./history";
+import { commitMessage, diffFile, graphAt, loadHistory } from "./history";
 import { addOverlay, dropOverview, openRepo, putLens, removeLens, removeOverlay, session, setView, subscribe, updateOverlay } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
@@ -152,6 +153,25 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
       json(res, 200, await loadHistory(session.idx.graph.root));
       return true;
+    case "GET /api/graph-at": {
+      // The map as it was at a commit, from git's objects (see history.ts).
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      try {
+        const g = await graphAt(session.idx.graph.root, url.searchParams.get("sha") ?? "");
+        const body = Buffer.from(JSON.stringify(g));
+        // A map is a megabyte of JSON that squeezes tenfold; it matters over the LAN.
+        if (/\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
+          res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "cache-control": "private, max-age=86400" });
+          res.end(gzipSync(body, { level: 4 }));
+        } else {
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "private, max-age=86400" });
+          res.end(body);
+        }
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
     case "GET /api/diff": {
       if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
       const q = url.searchParams;

@@ -68,7 +68,7 @@ const TOOLS = [
     span: { type: "string", enum: ["last_commit", "day", "week", "month", "all", "uncommitted"] },
   }, ["span"]),
   fn("clear_history", "Back to the present: stop showing history on the map."),
-  fn("replay_history", "Fly through the commits in the current history span, one by one, oldest first."),
+  fn("replay_history", "Play through the commits toward the present, one at a time: the map turns to each commit in turn."),
   fn("mark_group", "Mark a group of files on top of the map by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a group that needs the code read to choose, ask the navigator.", {
     label: { type: "string" },
     include: { type: "array", items: { type: "string" } },
