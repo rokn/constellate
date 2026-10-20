@@ -106,6 +106,6 @@ export async function ask(request: string, opts: { topicId?: string; screen?: Sc
 export const post = (url: string, body: unknown = {}) =>
   fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-export async function config(): Promise<{ voice: boolean; model: string }> {
+export async function config(): Promise<{ voice: boolean; tts: boolean; model: string }> {
   return fetch("/api/config").then((r) => r.json());
 }

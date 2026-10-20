@@ -113,6 +113,12 @@ export function DiagramView(props: {
   maxHeight?: number;
   /** Draw at natural size, unscaled — when something outside handles zoom. */
   natural?: boolean;
+  /**
+   * Only these nodes are drawn in (and edges between them); the rest keep
+   * their place in the layout, invisible, so a diagram can build up live
+   * without anything already on screen moving. Undefined shows everything.
+   */
+  shown?: string[];
 }) {
   // A new spec is a full remount: measurement and layout state reset naturally
   // instead of being carefully invalidated.
@@ -131,6 +137,7 @@ function Laid({
   grow = false,
   maxHeight,
   natural = false,
+  shown,
 }: {
   spec: DiagramSpecView;
   tone?: string;
@@ -139,6 +146,7 @@ function Laid({
   grow?: boolean;
   maxHeight?: number;
   natural?: boolean;
+  shown?: string[];
 }) {
   const markerId = useId().replace(/[^a-zA-Z0-9]/g, "");
   const measureRefs = useRef(new Map<string, HTMLDivElement>());
@@ -175,8 +183,11 @@ function Laid({
     return () => ro.disconnect();
   }, [layout]);
 
-    const emphasized = useMemo(() => new Set(emphasis), [emphasis]);
+  const emphasized = useMemo(() => new Set(emphasis), [emphasis]);
   const hasEmphasis = emphasized.size > 0;
+  const drawn = useMemo(() => (shown ? new Set(shown) : null), [shown]);
+  const isDrawn = (id: string) => !drawn || drawn.has(id);
+  const edgeDrawn = (e: { from: string; to: string }) => isDrawn(e.from) && isDrawn(e.to);
 
   if (!layout) {
     return (
@@ -257,10 +268,11 @@ function Laid({
                 key={e.id}
                 d={e.d}
                 fill="none"
+                className="transition-[stroke-opacity] duration-500"
                 stroke={hot ? "var(--course)" : tone}
-                strokeOpacity={dim ? 0.25 : hot ? 1 : 0.55}
+                strokeOpacity={!edgeDrawn(e) ? 0 : dim ? 0.25 : hot ? 1 : 0.55}
                 strokeWidth={hot ? 2 : 1.4}
-                markerEnd={`url(#${hot ? "h" : "a"}${markerId})`}
+                markerEnd={edgeDrawn(e) ? `url(#${hot ? "h" : "a"}${markerId})` : undefined}
               />
             );
           })}
@@ -278,11 +290,12 @@ function Laid({
                     ? "border-course/60 text-course"
                     : "text-muted"
                 } ${
-                  hasEmphasis &&
-                  !(emphasized.has(e.id) || (emphasized.has(e.from) && emphasized.has(e.to)))
-                    ? "opacity-40"
-                    : ""
-                }`}
+                  !edgeDrawn(e)
+                    ? "opacity-0"
+                    : hasEmphasis && !(emphasized.has(e.id) || (emphasized.has(e.from) && emphasized.has(e.to)))
+                      ? "opacity-40"
+                      : ""
+                } transition-opacity duration-500`}
                 style={{ left: e.lx, top: e.ly }}
               >
                 {e.label}
@@ -296,6 +309,7 @@ function Laid({
           if (!p) return null;
           const hot = emphasized.has(n.id);
           const dim = hasEmphasis && !hot;
+          const hidden = !isDrawn(n.id);
           return (
             <div
               key={n.id}
@@ -303,7 +317,7 @@ function Laid({
               onClick={onNodeClick && n.path ? () => onNodeClick(n.id) : undefined}
               className={`absolute z-[2] rounded-md border bg-panelsolid px-3.5 py-2 text-center transition-all duration-200 ${
                 hot ? "border-course shadow-[0_0_0_1px_var(--course)]" : "border-line"
-              } ${dim ? "opacity-45" : ""} ${
+              } ${hidden ? "pointer-events-none scale-90 opacity-0" : dim ? "opacity-45" : ""} ${
                 onNodeClick && n.path ? "cursor-pointer hover:border-course/70" : ""
               }`}
               style={{

@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Lens, Note, NoteTarget, ScreenContext, ViewSettings } from "../shared/types";
+import type { Lens, Note, NoteTarget, ScreenContext, StorySettings, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
@@ -24,9 +24,13 @@ import {
   subscribe,
   updateNote,
   updateOverlay,
+  loadStorySettings,
+  setStorySettings,
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
+import { cancel as cancelStory, cancelAll as cancelStories, retryStory, revoiceIfStale, writeIntroStories, writeStory } from "./stories";
+import { listVoices, readAudio, ttsAvailable } from "./tts";
 
 /**
  * One process: the API, the live stream, the voice bridge and (in dev) Vite.
@@ -71,9 +75,16 @@ async function body<T>(req: IncomingMessage): Promise<T> {
 async function open(root: string) {
   // The language server belongs to the repo it was started on.
   stopGo();
+  cancelStories();
   try {
     await openRepo(root);
-    if (session.state.status === "analyzing") void runIntro();
+    // A freshly charted repo gets its intro stories written right after.
+    // (A repo charted before stories existed can ask for them in Stories.)
+    if (session.state.status === "analyzing") {
+      void runIntro().then(() => {
+        if (session.state.overview && !session.state.stories.some((s) => s.intro)) writeIntroStories();
+      });
+    }
   } catch (err) {
     session.state.status = "error";
     session.state.error = err instanceof Error ? err.message : String(err);
@@ -114,6 +125,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     case "GET /api/config":
       json(res, 200, {
         voice: !!process.env.INWORLD_API_KEY,
+        tts: ttsAvailable(),
         model: process.env.CODEFLIGHT_MODEL ?? "claude-opus-5-5",
       });
       return true;
@@ -293,6 +305,47 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       json(res, 200, { ok: true, id: o.id, count: paths.length });
       return true;
     }
+    case "GET /api/story-voices":
+      try {
+        json(res, 200, { available: ttsAvailable(), voices: await listVoices() });
+      } catch (err) {
+        json(res, 502, { available: ttsAvailable(), voices: [], error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    case "GET /api/story-audio": {
+      const audio = await readAudio(url.searchParams.get("key") ?? "");
+      if (!audio) return json(res, 404, { error: "No such audio." }), true;
+      // Keyed by content, so it never changes.
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": audio.length, "Cache-Control": "private, max-age=31536000, immutable" });
+      res.end(audio);
+      return true;
+    }
+    case "POST /api/stories": {
+      const b = await body<{ action?: string; id?: string; request?: string }>(req);
+      if (!session.idx) return json(res, 400, { error: "No repository open." }), true;
+      if (b.action === "create" && b.request?.trim()) return json(res, 202, { ok: true, id: writeStory(b.request.trim()).id }), true;
+      if (b.action === "intro") {
+        if (!session.state.overview) return json(res, 400, { error: "The map isn't charted yet." }), true;
+        return json(res, 202, { ok: true, ids: writeIntroStories().map((s) => s.id) }), true;
+      }
+      if (b.action === "delete" && b.id) return json(res, cancelStory(b.id) ? 200 : 404, { ok: true }), true;
+      if (b.action === "retry" && b.id) return retryStory(b.id), json(res, 202, { ok: true }), true;
+      // Before playing: a story voiced with other settings is voiced again.
+      if (b.action === "voice" && b.id) return json(res, 200, { ok: true, revoicing: revoiceIfStale(b.id) }), true;
+      return json(res, 400, { error: "Unknown action." }), true;
+    }
+    case "POST /api/story-settings": {
+      const b = await body<{ settings?: Partial<StorySettings> }>(req);
+      const s = b.settings ?? {};
+      const patch: Partial<StorySettings> = {};
+      if (typeof s.voiceId === "string" && s.voiceId.trim()) patch.voiceId = s.voiceId.trim();
+      if (typeof s.ttsModel === "string" && s.ttsModel.trim()) patch.ttsModel = s.ttsModel.trim();
+      if (typeof s.rate === "number" && Number.isFinite(s.rate)) patch.rate = Math.max(0.5, Math.min(1.5, s.rate));
+      if (typeof s.style === "string") patch.style = s.style.slice(0, 600);
+      await setStorySettings(patch);
+      json(res, 200, { ok: true });
+      return true;
+    }
     case "POST /api/interrupt":
       json(res, 200, { ok: interrupt() });
       return true;
@@ -338,6 +391,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
 
 async function main() {
   await loadEnv();
+  await loadStorySettings();
   const server = createServer();
 
   let assets: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;

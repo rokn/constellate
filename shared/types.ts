@@ -284,6 +284,85 @@ export type Frame = {
   createdAt: number;
 };
 
+/* ------------------------------ stories ------------------------------ */
+
+/**
+ * Something that happens on screen during a story beat. `at` is the offset
+ * (in characters) into the beat's narration where it fires — the start of the
+ * phrase the navigator anchored it to — or 0 for the start of the beat.
+ */
+export type StoryCue = { at: number } & (
+  /** Put one of the story's visuals on the stage. */
+  | { kind: "show"; visual: string }
+  /** Spotlight file lines in the code visual on stage. */
+  | { kind: "lines"; lines: number[] }
+  /** Draw diagram nodes in (live diagrams build up as they're narrated). */
+  | { kind: "reveal"; nodes: string[] }
+  /** Emphasize diagram nodes; everything else dims. Empty clears. */
+  | { kind: "emphasize"; nodes: string[] }
+  /** Advance a custom visualization to a step of its animation. */
+  | { kind: "step"; step: number }
+  /** Fly the map's camera to these files. */
+  | { kind: "focus"; paths: string[]; label?: string }
+  /** Open a file in the code panel at a range. */
+  | { kind: "open"; path: string; line?: number; endLine?: number }
+);
+
+/** Word timings for a voiced beat: char offset into `say`, length, start and end in ms. */
+export type BeatWord = { i: number; n: number; s: number; e: number };
+
+export type StoryBeat = {
+  id: string;
+  /** What the voice says — one to three short spoken sentences. */
+  say: string;
+  /** Silence after the beat, so a visual can be looked at. */
+  pauseMs: number;
+  cues: StoryCue[];
+  /** Set once the beat is voiced. */
+  audio?: { key: string; ms: number; words: BeatWord[] };
+};
+
+/** A part of the codebase the story is about. */
+export type StoryContext = { path: string; line?: number; endLine?: number; why: string };
+
+/**
+ * A narrated walkthrough: a short script the voice reads, choreographed with
+ * prepared visuals and camera moves. Written by the navigator, voiced by Inworld.
+ */
+export type Story = {
+  id: string;
+  title: string;
+  /** One line on what it explains. */
+  summary: string;
+  /** What was asked for. */
+  request: string;
+  state: "writing" | "voicing" | "ready" | "error";
+  /** While writing: what the navigator is doing. */
+  progress?: string;
+  error?: string;
+  /** 1–3 for the repo's intro stories, in order. */
+  intro?: number;
+  context: StoryContext[];
+  /** Prepared up front, so playback never waits on a model. */
+  visuals: View[];
+  beats: StoryBeat[];
+  /** The voice the beats were synthesized with; a different setting re-voices. */
+  voiceKey?: string;
+  /** No TTS available: the player runs on estimated timings with captions. */
+  silent?: boolean;
+  createdAt: number;
+};
+
+/** How stories are written and voiced. Global, not per repo. */
+export type StorySettings = {
+  voiceId: string;
+  ttsModel: string;
+  /** TTS speaking rate, 0.5–1.5 (the player's speed control is separate). */
+  rate: number;
+  /** A few words on the narration style, handed to the writer. */
+  style: string;
+};
+
 /* --------------------------- live channel --------------------------- */
 
 export type Activity = {
@@ -364,6 +443,9 @@ export type SessionState = {
   overlays: GroupOverlay[];
   notes: Note[];
   frames: Frame[];
+  /** Narrated walkthroughs, the intro's three among them. */
+  stories: Story[];
+  storySettings: StorySettings;
   activity: Activity[];
   commands: { id: number; cmd: UiCommand }[];
   /** True while the navigator is working on something. */
