@@ -75,7 +75,16 @@ const OTHER = "__other";
  * floats at the centre of its files with faint spokes out to each one. It takes
  * no part in the layout, so whatever separation the map has stays as it is.
  */
-export type Overlay = { id: string; label: string; paths: string[]; color: string };
+export type Overlay = {
+  id: string;
+  label: string;
+  paths: string[];
+  color: string;
+  /** Why each file is in the group: shown on its spoke. */
+  reasons?: Record<string, string>;
+  summary?: string;
+  by?: "you" | "navigator";
+};
 
 /** Blend toward `to` by t; used to turn a 0..1 brightness knob into a colour. */
 const mix = (from: string, to: string, t: number) => `#${new THREE.Color(from).lerp(new THREE.Color(to), Math.max(0, Math.min(1, t))).getHexString()}`;
@@ -175,12 +184,32 @@ export function Space({
   const bloomRef = useRef<UnrealBloomPass | null>(null);
   const starMat = useRef<THREE.PointsMaterial | null>(null);
   const overlayObjs = useRef(
-    new Map<string, { beacon: THREE.Group; mesh: THREE.Mesh; hit: THREE.Mesh; spokes: THREE.LineSegments; members: string[] }>(),
+    new Map<
+      string,
+      {
+        beacon: THREE.Group;
+        mesh: THREE.Mesh;
+        hit: THREE.Mesh;
+        spokes: THREE.LineSegments;
+        members: string[];
+        /** The members drawn this frame, in spoke order — for finding a hovered spoke's file. */
+        shown: string[];
+        info: Overlay;
+      }
+    >(),
   );
   const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHide, onOpenImport, onBackground });
   handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHide, onOpenImport, onBackground };
   /** The import line under the pointer, lit while hovered. */
   const hoverLink = useRef<L | null>(null);
+  /**
+   * When a group beacon was just clicked. The release event must still reach
+   * the orbit controls (swallowing it left them thinking the button was held,
+   * so the camera orbited with every mouse move), so instead the library's own
+   * click handling ignores the same click for a moment.
+   */
+  const beaconClickAt = useRef(0);
+  const beaconJustClicked = () => performance.now() - beaconClickAt.current < 250;
   /** When the focus is larger than the label limit, the files that still get names. */
   const labelled = useRef(new Set<string>());
 
@@ -217,6 +246,7 @@ export function Space({
       .cooldownTime(tu().settleSeconds * 1000)
       .d3VelocityDecay(tu().friction)
       .onNodeClick((n) => {
+        if (beaconJustClicked()) return;
         if (n.type === "file") handlers.current.onPick(n.id);
         else if (n.type === "module") handlers.current.onPickModule(n.id.slice(4));
         else handlers.current.onPickDir(n.id.slice(4));
@@ -241,9 +271,11 @@ export function Space({
         applyAll();
       })
       .onLinkClick((l) => {
-        if (litImport(l)) handlers.current.onOpenImport(endId(l.source), l.line);
+        if (!beaconJustClicked() && litImport(l)) handlers.current.onOpenImport(endId(l.source), l.line);
       })
-      .onBackgroundClick(() => handlers.current.onBackground());
+      .onBackgroundClick(() => {
+        if (!beaconJustClicked()) handlers.current.onBackground();
+      });
 
     setForces();
 
@@ -315,6 +347,54 @@ export function Space({
       if (!hits.length) return null;
       return live.find(([, o]) => o.hit === hits[0].object)?.[0] ?? null;
     };
+
+    /** The group spoke under the pointer, if any: which group, which file. */
+    const spokeAt = (e: PointerEvent): { id: string; path: string } | null => {
+      const rect = host.getBoundingClientRect();
+      const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      const camera = g.camera();
+      raycaster.setFromCamera(ndc, camera);
+      // A hit zone of a few pixels at any zoom: scale the threshold with distance.
+      const target = (g.controls() as unknown as OrbitControls).target;
+      raycaster.params.Line = { threshold: camera.position.distanceTo(target) * 0.006 };
+      const live = [...overlayObjs.current.entries()].filter(([, o]) => o.spokes.visible);
+      const hits = raycaster.intersectObjects(live.map(([, o]) => o.spokes), false);
+      // Where spokes cross, the ray meets several; the one meant is the one
+      // nearest the pointer on screen, not the nearest along the ray.
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      let h: (typeof hits)[number] | undefined;
+      let best = Infinity;
+      for (const hit of hits) {
+        const p = ((hit as { pointOnLine?: THREE.Vector3 }).pointOnLine ?? hit.point).clone().project(camera);
+        const d = Math.hypot(((p.x + 1) / 2) * rect.width - px, ((1 - p.y) / 2) * rect.height - py);
+        if (d < best) {
+          best = d;
+          h = hit;
+        }
+      }
+      if (!h || h.index === undefined) return null;
+      const entry = live.find(([, o]) => o.spokes === h.object);
+      const path = entry?.[1].shown[Math.floor(h.index / 2)];
+      return entry && path ? { id: entry[0], path } : null;
+    };
+
+    // The tag shown on a hovered beacon or spoke; styled like the map's own tooltip.
+    const tip = document.createElement("div");
+    tip.className = "scene-tooltip";
+    Object.assign(tip.style, { position: "absolute", pointerEvents: "none", display: "none", zIndex: "5", maxWidth: "360px", lineHeight: "1.45" });
+    host.appendChild(tip);
+    const showTip = (e: PointerEvent, html: string | null) => {
+      if (!html) {
+        tip.style.display = "none";
+        return;
+      }
+      const r = host.getBoundingClientRect();
+      tip.innerHTML = html;
+      tip.style.display = "block";
+      tip.style.left = `${e.clientX - r.left + 14}px`;
+      tip.style.top = `${e.clientY - r.top + 14}px`;
+    };
     let down: { x: number; y: number } | null = null;
     const onDown = (e: PointerEvent) => {
       down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
@@ -325,16 +405,48 @@ export function Space({
       // A drag that ends on a beacon is still an orbit, not a click.
       if (!start || e.button !== 0 || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5) return;
       const id = overlayAt(e);
-      if (!id) return;
-      e.stopPropagation();
-      e.preventDefault();
-      handlers.current.onPickOverlay(id);
+      if (id) {
+        beaconClickAt.current = performance.now();
+        handlers.current.onPickOverlay(id);
+        return;
+      }
+      // A click on a spoke opens the file at its end.
+      const spoke = spokeAt(e);
+      if (spoke) {
+        beaconClickAt.current = performance.now();
+        handlers.current.onPick(spoke.path);
+      }
     };
     const onHover = (e: PointerEvent) => {
-      if (e.buttons || !overlayObjs.current.size) return;
-      const over = !!overlayAt(e);
+      if (e.buttons || !overlayObjs.current.size) return showTip(e, null);
+      const beacon = overlayAt(e);
+      const spoke = beacon ? null : spokeAt(e);
+      const over = !!(beacon || spoke);
       host.style.cursor = over ? "pointer" : "";
       g.renderer().domElement.style.cursor = over ? "pointer" : "";
+      if (beacon) {
+        const o = overlayObjs.current.get(beacon)!.info;
+        showTip(
+          e,
+          [
+            `<b style="color:${o.color}">${esc(o.label)}</b> <span style="opacity:.55">· ${o.paths.length} files · by ${o.by === "navigator" ? "the navigator" : "you"}</span>`,
+            o.summary ? esc(o.summary) : "",
+            `<span style="opacity:.45">click to fly to the group</span>`,
+          ].filter(Boolean).join("<br/>"),
+        );
+      } else if (spoke) {
+        const o = overlayObjs.current.get(spoke.id)!.info;
+        const why = o.reasons?.[spoke.path];
+        showTip(
+          e,
+          [
+            `<b style="color:${o.color}">${esc(o.label)}</b> → <b>${esc(spoke.path.split("/").pop()!)}</b>`,
+            `<span style="opacity:.55">${esc(spoke.path)}</span>`,
+            why ? esc(why) : `<span style="opacity:.55">no reason recorded</span>`,
+            `<span style="opacity:.45">click to open the file</span>`,
+          ].join("<br/>"),
+        );
+      } else showTip(e, null);
     };
     host.addEventListener("pointerdown", onDown, true);
     host.addEventListener("pointerup", onUp, true);
@@ -388,6 +500,7 @@ export function Space({
         ov.beacon.scale.setScalar(tu().groupBeaconSize);
         const sp = ov.spokes.geometry.getAttribute("position") as THREE.BufferAttribute;
         const shown = Math.min(members.length, sp.count / 2);
+        ov.shown = members.slice(0, shown);
         for (let i = 0; i < shown; i++) {
           const m = nodes.current.get(members[i])!;
           sp.setXYZ(i * 2, c.x, c.y, c.z);
@@ -422,6 +535,7 @@ export function Space({
       host.removeEventListener("pointerdown", onDown, true);
       host.removeEventListener("pointerup", onUp, true);
       host.removeEventListener("pointermove", onHover, true);
+      tip.remove();
       g._destructor();
       host.innerHTML = "";
       fg.current = null;
@@ -854,7 +968,7 @@ export function Space({
       );
       spokes.frustumCulled = false;
       scene.add(beacon, spokes);
-      live.set(ov.id, { beacon, mesh, hit, spokes, members: ov.paths });
+      live.set(ov.id, { beacon, mesh, hit, spokes, members: ov.paths, shown: [], info: ov });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlays]);

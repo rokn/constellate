@@ -298,7 +298,11 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
               z.object({
                 label: z.string().describe("2–4 words"),
                 summary: z.string().describe("One sentence"),
-                paths: z.array(z.string()).describe("Files, or directory prefixes ending in '/'"),
+                paths: z
+                  .array(z.union([z.string(), z.object({ path: z.string(), why: z.string() })]))
+                  .describe(
+                    "Files (or directory prefixes ending in '/'). Prefer { path, why } with a few words on why that file belongs — the reader sees it when hovering the line to that file.",
+                  ),
               }),
             )
             .min(1)
@@ -306,9 +310,21 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
         },
         async (a) => {
           const made = a.groups
-            .map((g) => ({ ...g, paths: expandPaths(g.paths, 1500) }))
+            .map((g) => {
+              // Each entry's reason covers every file it expands to.
+              const reasons: Record<string, string> = {};
+              const paths: string[] = [];
+              for (const entry of g.paths) {
+                const [p, why] = typeof entry === "string" ? [entry, ""] : [entry.path, entry.why];
+                for (const f of expandPaths([p], 1500)) {
+                  if (!paths.includes(f)) paths.push(f);
+                  if (why) reasons[f] = why;
+                }
+              }
+              return { ...g, paths: paths.slice(0, 1500), reasons };
+            })
             .filter((g) => g.paths.length)
-            .map((g) => addOverlay({ label: g.label, summary: g.summary, paths: g.paths, createdBy: "navigator" }));
+            .map((g) => addOverlay({ label: g.label, summary: g.summary, paths: g.paths, reasons: g.reasons, createdBy: "navigator" }));
           if (!made.length) return fail("None of those paths are in the repository.");
           return ok(`Marked ${made.map((m) => `"${m.label}" (${m.paths.length} files)`).join(", ")} on the map. The layout is unchanged.`);
         },

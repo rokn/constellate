@@ -126,6 +126,8 @@ export type GroupOverlay = {
   label: string;
   summary: string;
   paths: string[];
+  /** Why each file is in the group, shown when its spoke is hovered. */
+  reasons?: Record<string, string>;
   color: string;
   visible: boolean;
   createdBy: "you" | "navigator";

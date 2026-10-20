@@ -167,6 +167,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         paths?: string[];
         include?: string[];
         visible?: boolean;
+        /** Why these files were grouped, shown on each one's spoke. */
+        why?: string;
       }>(req);
       if (!session.idx) return json(res, 400, { error: "No repository open." }), true;
       if (b.action === "delete" && b.id) {
@@ -181,7 +183,14 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       const paths = b.paths?.filter((p) => known.has(p)) ??
         [...(applyFilter(session.idx.graph.files, { ...EMPTY_FILTER, include: b.include ?? [] }) ?? [])];
       if (!b.label?.trim() || !paths.length) return json(res, 400, { error: "A group needs a name and at least one file." }), true;
-      const o = addOverlay({ label: b.label.trim(), summary: b.summary ?? "", paths, createdBy: "you" });
+      const why = b.why?.trim() || (b.include?.length ? `matches ${b.include.join(", ")}` : "");
+      const o = addOverlay({
+        label: b.label.trim(),
+        summary: b.summary ?? "",
+        paths,
+        reasons: why ? Object.fromEntries(paths.map((p) => [p, why])) : undefined,
+        createdBy: "you",
+      });
       json(res, 200, { ok: true, id: o.id, count: paths.length });
       return true;
     }

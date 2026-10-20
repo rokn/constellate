@@ -374,7 +374,8 @@ function bridge(client: WebSocket) {
         const include = Array.isArray(args.include) ? args.include.map(String).filter(Boolean) : [];
         const paths = idx ? [...(applyFilter(idx.graph.files, { ...EMPTY_FILTER, include }) ?? [])] : [];
         if (!str("label") || !paths.length) return { ok: false, error: "Nothing matches those patterns." };
-        const g = addOverlay({ label: str("label"), summary: "", paths, createdBy: "you" });
+        const why = `matches ${include.join(", ")}`;
+        const g = addOverlay({ label: str("label"), summary: "", paths, reasons: Object.fromEntries(paths.map((p) => [p, why])), createdBy: "you" });
         return { ok: true, files: g.paths.length };
       }
       case "remove_group":

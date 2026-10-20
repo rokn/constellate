@@ -185,7 +185,10 @@ export function App() {
   const lenses = useMemo(() => state?.lenses ?? [], [state?.lenses]);
   const overlays = useMemo(() => state?.overlays ?? [], [state?.overlays]);
   const shownOverlays: Overlay[] = useMemo(
-    () => overlays.filter((o) => o.visible).map((o) => ({ id: o.id, label: o.label, paths: o.paths, color: o.color })),
+    () =>
+      overlays
+        .filter((o) => o.visible)
+        .map((o) => ({ id: o.id, label: o.label, paths: o.paths, color: o.color, reasons: o.reasons, summary: o.summary, by: o.createdBy })),
     [overlays],
   );
 
@@ -829,7 +832,12 @@ export function App() {
               void post("/api/overlays", {
                 action: "add",
                 label,
-                ...(from === "focus" ? { paths: emphasis } : from === "filter" ? { paths: [...(visible ?? [])] } : { include: pattern!.split(",").map((x) => x.trim()).filter(Boolean) }),
+                // How the group was made is why its files are in it.
+                ...(from === "focus"
+                  ? { paths: emphasis, why: `was in focus${focusLabel ? `: ${focusLabel}` : ""}` }
+                  : from === "filter"
+                    ? { paths: [...(visible ?? [])], why: `in the filter: ${describe(filter)}` }
+                    : { include: pattern!.split(",").map((x) => x.trim()).filter(Boolean) }),
               })
             }
             onAskNavigator={(what) =>
