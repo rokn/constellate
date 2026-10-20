@@ -232,14 +232,16 @@ export function Space({
       .enableNodeDrag(false)
       // Import lines are a pixel wide; give the pointer some slack.
       .linkHoverPrecision(4)
+      // Only lit import lines (both ends in the focus) answer the pointer; the
+      // grey resting web would otherwise pop tags everywhere you move.
       .onLinkHover((l) => {
-        const next = l && l.type === "import" ? l : null;
+        const next = l && litImport(l) ? l : null;
         if (next === hoverLink.current) return;
         hoverLink.current = next;
         applyAll();
       })
       .onLinkClick((l) => {
-        if (l.type === "import") handlers.current.onOpenImport(endId(l.source), l.line);
+        if (litImport(l)) handlers.current.onOpenImport(endId(l.source), l.line);
       })
       .onBackgroundClick(() => handlers.current.onBackground());
 
@@ -535,6 +537,12 @@ export function Space({
     }
   }
 
+  /** An import line both of whose ends are in the focus — the lit ones. */
+  function litImport(l: L) {
+    const emph = state.current.emphasis;
+    return l.type === "import" && emph.has(endId(l.source)) && emph.has(endId(l.target));
+  }
+
   /** The files that keep a name when the focus outgrows the label limit. */
   function pickLabelled() {
     const { emphasis: emph } = state.current;
@@ -699,7 +707,7 @@ export function Space({
     }
     nodes.current = next;
     g.graphData({ nodes: [...next.values()], links });
-    g.linkLabel((l) => (l.type === "import" ? importTag(l) : l.type === "logical" && l.label ? l.label : ""));
+    g.linkLabel((l) => (l.type === "import" ? (litImport(l) ? importTag(l) : "") : l.type === "logical" && l.label ? l.label : ""));
     applyAll();
 
     // A filter or regrouping changes the map's shape; once it has mostly

@@ -95,7 +95,49 @@ export function App() {
    * flight is for is usually being set in the same handler.
    */
   const panels = useRef({ file: false, frame: false });
-  const shiftFor = (p: { file: boolean; frame: boolean }) => (p.file && !p.frame ? 0.32 : p.frame && !p.file ? -0.3 : 0);
+  // How far to slide the subject right of a docked code panel grows with
+  // the panel: a wide panel covers more of the map. (0.32 at the old 600px.)
+  const shiftFor = (p: { file: boolean; frame: boolean }) =>
+    p.file && !p.frame ? Math.min(0.6, (panelWidthRef.current / window.innerWidth) * 0.76) : p.frame && !p.file ? -0.3 : 0;
+
+  /* ----------------------------- panel size ------------------------------ */
+
+  const PANEL_KEY = "codeflight.panelWidth";
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      return Number(localStorage.getItem(PANEL_KEY)) || 600;
+    } catch {
+      return 600;
+    }
+  });
+  const panelWidthRef = useRef(panelWidth);
+  panelWidthRef.current = panelWidth;
+  /** The code panel filling the window. */
+  const [panelFull, setPanelFull] = useState(false);
+
+  /** Drag the panel's right edge to resize it; the width is remembered in this browser. */
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    let last = panelWidthRef.current;
+    const move = (ev: PointerEvent) => {
+      last = Math.round(Math.max(360, Math.min(window.innerWidth - 160, ev.clientX - 16)));
+      setPanelWidth(last);
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      // The last move, not the last render: React may not have caught up yet.
+      try {
+        localStorage.setItem(PANEL_KEY, String(last));
+      } catch {
+        /* private mode */
+      }
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  };
 
   const frames = useMemo(() => state?.frames ?? [], [state?.frames]);
   const overview = state?.overview;
@@ -299,6 +341,9 @@ export function App() {
   useEffect(() => {
     panels.current = { file: !!file, frame: !!frameId };
   }, [file, frameId]);
+  useEffect(() => {
+    if (!file) setPanelFull(false);
+  }, [file]);
 
   /* -------------------------------- asking -------------------------------- */
 
@@ -539,7 +584,8 @@ export function App() {
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Escape") {
-        if (tour !== null) setTour(null);
+        if (panelFull) setPanelFull(false);
+        else if (tour !== null) setTour(null);
         else if (pointer) setPointer(null);
         else if (frameId) setFrameId(null);
         else if (file) setFile(null);
@@ -573,7 +619,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, recenter, startVoice, hide, forward, panelFull]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -816,8 +862,25 @@ export function App() {
 
       {/* Panels */}
       {file && (
-        <div className="pointer-events-none absolute bottom-28 left-4 top-28 z-20 w-[min(600px,calc(100%-2rem))] md:w-[min(600px,44vw)]">
+        <div
+          className={panelFull ? "pointer-events-none absolute inset-4 z-40" : "pointer-events-none absolute bottom-28 left-4 top-28 z-20"}
+          style={panelFull ? undefined : { width: `min(${panelWidth}px, calc(100% - 2rem))` }}
+        >
+          {!panelFull && (
+            <div
+              onPointerDown={startResize}
+              onDoubleClick={() => setPanelWidth(600)}
+              className="group pointer-events-auto absolute -right-2 bottom-4 top-4 z-10 flex w-3 cursor-col-resize items-center justify-center"
+              title="Drag to resize · double-click to reset"
+              role="separator"
+              aria-orientation="vertical"
+            >
+              <span className="h-12 w-[3px] rounded-full bg-line transition-colors group-hover:bg-course/70" />
+            </div>
+          )}
           <FilePanel
+            full={panelFull}
+            onToggleFull={() => setPanelFull((f) => !f)}
             path={file.path}
             line={file.line}
             endLine={file.endLine}

@@ -19,6 +19,8 @@ export function FilePanel({
   goEditor,
   onReferences,
   onSelection,
+  full,
+  onToggleFull,
 }: {
   path: string;
   line?: number;
@@ -31,6 +33,9 @@ export function FilePanel({
   goEditor?: boolean;
   onReferences?: (name: string, paths: string[]) => void;
   onSelection?: (text: string) => void;
+  /** Taking the whole window. */
+  full?: boolean;
+  onToggleFull?: () => void;
 }) {
   const [file, setFile] = useState<FileData | null | undefined>(undefined);
   const [jump, setJump] = useState<number | undefined>(line);
@@ -80,6 +85,16 @@ export function FilePanel({
         >
           Hide
         </button>
+        {onToggleFull && (
+          <button
+            onClick={onToggleFull}
+            aria-pressed={!!full}
+            title={full ? "Back to the side panel (Esc)" : "Fill the window with the code"}
+            className="shrink-0 rounded px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-text"
+          >
+            {full ? "Exit full screen" : "Full screen"}
+          </button>
+        )}
         <button onClick={onClose} className="shrink-0 rounded px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-text">
           Close
         </button>
