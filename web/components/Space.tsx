@@ -70,6 +70,24 @@ export type Grouping = { key: string; groups: LogicalModule[]; edges: LogicalEdg
 
 const OTHER = "__other";
 
+/** One white ring, tinted per group by the sprite's colour. Made once. */
+let ringTexture: THREE.CanvasTexture | null = null;
+function ringMap() {
+  if (ringTexture) return ringTexture;
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const ctx = c.getContext("2d")!;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  ctx.arc(64, 64, 54, 0, Math.PI * 2);
+  ctx.stroke();
+  ringTexture = new THREE.CanvasTexture(c);
+  return ringTexture;
+}
+/** A file can wear rings for this many groups before it gets too busy to read. */
+const MAX_RINGS = 4;
+
 /**
  * A group drawn on top of the map without reorganizing it: a beacon that
  * floats at the centre of its files with faint spokes out to each one. It takes
@@ -124,6 +142,7 @@ export function Space({
   onPickModule,
   onPickDir,
   onPickOverlay,
+  onHideOverlay,
   onHide,
   onOpenImport,
   onBackground,
@@ -147,6 +166,8 @@ export function Space({
   onPickModule: (id: string) => void;
   onPickDir: (dir: string) => void;
   onPickOverlay: (id: string) => void;
+  /** Right-click on a group's beacon: hide that group from view. */
+  onHideOverlay: (id: string) => void;
   /** Right-click: hide this file, or everything under this folder. */
   onHide: (target: { file: string } | { dir: string }) => void;
   /** Click on an import line: open the importing file at its import. */
@@ -198,8 +219,10 @@ export function Space({
       }
     >(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHide, onOpenImport, onBackground });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHide, onOpenImport, onBackground };
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onHideOverlay, onHide, onOpenImport, onBackground });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onHideOverlay, onHide, onOpenImport, onBackground };
+  /** Group membership rings: one sprite per (group, file), drawn around the file. */
+  const rings = useRef<{ sprite: THREE.Sprite; path: string; k: number }[]>([]);
   /** The import line under the pointer, lit while hovered. */
   const hoverLink = useRef<L | null>(null);
   /**
@@ -253,6 +276,7 @@ export function Space({
       })
       // A right-click that isn't a pan hides what's under it.
       .onNodeRightClick((n) => {
+        if (beaconJustClicked()) return;
         if (n.type === "file") handlers.current.onHide({ file: n.id });
         else if (n.type === "dir" && n.id !== "dir:.") handlers.current.onHide({ dir: n.id.slice(4) });
       })
@@ -451,7 +475,15 @@ export function Space({
     host.addEventListener("pointerdown", onDown, true);
     host.addEventListener("pointerup", onUp, true);
     host.addEventListener("pointermove", onHover, true);
-    host.addEventListener("contextmenu", (e) => e.preventDefault());
+    // Right-click on a beacon hides its group (it stays in the Groups panel).
+    const onContext = (e: MouseEvent) => {
+      e.preventDefault();
+      const id = overlayAt(e as PointerEvent);
+      if (!id) return;
+      beaconClickAt.current = performance.now();
+      handlers.current.onHideOverlay(id);
+    };
+    host.addEventListener("contextmenu", onContext);
     // Grabbing the map is a request to stop drifting.
     controls.addEventListener("start", () => (controls.autoRotate = false));
 
@@ -510,6 +542,25 @@ export function Space({
         sp.needsUpdate = true;
       }
 
+      // Membership rings ride their files; concentric when a file is in
+      // several groups. They fade with the rest of the map outside a focus.
+      const ringsOn = state.current.layers.beacons !== false && tu().groupRings > 0;
+      const emphasis = state.current.emphasis;
+      for (const r of rings.current) {
+        const n = nodes.current.get(r.path);
+        if (!ringsOn || n?.x === undefined) {
+          r.sprite.visible = false;
+          continue;
+        }
+        r.sprite.visible = true;
+        r.sprite.position.set(n.x, n.y!, n.z!);
+        const base = objs.current.get(r.path)?.base ?? 2;
+        // Clear of the body's own glow, with a visible step between concentric rings.
+        r.sprite.scale.setScalar(base * 2 * (2.1 + 0.6 * r.k));
+        (r.sprite.material as THREE.SpriteMaterial).opacity =
+          tu().groupRings * (emphasis.size && !emphasis.has(r.path) ? 0.2 : 1);
+      }
+
       const a = state.current.active && nodes.current.get(state.current.active);
       if (a && a.x !== undefined) {
         const o = objs.current.get(a.id);
@@ -535,6 +586,7 @@ export function Space({
       host.removeEventListener("pointerdown", onDown, true);
       host.removeEventListener("pointerup", onUp, true);
       host.removeEventListener("pointermove", onHover, true);
+      host.removeEventListener("contextmenu", onContext);
       tip.remove();
       g._destructor();
       host.innerHTML = "";
@@ -948,6 +1000,12 @@ export function Space({
       o.spokes.geometry.dispose();
       live.delete(id);
     }
+    for (const r of rings.current) {
+      scene.remove(r.sprite);
+      r.sprite.material.dispose();
+    }
+    rings.current = [];
+    const ringCount = new Map<string, number>();
     for (const ov of overlays) {
       const beacon = new THREE.Group();
       const mesh = new THREE.Mesh(
@@ -969,6 +1027,17 @@ export function Space({
       spokes.frustumCulled = false;
       scene.add(beacon, spokes);
       live.set(ov.id, { beacon, mesh, hit, spokes, members: ov.paths, shown: [], info: ov });
+      for (const p of ov.paths.slice(0, 400)) {
+        const k = ringCount.get(p) ?? 0;
+        if (k >= MAX_RINGS) continue;
+        ringCount.set(p, k + 1);
+        const sprite = new THREE.Sprite(
+          new THREE.SpriteMaterial({ map: ringMap(), color: ov.color, transparent: true, depthWrite: false, opacity: tu().groupRings }),
+        );
+        sprite.visible = false;
+        scene.add(sprite);
+        rings.current.push({ sprite, path: p, k });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlays]);

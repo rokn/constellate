@@ -334,7 +334,21 @@ export function GroupsPanel({
     <div className="glass rise pointer-events-auto w-[min(400px,calc(100vw-2rem))] space-y-3 rounded-xl p-3.5">
       <div className="flex items-center justify-between">
         <h2 className="font-cond text-[18px] font-semibold">Groups</h2>
-        <button onClick={onClose} className="rounded px-2 py-0.5 text-[12.5px] text-muted hover:text-text">Done</button>
+        <div className="flex gap-1">
+          {overlays.length > 1 && (
+            <button
+              onClick={() => {
+                // Hide them all unless they're all hidden already, then show them all.
+                const anyShown = overlays.some((g) => g.visible);
+                for (const g of overlays) if (g.visible === anyShown) onToggle(g.id, !anyShown);
+              }}
+              className="rounded px-2 py-0.5 text-[12.5px] text-muted hover:text-text"
+            >
+              {overlays.some((g) => g.visible) ? "Hide all" : "Show all"}
+            </button>
+          )}
+          <button onClick={onClose} className="rounded px-2 py-0.5 text-[12.5px] text-muted hover:text-text">Done</button>
+        </div>
       </div>
       <p className="text-[12.5px] leading-snug text-muted">
         A group is drawn over its files as a beacon. The map keeps its current layout.
@@ -343,7 +357,7 @@ export function GroupsPanel({
       {overlays.length > 0 && (
         <ul className="space-y-0.5">
           {overlays.map((g) => (
-            <li key={g.id} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5">
+            <li key={g.id} className={`flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5 ${g.visible ? "" : "opacity-55"}`}>
               <button
                 role="switch"
                 aria-checked={g.visible}
@@ -357,6 +371,13 @@ export function GroupsPanel({
               </button>
               <span className="text-[11.5px] tabular-nums text-muted">{g.paths.length}</span>
               {g.createdBy === "navigator" && <span className="text-[11px] text-muted" title="Marked by the navigator">nav</span>}
+              <button
+                onClick={() => onToggle(g.id, !g.visible)}
+                className="w-10 shrink-0 rounded px-1 text-[12px] text-muted hover:bg-white/5 hover:text-text"
+                title={g.visible ? "Hide from the map — it stays here" : "Show on the map"}
+              >
+                {g.visible ? "Hide" : "Show"}
+              </button>
               <button onClick={() => onRemove(g.id)} className="rounded px-1 text-[12px] text-muted hover:text-bad" aria-label={`Remove ${g.label}`}>
                 ✕
               </button>

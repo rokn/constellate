@@ -709,6 +709,14 @@ export function App() {
           onPick={(p) => openFile(p)}
           onPickModule={focusModule}
           onOpenImport={(from, line) => openFile(from, line)}
+          onHideOverlay={(id) => {
+            const g = overlays.find((o) => o.id === id);
+            void post("/api/overlays", { action: "update", id, visible: false });
+            setToast({
+              text: `Hid the group ${g?.label ?? ""} — it's still in Groups`,
+              undo: () => void post("/api/overlays", { action: "update", id, visible: true }),
+            });
+          }}
           onPickOverlay={(id) => {
             const g = overlays.find((o) => o.id === id);
             if (g) focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label);

@@ -30,6 +30,7 @@ export type Tuning = {
   particleSize: number;
   groupSpokes: number;
   groupBeaconSize: number;
+  groupRings: number;
   // Layout
   repulsion: number;
   folderPull: number;
@@ -91,6 +92,7 @@ export const DEFAULT_TUNING: Tuning = {
   particleSize: 1,
   groupSpokes: 0.22,
   groupBeaconSize: 1,
+  groupRings: 0.8,
   repulsion: 26,
   folderPull: 0.9,
   folderDistance: 14,
@@ -180,6 +182,7 @@ export const SECTIONS: Section[] = [
       r("particleSize", "Particle size", 0.2, 4, 0.05),
       r("groupSpokes", "Group spokes", 0, 1, 0.01, "Lines from a marked group's beacon to its files"),
       r("groupBeaconSize", "Group beacon size", 0.3, 3, 0.05),
+      r("groupRings", "Group rings", 0, 1, 0.01, "Rings around files in marked groups, one per group"),
     ],
   },
   {
