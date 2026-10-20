@@ -167,6 +167,12 @@ export type SpaceHandle = {
   );
 }
 
+/** At most this many files are named for being near the camera, the nearest first. */
+const NEAR_MAX = 30;
+
+/** How close (in screen pixels) the pointer must be to an import line to hover it. */
+const LINE_HOVER_PX = 8;
+
 /** The sticky-note colour: nothing else on the map is this yellow. */
 const NOTE_BG = "#ffd75e";
 
@@ -313,6 +319,8 @@ export function Space({
   );
   const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground });
   handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground };
+  /** Files close enough to the camera to be named (Tune -> Name nearby files). */
+  const near = useRef(new Set<string>());
   /** Note cards on the map, by note id. */
   /**
    * Note cards, as HTML over the map rather than sprites in it: crisp text,
@@ -402,16 +410,12 @@ export function Space({
       // for a while: the library's drag-end path fakes a touch pointerup that
       // once crashed the orbit controls. If that comes back, turn the knob off.
       .enableNodeDrag(tu().dragBodies)
-      // Import lines are a pixel wide; give the pointer some slack.
       .linkHoverPrecision(4)
       // Only lit import lines (both ends in the focus) answer the pointer; the
       // grey resting web would otherwise pop tags everywhere you move.
-      .onLinkHover((l) => {
-        const next = l && litImport(l) ? l : null;
-        if (next === hoverLink.current) return;
-        hoverLink.current = next;
-        applyAll();
-      })
+      // Import lines are hovered by our own screen-space pick (linkNear, in
+      // the pointer handlers): lit lines are thin cylinders, and the library
+      // only hits them dead on.
       .onLinkRightClick((l) => {
         if (beaconJustClicked() || l.type !== "import") return;
         handlers.current.onNoteOnLink(endId(l.source), endId(l.target));
@@ -485,6 +489,40 @@ export function Space({
     // on them are picked here first. Capture phase: a hit stops the event
     // before the library sees it, so a file behind the beacon doesn't open too.
     const raycaster = new THREE.Raycaster();
+    /**
+     * The lit import line nearest the pointer on screen, within LINE_HOVER_PX.
+     * Lit lines are the focus's neighbourhood, so this is a short loop.
+     */
+    const linkNear = (e: PointerEvent): L | null => {
+      const rect = host.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const camera = g.camera();
+      const a = new THREE.Vector3();
+      const b = new THREE.Vector3();
+      let best: L | null = null;
+      let bestD = LINE_HOVER_PX;
+      for (const l of g.graphData().links) {
+        if (!litImport(l)) continue;
+        const s = l.source as N;
+        const t = l.target as N;
+        if (s.x === undefined || t.x === undefined) continue;
+        a.set(s.x, s.y!, s.z!).project(camera);
+        b.set(t.x, t.y!, t.z!).project(camera);
+        if (a.z > 1 || b.z > 1) continue; // behind the camera
+        const ax = ((a.x + 1) / 2) * rect.width, ay = ((1 - a.y) / 2) * rect.height;
+        const bx = ((b.x + 1) / 2) * rect.width, by = ((1 - b.y) / 2) * rect.height;
+        const dx = bx - ax, dy = by - ay;
+        const len2 = dx * dx + dy * dy || 1;
+        const k = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+        const d = Math.hypot(px - (ax + k * dx), py - (ay + k * dy));
+        if (d < bestD) {
+          bestD = d;
+          best = l;
+        }
+      }
+      return best;
+    };
     const overlayAt = (e: PointerEvent): string | null => {
       const rect = host.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
@@ -503,7 +541,7 @@ export function Space({
       raycaster.setFromCamera(ndc, camera);
       // A hit zone of a few pixels at any zoom: scale the threshold with distance.
       const target = (g.controls() as unknown as OrbitControls).target;
-      raycaster.params.Line = { threshold: camera.position.distanceTo(target) * 0.006 };
+      raycaster.params.Line = { threshold: camera.position.distanceTo(target) * 0.01 };
       const live = [...overlayObjs.current.entries()].filter(([, o]) => o.spokes.visible);
       const hits = raycaster.intersectObjects(live.map(([, o]) => o.spokes), false);
       // Where spokes cross, the ray meets several; the one meant is the one
@@ -559,6 +597,12 @@ export function Space({
       if (onNote(e)) return;
       // A drag that ends on a beacon is still an orbit, not a click.
       if (!start || e.button !== 0 || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5) return;
+      const link = hoverLink.current;
+      if (link && litImport(link)) {
+        beaconClickAt.current = performance.now();
+        handlers.current.onOpenImport(endId(link.source), link.line);
+        return;
+      }
       const id = overlayAt(e);
       if (id) {
         beaconClickAt.current = performance.now();
@@ -575,7 +619,21 @@ export function Space({
     const onHover = (e: PointerEvent) => {
       // A note shows its own tag.
       if (onNote(e)) return;
-      if (e.buttons || !overlayObjs.current.size) return showTip(e, null);
+      if (!e.buttons) {
+        const link = linkNear(e);
+        if (link !== hoverLink.current) {
+          hoverLink.current = link;
+          applyAll();
+        }
+        if (link) {
+          host.style.cursor = g.renderer().domElement.style.cursor = "pointer";
+          return showTip(e, importTag(link));
+        }
+      }
+      if (e.buttons || !overlayObjs.current.size) {
+        host.style.cursor = g.renderer().domElement.style.cursor = "";
+        return showTip(e, null);
+      }
       const beacon = overlayAt(e);
       const spoke = beacon ? null : spokeAt(e);
       const over = !!(beacon || spoke);
@@ -803,7 +861,6 @@ export function Space({
         return null;
       }
       aimLock = { kind: pick.kind, id: pick.id, x: e.clientX, y: e.clientY, at: now };
-      showTip(e as unknown as PointerEvent, `<span style="opacity:.6">aiming at</span> <b>${esc(pick.label)}</b>`);
       return pick;
     };
 
@@ -892,6 +949,13 @@ export function Space({
         beaconClickAt.current = performance.now();
         return;
       }
+      // A plain right-click on a hovered import line: a note on it.
+      const line = hoverLink.current;
+      if (line && litImport(line)) {
+        beaconClickAt.current = performance.now();
+        handlers.current.onNoteOnLink(endId(line.source), endId(line.target));
+        return;
+      }
       // A plain right-click on a beacon hides its group (it stays in the Groups panel).
       const id = e && overlayAt(e);
       if (id) {
@@ -960,6 +1024,7 @@ export function Space({
     controls.addEventListener("start", () => (controls.autoRotate = false));
 
     let raf = 0;
+    let nearAt = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const now = performance.now();
@@ -1058,6 +1123,32 @@ export function Space({
         r.sprite.scale.setScalar(base * 2 * (2.1 + 0.6 * r.k));
         (r.sprite.material as THREE.SpriteMaterial).opacity =
           tu().groupRings * (emphasis.size && !emphasis.has(r.path) ? 0.2 : 1);
+      }
+
+      // Files near the camera get their names: the nearest NEAR_MAX within the
+      // knob's distance. Checked a few times a second, not every frame.
+      if (now - nearAt > 200) {
+        nearAt = now;
+        const reach = tu().nearLabels;
+        const camera = g.camera();
+        const cam = camera.position;
+        const hits: [string, number][] = [];
+        const v = new THREE.Vector3();
+        if (reach > 0) {
+          for (const n of nodes.current.values()) {
+            if (n.type !== "file" || n.x === undefined) continue;
+            const d = Math.hypot(n.x - cam.x, n.y! - cam.y, n.z! - cam.z);
+            if (d >= reach) continue;
+            // Only what's in view: near but behind or beside the camera doesn't count.
+            v.set(n.x, n.y!, n.z!).project(camera);
+            if (v.z > 1 || Math.abs(v.x) > 1 || Math.abs(v.y) > 1) continue;
+            hits.push([n.id, d]);
+          }
+        }
+        const next = new Set(hits.sort((a, b) => a[1] - b[1]).slice(0, NEAR_MAX).map(([id]) => id));
+        const changed = [...near.current].filter((id) => !next.has(id)).concat([...next].filter((id) => !near.current.has(id)));
+        near.current = next;
+        for (const id of changed) applyOne(id);
       }
 
       // Notes ride what they're pinned to, never dimmed. A card has a size in
@@ -1231,7 +1322,10 @@ export function Space({
       // a focus within the limit is named in full; a bigger one gets names on
       // its most-imported files, up to the limit, rather than none at all.
       const wantLabel =
-        id === act || (emph.size > 0 && emph.has(id) && (emph.size <= tu().fileLabelLimit || labelled.current.has(id)));
+        id === act ||
+        (emph.size > 0 && emph.has(id) && (emph.size <= tu().fileLabelLimit || labelled.current.has(id))) ||
+        // Close to the camera, a file says its name — unless it's dimmed out of a focus.
+        (near.current.has(id) && lit);
       if (wantLabel && !o.fileLabel) {
         const t = new SpriteText(tu().fullPaths ? id : id.split("/").pop()!, 2.6 * tu().fileLabelSize, "#e4eaf4");
         t.fontFace = FONT_MONO;
@@ -1483,7 +1577,7 @@ export function Space({
     nodes.current = next;
     g.graphData({ nodes: [...next.values()], links });
     g.linkLabel((l) =>
-      l.type === "import" ? (litImport(l) ? importTag(l) : "") : (l.type === "logical" || l.type === "cochange") && l.label ? l.label : "",
+      l.type === "import" ? "" : (l.type === "logical" || l.type === "cochange") && l.label ? l.label : "",
     );
     applyAll();
 

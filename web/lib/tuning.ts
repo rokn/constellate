@@ -66,6 +66,7 @@ export type Tuning = {
   beaconLabelSize: number;
   folderLabelDepth: number;
   fileLabelLimit: number;
+  nearLabels: number;
   fullPaths: boolean;
   showBeaconLabels: boolean;
   // Background
@@ -131,6 +132,7 @@ export const DEFAULT_TUNING: Tuning = {
   beaconLabelSize: 1,
   folderLabelDepth: 1,
   fileLabelLimit: 100,
+  nearLabels: 240,
   fullPaths: false,
   showBeaconLabels: true,
   starOpacity: 0.55,
@@ -245,6 +247,7 @@ export const SECTIONS: Section[] = [
       r("labelSize", "Folder label size", 0.4, 3, 0.05),
       r("folderLabelDepth", "Folder label depth", -1, 4, 1, "-1 hides them; 0 is top-level only"),
       r("fileLabelLimit", "File labels in focus", 0, 200, 1, "Name files only when the focus is this small"),
+      r("nearLabels", "Name nearby files", 0, 600, 10, "Files closer to the camera than this get their names (the nearest 30); 0 turns it off"),
       t("fullPaths", "Full paths", "Label files with their path from the repo root, not just the file name"),
       t("showBeaconLabels", "Beacon names"),
     ],
