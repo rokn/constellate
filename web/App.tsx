@@ -647,21 +647,43 @@ export function App() {
   const back = useCallback(() => travel(-1), [travel]);
   const forward = useCallback(() => travel(1), [travel]);
 
-  // The mouse's back/forward buttons move through what you've opened. The
-  // browser would otherwise take them as "leave this page".
+  // The browser's back and forward (the mouse's side buttons, a swipe, ⌘[)
+  // move through what you've opened instead of leaving the page, which behind
+  // a login means landing on its redirect. The page keeps three entries and
+  // sits on the middle one: stepping onto either side is a step through the
+  // history, and the page puts itself back in the middle. They're added on the
+  // first click or key, since Chrome's back button skips entries added before
+  // the page has been used.
+  const travelRef = useRef(travel);
+  travelRef.current = travel;
   useEffect(() => {
-    const onMouse = (e: MouseEvent) => {
-      if (e.button !== 3 && e.button !== 4) return;
-      e.preventDefault();
-      if (e.type === "mouseup") (e.button === 3 ? back : forward)();
+    const at = (s: unknown) => (s as { constellate?: string } | null)?.constellate;
+    const arm = () => {
+      if (at(window.history.state) === "here") return;
+      window.history.replaceState({ constellate: "back" }, "");
+      window.history.pushState({ constellate: "here" }, "");
+      window.history.pushState({ constellate: "forward" }, "");
+      window.history.back();
     };
-    window.addEventListener("mousedown", onMouse, true);
-    window.addEventListener("mouseup", onMouse, true);
+    const onPop = (e: PopStateEvent) => {
+      const where = at(e.state);
+      if (where === "back") {
+        window.history.forward();
+        travelRef.current(-1);
+      } else if (where === "forward") {
+        window.history.back();
+        travelRef.current(1);
+      }
+    };
+    window.addEventListener("pointerdown", arm, { capture: true, once: true });
+    window.addEventListener("keydown", arm, { capture: true, once: true });
+    window.addEventListener("popstate", onPop);
     return () => {
-      window.removeEventListener("mousedown", onMouse, true);
-      window.removeEventListener("mouseup", onMouse, true);
+      window.removeEventListener("pointerdown", arm, true);
+      window.removeEventListener("keydown", arm, true);
+      window.removeEventListener("popstate", onPop);
     };
-  }, [back, forward]);
+  }, []);
 
   // A beacon is a module in folder view and a group under a lens; either way,
   // focusing it means flying to its files.
@@ -786,7 +808,7 @@ export function App() {
     setBranchMap(null);
     setEmphasis([]);
     setFocusLabel(undefined);
-    if (new URLSearchParams(location.search).has("diff")) window.history.replaceState(null, "", location.pathname);
+    if (new URLSearchParams(location.search).has("diff")) window.history.replaceState(window.history.state, "", location.pathname);
   }, []);
 
   // Follow: once a commit's map is up, fly to what it changed.
@@ -857,7 +879,7 @@ export function App() {
     const id = linked.current;
     if (!id || !stories.some((s) => s.id === id)) return;
     linked.current = null;
-    window.history.replaceState(null, "", location.pathname);
+    window.history.replaceState(window.history.state, "", location.pathname);
     playStory(id);
   }, [stories, playStory]);
 
@@ -1738,7 +1760,7 @@ export function App() {
           }}
           onClose={() => {
             setBranchDiff(null);
-            if (location.search) window.history.replaceState(null, "", location.pathname);
+            if (location.search) window.history.replaceState(window.history.state, "", location.pathname);
           }}
         />
       )}
