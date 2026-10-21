@@ -1,3 +1,4 @@
+import type { Renames } from "./renames";
 /**
  * The vocabulary shared by the server, the navigator agent's tools, the voice
  * bridge and the browser. Everything that crosses a process or a model
@@ -405,7 +406,9 @@ export type UiCommand =
   | { cmd: "set_range"; range: TimeRange }
   | { cmd: "clear_range" }
   /** Fly through the commits in the current range, one by one. */
-  | { cmd: "replay" };
+  | { cmd: "replay" }
+  /** Files moved; what the page keeps by path (its filter) follows them. */
+  | { cmd: "renamed"; renames: Renames };
 
 export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons" | "notes";
 

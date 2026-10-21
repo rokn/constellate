@@ -10,6 +10,7 @@ import { loadFile, slice } from "./repo";
 import { WORKTREE, diffFile, loadHistory } from "./history";
 import { digest, findPath, neighbourhood } from "./scan";
 import {
+  afterRescan,
   addLens,
   putLens,
   removeLens,
@@ -170,7 +171,10 @@ export function graphTools(): SdkMcpToolDefinition<any>[] {
   ];
 }
 
-function flightServer(frameId: string | null, mode: "intro" | "ask") {
+/** What a placement run may use: enough to see where a file belongs, and to put it there. */
+const PLACE_TOOLS = ["deps", "outline", "get_lens", "revise_lens"];
+
+function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
   const needFrame = () => {
     if (!frameId) throw new Error("Views can only be shown while answering a request.");
     return frameId;
@@ -290,7 +294,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
     ),
   ];
 
-  if (mode === "ask") {
+  if (mode !== "intro") {
     tools.push(
       tool(
         "filter_map",
@@ -732,7 +736,8 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
     );
   }
 
-  return createSdkMcpServer({ name: "flight", version: "1.0.0", tools, alwaysLoad: true });
+  const offered = mode === "place" ? tools.filter((t) => PLACE_TOOLS.includes(t.name)) : tools;
+  return createSdkMcpServer({ name: "flight", version: "1.0.0", tools: offered, alwaysLoad: true });
 }
 
 /* ------------------------------ prompting ------------------------------ */
@@ -973,12 +978,13 @@ type RunResult = { answer: string; error?: string };
 async function run(opts: {
   prompt: string;
   frameId: string | null;
-  mode: "intro" | "ask";
+  mode: "intro" | "ask" | "place";
   effort: Effort;
   signal: AbortController;
 }): Promise<RunResult> {
   const root = idx().graph.root;
-  const tools = FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview");
+  const tools =
+    opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview");
   let live = "";
   let answer = "";
 
@@ -998,9 +1004,10 @@ async function run(opts: {
       // read-only explorer and must not run them.
       settingSources: [],
       mcpServers: { flight: flightServer(opts.frameId, opts.mode) },
-      resume: session.agentSessionId,
+      // A placement is housekeeping on the side: it doesn't join the conversation.
+      resume: opts.mode === "place" ? undefined : session.agentSessionId,
       includePartialMessages: true,
-      maxTurns: opts.mode === "intro" ? 30 : 40,
+      maxTurns: opts.mode === "intro" ? 30 : opts.mode === "place" ? 25 : 40,
       abortController: opts.signal,
       stderr: process.env.CODEFLIGHT_DEBUG ? (d) => console.error("[navigator]", d) : undefined,
     },
@@ -1008,7 +1015,7 @@ async function run(opts: {
 
   for await (const msg of q) {
     if (msg.type === "system" && msg.subtype === "init") {
-      session.agentSessionId = msg.session_id;
+      if (opts.mode !== "place") session.agentSessionId = msg.session_id;
     } else if (msg.type === "stream_event" && !msg.parent_tool_use_id && opts.frameId) {
       const ev = msg.event;
       // Each new assistant message replaces the caption: text between tool
@@ -1058,6 +1065,88 @@ export function runIntro(rechart?: Rechart): Promise<void> {
     }
   })();
   return intro;
+}
+
+/* ------------------------------ new files ------------------------------ */
+
+/**
+ * New files land in "Other" in every grouping until something puts them
+ * somewhere. After a rescan finds some, and once things settle, the navigator
+ * places them: into the module or group they belong to, or a new one when
+ * they form something the grouping doesn't have yet. A file is offered once;
+ * one it leaves out stays out.
+ */
+const PLACE_AFTER_MS = Number(process.env.CODEFLIGHT_PLACE_SECONDS ?? 20) * 1000;
+const PLACE_EFFORT = (process.env.CODEFLIGHT_PLACE_EFFORT ?? "low") as Effort;
+/** More than this is a re-chart's job, not a placement's. */
+const PLACE_MAX = 300;
+const pending = new Set<string>();
+let placeTimer: ReturnType<typeof setTimeout> | undefined;
+let placing: Promise<void> | null = null;
+
+afterRescan.push((added) => {
+  if (PLACE_AFTER_MS <= 0) return;
+  for (const p of added) pending.add(p);
+  if (!pending.size) return;
+  clearTimeout(placeTimer);
+  placeTimer = setTimeout(() => void placeNewFiles(), PLACE_AFTER_MS);
+});
+
+async function placeNewFiles(): Promise<void> {
+  if (placing) {
+    // One at a time: these wait for the next.
+    placeTimer = setTimeout(() => void placeNewFiles(), PLACE_AFTER_MS);
+    return;
+  }
+  // Mid-chart there's nothing to place them in yet, and the chart takes in every file.
+  const o = session.state.overview;
+  if (!session.idx || !o || session.state.status !== "ready") return;
+  const onMap = new Set(session.idx.graph.files.map((f) => f.path));
+  const files = [...pending].filter((p) => onMap.has(p));
+  pending.clear();
+  const groupings = [
+    { id: "modules", title: "Modules", groups: o.modules },
+    ...session.state.lenses.map((l) => ({ id: l.id, title: l.title, groups: l.groups })),
+  ]
+    .map((g) => {
+      const held = new Set(g.groups.flatMap((x) => x.paths));
+      return { ...g, loose: files.filter((p) => !held.has(p)) };
+    })
+    .filter((g) => g.loose.length);
+  if (!groupings.length) return;
+  if (files.length > PLACE_MAX) {
+    pushActivity({ kind: "tool", detail: `${files.length} new files — re-chart the overview to place them` });
+    return;
+  }
+
+  const prompt = [
+    "New files have appeared in the repository since the reader's map was organized, and the groupings below don't hold them yet, so they sit in \"Other\". Place them.",
+    "",
+    "For each grouping: put each new file into the group it belongs to (revise_lens: move, or upsert_group with paths). When several new files together form something the groups don't cover — a new subsystem, a new feature area — add a group for them (upsert_group with a new id, a short label and a one-sentence summary). Leave everything that's already placed where it is; don't rename, merge or retire groups. A file that fits nowhere (a stray script, a fixture) can stay out.",
+    "Decide from paths, outline and deps first; read a file only when they don't settle it. Groupings are independent: place the files in each one by its own logic.",
+    "",
+    ...groupings.flatMap((g) => [
+      `Grouping ${g.id} — ${g.title}:`,
+      ...g.groups.map((x) => `- ${x.id} — ${x.label}: ${x.summary} · ${foldPaths(x.paths)}`),
+      `New files it doesn't hold (${g.loose.length}): ${g.loose.join(", ")}`,
+      "",
+    ]),
+    "End with one short sentence on what you placed and any group you added.",
+  ].join("\n");
+
+  placing = (async () => {
+    const n = new Set(groupings.flatMap((g) => g.loose)).size;
+    pushActivity({ kind: "tool", detail: `Placing ${n} new file${n === 1 ? "" : "s"} on the map` });
+    try {
+      const res = await run({ prompt, frameId: null, mode: "place", effort: PLACE_EFFORT, signal: new AbortController() });
+      pushActivity(res.error ? { kind: "error", detail: `Placing new files: ${res.error}` } : { kind: "tool", detail: res.answer.trim().slice(0, 200) || "Placed the new files" });
+    } catch (err) {
+      pushActivity({ kind: "error", detail: `Placing new files: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  })().finally(() => {
+    placing = null;
+  });
+  return placing;
 }
 
 /**

@@ -7,6 +7,7 @@ import { ChartChanges } from "./components/ChartChanges";
 import { RemoteBanner } from "./components/RemoteBanner";
 import { AnswersPanel } from "./components/AnswersPanel";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
+import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
 import { territoryColors } from "./lib/colors";
@@ -981,6 +982,14 @@ export function App() {
           return showRange(null);
         case "replay":
           return startPlay();
+        case "renamed": {
+          // The server moved everything it keeps; this is what the page keeps.
+          const to = renamer(c.renames);
+          setFilter((f) => renameInFilter(f, to));
+          setSavedFilters((fs) => fs.map((v) => ({ ...v, filter: renameInFilter(v.filter, to) })));
+          setFile((f) => (f && to(f.path) !== f.path ? { ...f, path: to(f.path) } : f));
+          return setEmphasis((ps) => (ps.some((p) => to(p) !== p) ? [...new Set(ps.map(to))] : ps));
+        }
       }
     },
     [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay],

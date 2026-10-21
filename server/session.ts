@@ -19,6 +19,7 @@ import type {
   View,
 } from "../shared/types";
 import { promisify } from "node:util";
+import { movedDirs, renameInFilter, renamer, type Renames } from "../shared/renames";
 import { indexGraph, repoName, scanRepo, type GraphIndex } from "./scan";
 
 const run = promisify(execFile);
@@ -424,6 +425,66 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
  * code as it is now.
  */
 let rescanning: Promise<void> | null = null;
+/** Run after every rescan with the files it found that weren't there before (moves aside). */
+export const afterRescan: ((added: string[]) => unknown)[] = [];
+
+/** The files git saw move between two commits (and the folders they took with them). */
+async function renamesBetween(root: string, from: string, to: string): Promise<Renames> {
+  const { stdout } = await run("git", ["diff", "--find-renames", "--name-status", "-z", from, to], { cwd: root, maxBuffer: 64 * 1024 * 1024 });
+  const parts = stdout.split("\0");
+  const files: [string, string][] = [];
+  for (let i = 0; i < parts.length; ) {
+    const status = parts[i++];
+    if (!status) continue;
+    if (status[0] === "R" || status[0] === "C") {
+      const [a, b] = [parts[i++], parts[i++]];
+      if (status[0] === "R") files.push([a, b]);
+    } else i++;
+  }
+  const onMap = session.idx?.graph.files.map((f) => f.path) ?? [];
+  const dirs = movedDirs(files, (d) => onMap.some((p) => p.startsWith(`${d}/`)));
+  return { files, dirs };
+}
+
+/**
+ * Rewrites everything kept by path — modules, groupings, markers, notes,
+ * answers, the saved filter — to where the files went. The open page gets
+ * the same renames, for the filter it holds.
+ */
+export function applyRenames(r: Renames) {
+  const to = renamer(r);
+  const all = (ps: string[]) => [...new Set(ps.map(to))];
+  const s = session.state;
+  if (s.overview) {
+    s.overview = {
+      ...s.overview,
+      modules: s.overview.modules.map((m) => ({ ...m, paths: all(m.paths) })),
+      topics: s.overview.topics.map((t) => ({ ...t, paths: all(t.paths) })),
+      entryPoints: all(s.overview.entryPoints),
+    };
+  }
+  s.lenses = s.lenses.map((l) => ({ ...l, groups: l.groups.map((g) => ({ ...g, paths: all(g.paths) })) }));
+  s.overlays = s.overlays.map((o) => ({
+    ...o,
+    paths: all(o.paths),
+    reasons: o.reasons && Object.fromEntries(Object.entries(o.reasons).map(([p, why]) => [to(p), why])),
+  }));
+  s.notes = s.notes.map((n) => ({
+    ...n,
+    target: n.target.kind === "file" ? { ...n.target, path: to(n.target.path) } : { ...n.target, from: to(n.target.from), to: to(n.target.to) },
+  }));
+  s.frames = s.frames.map((f) => ({ ...f, focus: all(f.focus) }));
+  if (s.view) {
+    s.view = {
+      ...s.view,
+      filter: s.view.filter && renameInFilter(s.view.filter, to),
+      savedFilters: s.view.savedFilters?.map((v) => ({ ...v, filter: renameInFilter(v.filter, to) })),
+    };
+  }
+  pushActivity({ kind: "tool", detail: `Followed ${r.files.length} renamed file${r.files.length === 1 ? "" : "s"}` });
+  pushCommand({ cmd: "renamed", renames: r });
+}
+
 export function rescan(): Promise<void> {
   if (rescanning) return rescanning;
   rescanning = (async () => {
@@ -433,6 +494,14 @@ export function rescan(): Promise<void> {
     if (session.idx?.graph.root !== root) return; // another repo opened meanwhile
     const before = session.idx.graph;
     session.idx = indexGraph(graph);
+    // A pull, commit or checkout can move files; what's kept by path follows them.
+    let moved: Renames | null = null;
+    if (before.head && graph.head && before.head !== graph.head) {
+      moved = await renamesBetween(root, before.head, graph.head).catch(() => null);
+      if (moved?.files.length) applyRenames(moved);
+    }
+    const had = new Set([...before.files.map((f) => f.path), ...(moved?.files.map(([, to]) => to) ?? [])]);
+    const added = graph.files.map((f) => f.path).filter((p) => !had.has(p));
     session.state.repo = { name: graph.name, root: graph.root, branch: graph.branch };
     session.state.graphVersion++;
     // The chart is out of date once the code moved on from where it was drawn.
@@ -442,6 +511,7 @@ export function rescan(): Promise<void> {
     pushActivity({ kind: "tool", detail: `Rescanned: ${graph.totals.files} files and ${graph.imports.length} imports` });
     emit();
     void checkRemote(false);
+    for (const hook of afterRescan) void Promise.resolve(hook(added)).catch((err) => console.error("[rescan]", err));
   })().finally(() => {
     rescanning = null;
   });
