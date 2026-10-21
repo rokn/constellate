@@ -1,4 +1,4 @@
-# Codeflight
+# Constellate
 
 Open a repository on your machine and fly through it. The codebase becomes a 3D map:
 files are bodies sized by length and coloured by territory, imports are routes between
@@ -263,9 +263,47 @@ theme's colours are injected as CSS variables, and any element with `data-path`
 | amber | a logical module and its runtime links |
 | magenta | your course — the open file's halo, the focus, and the dashed line of where you've flown |
 
+## Keeping up with the remote
+
+Every five minutes the server fetches the branch's upstream (`CODEFLIGHT_FETCH_SECONDS`,
+`0` turns it off). When it has commits you don't, a banner lists them with **Pull and
+rescan**: a fast-forward only — your own commits are never merged or rewritten, and a
+pull that can't fast-forward says why instead. The map rescans straight after; if the
+code moved enough, the usual "re-chart the overview" offer follows. Nothing is pulled
+without you asking.
+
+## Running in a container
+
+One container maps one repository. The image (`ghcr.io/rokn/constellate`, built by CI on
+every push to `main`) clones `REPO_URL` into `/data/repo` on first start and keeps
+everything it writes — the clone, groupings, notes, answers, voiced audio, the agent's
+session — under `/data`, so give it a volume there.
+
+```bash
+docker run -p 4317:4317 -v constellate-myrepo:/data \
+  -e REPO_URL=https://github.com/you/myrepo.git -e GIT_TOKEN=… \
+  -e CLAUDE_CODE_OAUTH_TOKEN=… -e INWORLD_API_KEY=… \
+  ghcr.io/rokn/constellate
+```
+
+| Variable | |
+| --- | --- |
+| `REPO_URL` | The repository to clone (https, or ssh with a key in `/data/home/.ssh`). |
+| `REPO_BRANCH` | The branch to check out; the remote's default otherwise. |
+| `GIT_TOKEN` | Token for private repos over https — also used for private Go modules. Read from the environment, never written to disk. |
+| `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | The navigator's credentials (`claude setup-token` makes the former). |
+| `INWORLD_API_KEY` | Optional: voice and narrated stories. |
+
+The image sets `CODEFLIGHT_LOCK_REPO=1`, which pins the server to that one repo — the
+landing page and the `repo` field of the API can't point it anywhere else. It has `go` and
+`gopls` for Go repos. There's **no login of its own**: put it behind an authenticating
+proxy (oauth2-proxy, your ingress's SSO) before exposing it, since anyone who can reach it
+can read the code and spend the navigator's credits. `GET /healthz` answers for probes.
+Run a single replica: the session is one JSON file, and two writers would clobber it.
+
 ## As an app, and with less UI
 
-Codeflight is a PWA: from `http://localhost:4317` in Chrome or Edge, use *Install* in the
+Constellate is a PWA: from `http://localhost:4317` in Chrome or Edge, use *Install* in the
 address bar to get its own window and icon.
 
 **On other devices (LAN), use https.** Browsers only allow installing, the microphone (voice)

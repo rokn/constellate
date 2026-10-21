@@ -466,6 +466,24 @@ export type SessionState = {
   stale?: boolean;
   /** Your saved view of this repo. */
   view?: ViewSettings;
+  /** The branch's upstream, as of the last fetch: what a pull would bring. */
+  remote?: RemoteStatus;
+  /** The server is pinned to this repo; opening another is turned off. */
+  locked?: boolean;
+};
+
+export type RemoteStatus = {
+  /** The upstream, e.g. "origin/main". */
+  upstream: string;
+  /** Commits on the upstream that HEAD doesn't have, and the other way. */
+  behind: number;
+  ahead: number;
+  /** The newest of those incoming commits. */
+  commits: { short: string; subject: string; author: string; at: number }[];
+  checkedAt: number;
+  /** Why the last fetch or pull failed. */
+  error?: string;
+  pulling?: boolean;
 };
 
 /** What the browser reports about itself, so the voice knows what is on screen. */

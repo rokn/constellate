@@ -4,6 +4,7 @@ import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
 import { ChartChanges } from "./components/ChartChanges";
+import { RemoteBanner } from "./components/RemoteBanner";
 import { AnswersPanel } from "./components/AnswersPanel";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
@@ -1547,6 +1548,7 @@ export function App() {
             onShowAll={() => setFilter((f) => ({ ...f, isolate: undefined }))}
           />
         )}
+        {state.remote && (state.remote.behind > 0 || state.remote.error) && <RemoteBanner remote={state.remote} />}
         {state.stale && (
           <div className={`glass pointer-events-auto rounded-md px-3 py-1.5 text-[12.5px] text-text/90 ${changesOpen ? "w-[min(440px,calc(100vw-2rem))]" : "max-w-[340px]"}`}>
             The code has changed since this map was charted. Your groupings, groups and answers are kept.{" "}

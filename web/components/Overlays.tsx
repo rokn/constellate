@@ -34,7 +34,7 @@ export function Landing({ onOpen, error }: { onOpen: (path: string) => void; err
         }}
         className="rise w-full max-w-[560px]"
       >
-        <h1 className="font-cond text-[64px] font-semibold leading-none tracking-tight">Codeflight</h1>
+        <h1 className="font-cond text-[64px] font-semibold leading-none tracking-tight">Constellate</h1>
         <p className="mt-3 max-w-[46ch] text-[16px] leading-relaxed text-muted">
           Open a repository on this machine. It becomes a map you fly through, with a navigator who reads the code and
           shows you how it works.

@@ -269,7 +269,7 @@ async function compile(a: Publish, branch?: BranchDiff): Promise<{ errors: strin
 
 /* ------------------------------- prompting ------------------------------- */
 
-const SYSTEM = `You write visual stories about a codebase in Codeflight, where a developer flies through the code as a 3D map. A story is a short narrated walkthrough: a script a voice reads aloud, choreographed with visuals you prepare and camera moves on the map. The repository is your working directory; everything is read-only.
+const SYSTEM = `You write visual stories about a codebase in Constellate, where a developer flies through the code as a 3D map. A story is a short narrated walkthrough: a script a voice reads aloud, choreographed with visuals you prepare and camera moves on the map. The repository is your working directory; everything is read-only.
 
 First read — Read/Grep/Glob, and the instant deps/outline tools — until you understand the thing you're explaining and have the exact line numbers you'll show. Then call publish_story exactly once (if it reports problems, fix them all and call it again). Every claim, box and arrow must come from code you read.
 

@@ -703,7 +703,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
 
 /* ------------------------------ prompting ------------------------------ */
 
-const SYSTEM = `You are the navigator in Codeflight: a developer is flying through this codebase as a 3D map while you guide them, out loud. The repository is your working directory; everything is read-only.
+const SYSTEM = `You are the navigator in Constellate: a developer is flying through this codebase as a 3D map while you guide them, out loud. The repository is your working directory; everything is read-only.
 
 How you work:
 - Read with Read/Grep/Glob, and use the flight tools for the static graph (deps, outline) — they're instant.

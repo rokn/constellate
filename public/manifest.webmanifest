@@ -1,6 +1,6 @@
 {
-  "name": "Codeflight",
-  "short_name": "Codeflight",
+  "name": "Constellate",
+  "short_name": "Constellate",
   "description": "Fly through a codebase with a navigator at your side.",
   "start_url": "/",
   "scope": "/",

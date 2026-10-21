@@ -1,4 +1,4 @@
-// Codeflight's service worker. It exists to make the app installable and to
+// Constellate's service worker. It exists to make the app installable and to
 // keep the built assets — content-hashed, so a cached copy can never be stale —
 // on hand so the window opens instantly. Everything else (the page itself, the
 // API, the live stream, the voice socket) always goes to the server: the map

@@ -342,6 +342,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     commands: [],
     busy: false,
     fromCache: false,
+    locked: session.state.locked,
   };
   session.idx = undefined;
   session.agentSessionId = undefined;
@@ -358,6 +359,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     kind: "tool",
     detail: `Mapped ${graph.totals.files} files and ${graph.imports.length} imports`,
   });
+  void checkRemote(FETCH_EVERY > 0);
 
   // Everything you made comes back regardless of commit — groupings, groups,
   // answers, your view. Only the overview's freshness depends on the commit:
@@ -418,6 +420,7 @@ export function rescan(): Promise<void> {
     }
     pushActivity({ kind: "tool", detail: `Rescanned: ${graph.totals.files} files and ${graph.imports.length} imports` });
     emit();
+    void checkRemote(false);
   })().finally(() => {
     rescanning = null;
   });
@@ -449,6 +452,85 @@ setInterval(() => {
       /* not a git repo: nothing to watch */
     });
 }, 4000).unref();
+
+/**
+ * Watches the remote: fetches the branch's upstream every
+ * CODEFLIGHT_FETCH_SECONDS (five minutes by default, 0 turns it off) and,
+ * when it has commits HEAD doesn't, offers them. Pulling is yours to ask for
+ * — the map never moves under you on its own.
+ */
+const FETCH_EVERY = Number(process.env.CODEFLIGHT_FETCH_SECONDS ?? 300) * 1000;
+const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes" };
+const git = (root: string, args: string[]) => run("git", args, { cwd: root, env: gitEnv, timeout: 120_000 }).then((r) => r.stdout.trim());
+const gitError = (e: unknown) => ((e as { stderr?: string }).stderr?.trim() || (e as Error).message).split("\n").at(-1)!.slice(0, 300);
+
+let checking: Promise<void> | null = null;
+/** `fetch: false` only recounts against what was last fetched — after a rescan, say. */
+export function checkRemote(fetch = true): Promise<void> {
+  if (checking) return checking;
+  checking = (async () => {
+    const root = session.idx?.graph.root;
+    if (!root) return;
+    let upstream: string;
+    try {
+      upstream = await git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+    } catch {
+      session.state.remote = undefined; // no upstream to compare against
+      return;
+    }
+    const prev = session.state.remote;
+    try {
+      if (fetch) await git(root, ["fetch", "--quiet", "--no-tags", upstream.split("/")[0]]);
+      const [ahead, behind] = (await git(root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])).split(/\s+/).map(Number);
+      const log = behind ? await git(root, ["log", "-n", "30", "--format=%h%x09%an%x09%ct%x09%s", "HEAD..@{u}"]) : "";
+      const commits = log
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => {
+          const [short, author, at, ...subject] = l.split("\t");
+          return { short, author, at: Number(at) * 1000, subject: subject.join("\t") };
+        });
+      if (session.idx?.graph.root !== root) return;
+      session.state.remote = { upstream, ahead, behind, commits, checkedAt: fetch ? Date.now() : (prev?.checkedAt ?? Date.now()) };
+    } catch (e) {
+      if (session.idx?.graph.root !== root) return;
+      session.state.remote = { ...(prev ?? { upstream, ahead: 0, behind: 0, commits: [] }), checkedAt: Date.now(), error: `Couldn't fetch ${upstream}: ${gitError(e)}` };
+    }
+    emit();
+  })().finally(() => {
+    checking = null;
+  });
+  return checking;
+}
+if (FETCH_EVERY > 0) setInterval(() => void checkRemote(), FETCH_EVERY).unref();
+
+/**
+ * Brings the upstream's commits in (fast-forward only: your own work is
+ * never merged or rewritten), then rescans so the map shows them. The
+ * overview is then marked stale, and re-charting is offered as usual.
+ */
+export async function pullRemote() {
+  const root = session.idx?.graph.root;
+  const remote = session.state.remote;
+  if (!root || !remote) throw new Error("There's no upstream to pull from.");
+  session.state.remote = { ...remote, pulling: true, error: undefined };
+  emit();
+  try {
+    await git(root, ["fetch", "--quiet", "--no-tags", remote.upstream.split("/")[0]]);
+    await git(root, ["merge", "--ff-only", "--quiet", "@{u}"]);
+  } catch (e) {
+    session.state.remote = { ...remote, pulling: false, error: `Couldn't pull ${remote.upstream}: ${gitError(e)}` };
+    emit();
+    return;
+  }
+  pushActivity({ kind: "tool", detail: `Pulled ${remote.behind} commit${remote.behind === 1 ? "" : "s"} from ${remote.upstream}` });
+  // A rescan or count already under way read the tree before the pull: let
+  // it finish, then run fresh ones.
+  await rescanning?.catch(() => undefined);
+  await rescan();
+  await checking?.catch(() => undefined);
+  await checkRemote(false);
+}
 
 /* ----------------------------- persistence ----------------------------- */
 

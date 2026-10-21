@@ -13,6 +13,8 @@ import {
   addOverlay,
   dropOverview,
   openRepo,
+  pullRemote,
+  checkRemote,
   putLens,
   removeLens,
   removeNote,
@@ -90,7 +92,17 @@ async function body<T>(req: IncomingMessage): Promise<T> {
 }
 
 /** Open a repo and, unless the cache already knew it, run the intro analysis. */
+/**
+ * CODEFLIGHT_LOCK_REPO=1 pins the server to the repo it started with: in a
+ * shared deployment, nobody gets to point it at another path on the box.
+ */
+const LOCKED = /^(1|true|yes)$/i.test(process.env.CODEFLIGHT_LOCK_REPO ?? "");
+const resolveRepo = (p: string) => path.resolve(p.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
+
 async function open(root: string) {
+  if (LOCKED && session.state.repo && resolveRepo(root) !== session.state.repo.root) {
+    throw new Error("This server is pinned to one repository.");
+  }
   // The language server belongs to the repo it was started on.
   stopGo();
   cancelStories();
@@ -140,6 +152,24 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       });
       return true;
     }
+    case "GET /healthz":
+      json(res, 200, { ok: true, status: session.state.status });
+      return true;
+    case "POST /api/remote/check":
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      await checkRemote();
+      json(res, 200, session.state.remote ?? null);
+      return true;
+    case "POST /api/remote/pull":
+      // Fast-forward to the upstream and rescan. Errors land in state.remote.error.
+      if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
+      try {
+        await pullRemote();
+      } catch (err) {
+        return json(res, 400, { error: err instanceof Error ? err.message : String(err) }), true;
+      }
+      json(res, 200, session.state.remote ?? null);
+      return true;
     case "GET /api/config":
       json(res, 200, {
         voice: !!process.env.INWORLD_API_KEY,
@@ -433,7 +463,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         wait?: boolean | number;
       }>(req);
       if (!b.branch?.trim()) return json(res, 400, { error: "Name a branch." }), true;
-      if (b.repo?.trim() && path.resolve(b.repo.trim().replace(/^~(?=$|\/)/, process.env.HOME ?? "~")) !== session.state.repo?.root) {
+      if (b.repo?.trim() && resolveRepo(b.repo.trim()) !== session.state.repo?.root) {
+        if (LOCKED) return json(res, 403, { error: "This server is pinned to one repository." }), true;
         await open(b.repo.trim());
       }
       if (!session.idx) return json(res, 400, { error: session.state.error ?? "No repository open." }), true;
@@ -483,6 +514,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
     case "POST /api/open": {
       const b = await body<{ path?: string }>(req);
       if (!b.path?.trim()) return json(res, 400, { error: "Give a local path." }), true;
+      if (LOCKED) return json(res, 403, { error: "This server is pinned to one repository." }), true;
       void open(b.path.trim());
       json(res, 202, { ok: true });
       return true;
@@ -587,7 +619,7 @@ async function main() {
   }
 
   server.listen(port, () => {
-    console.log(`\n  ✈  Codeflight on http://localhost:${port}\n`);
+    console.log(`\n  ✦  Constellate on http://localhost:${port}\n`);
     if (!process.env.INWORLD_API_KEY) console.log("     (INWORLD_API_KEY not set — voice is off; everything else works)\n");
   });
 
@@ -599,6 +631,8 @@ async function main() {
   }
 
   const repo = process.argv[2] ?? process.env.CODEFLIGHT_REPO;
+  session.state.locked = LOCKED;
+  if (LOCKED && !repo) console.log("     (CODEFLIGHT_LOCK_REPO is set but no repo was given — nothing to open)\n");
   if (repo) void open(repo);
 }
 
