@@ -677,7 +677,22 @@ export async function scanRepo(root: string, onProgress?: (done: number, total: 
   const abs = path.resolve(root);
   const info = await stat(abs);
   if (!info.isDirectory()) throw new Error(`${abs} is not a directory`);
-  return scanSource(workingTree(abs), onProgress);
+  return { ...(await scanSource(workingTree(abs), onProgress)), name: await repoName(abs) };
+}
+
+/**
+ * What to call the repo: its origin's name when it has one, since a clone's
+ * folder can be anything (in a container it's /data/repo); else the folder.
+ */
+export async function repoName(abs: string): Promise<string> {
+  try {
+    const { stdout } = await run("git", ["remote", "get-url", "origin"], { cwd: abs });
+    const name = stdout.trim().replace(/\/+$/, "").replace(/\.git$/, "").split(/[/:]/).pop();
+    if (name) return name;
+  } catch {
+    /* no git, or no origin */
+  }
+  return path.basename(abs);
 }
 
 export async function scanSource(src: Source, onProgress?: (done: number, total: number) => void): Promise<RepoGraph> {

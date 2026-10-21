@@ -19,7 +19,7 @@ import type {
   View,
 } from "../shared/types";
 import { promisify } from "node:util";
-import { indexGraph, scanRepo, type GraphIndex } from "./scan";
+import { indexGraph, repoName, scanRepo, type GraphIndex } from "./scan";
 
 const run = promisify(execFile);
 
@@ -330,7 +330,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
   const abs = path.resolve(root.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
   session.state = {
     status: "scanning",
-    repo: { name: path.basename(abs), root: abs },
+    repo: { name: await repoName(abs).catch(() => path.basename(abs)), root: abs },
     graphVersion: session.state.graphVersion + 1,
     lenses: [],
     overlays: [],
