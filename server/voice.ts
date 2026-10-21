@@ -3,7 +3,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import type { Frame, ScreenContext, UiCommand, View } from "../shared/types";
-import { ask, interrupt } from "./navigator";
+import { ask, interrupt, storyNote } from "./navigator";
 import { findPath } from "./scan";
 import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
 
@@ -181,6 +181,10 @@ function instructions(screen: ScreenContext): string {
     screen.focusLabel ? `Camera on: ${screen.focusLabel}.` : "",
     screen.touring ? "The guided tour is playing right now." : "",
     frameDoc(frame),
+    screen.story && !screen.story.closed
+      ? "A story is open, and it pauses while they talk to you. Answer a quick question about it from its script yourself; for anything that needs the code read or something drawn, ask the navigator, and the story waits while the answer is on screen."
+      : "",
+    storyNote(screen.story),
     screen.selection ? `They selected this — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 1500)}\n"""` : "",
   ]
     .filter(Boolean)

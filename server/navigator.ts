@@ -874,6 +874,56 @@ function notesOn(path?: string): string {
     .join("\n")}`;
 }
 
+/** A visual on a story's stage, in a line. */
+function describeVisual(v: View): string {
+  if (v.kind === "code") {
+    const end = v.startLine + v.code.split("\n").length - 1;
+    return `code from ${v.path}:${v.startLine}-${end}${v.title ? ` (${v.title})` : ""}${v.highlight.length ? `, lines ${v.highlight.join(", ")} spotlit` : ""}`;
+  }
+  if (v.kind === "diff") return `the diff of ${v.path}`;
+  if (v.kind === "text") return `a note${v.title ? `, "${v.title}"` : ""}`;
+  return `${v.kind === "diagram" ? "a diagram" : "a visualization"}, "${v.title}"`;
+}
+
+/**
+ * The story they're watching, or watched last: its whole script with where
+ * they are, what's on its stage there, and the code it covers — so "this",
+ * "that part" and "what you just said" have something to point at.
+ */
+export function storyNote(at?: ScreenContext["story"]): string {
+  const st = at && session.state.stories.find((x) => x.id === at.id);
+  if (!at || !st?.beats.length) return "";
+  const n = Math.max(0, Math.min(at.beat, st.beats.length - 1));
+  const of = `beat ${n + 1} of ${st.beats.length}`;
+  const where = at.closed
+    ? `Earlier they watched your story "${st.title}" (they closed it at ${of}). Questions about "the story" or something it said mean this one.`
+    : at.parked
+      ? `They paused your story "${st.title}" at ${of} to ask this — it's a question about what the story is saying there. "This", "that" and "what you just said" mean that beat and what's on its stage. Answer it; the story resumes after.`
+      : `They're watching your story "${st.title}" right now, at ${of}${at.playing ? "" : " (paused)"}. "This", "that" and "what you just said" mean that beat and what's on its stage.`;
+  // What the stage and the camera were showing by that beat: the latest cue of each kind.
+  let visual: View | undefined;
+  let lines: number[] = [];
+  let focus: string[] = [];
+  for (const b of st.beats.slice(0, n + 1)) {
+    for (const c of b.cues) {
+      if (c.kind === "show") (visual = st.visuals.find((v) => v.id === c.visual)), (lines = []);
+      else if (c.kind === "lines") lines = c.lines;
+      else if (c.kind === "focus") focus = c.paths;
+    }
+  }
+  return [
+    where,
+    `What it explains: ${st.summary}`,
+    "The script (each beat is what the voice said):",
+    ...st.beats.map((b, i) => `${i + 1}. ${b.say}${i === n ? "   ← they are here" : ""}`),
+    visual ? `On the stage at that beat: ${describeVisual(visual)}${lines.length ? `, spotlighting lines ${lines.join(", ")}` : ""}.` : "",
+    focus.length ? `The map's camera was on: ${focus.slice(0, 12).join(", ")}${focus.length > 12 ? "…" : ""}.` : "",
+    st.context.length ? `The code the story covers: ${st.context.map((c) => `${c.path}${c.line ? `:${c.line}${c.endLine ? `-${c.endLine}` : ""}` : ""} (${c.why})`).join("; ")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 /** The markers on the map, with ids and the answer that made each, for edit_markers. */
 function markersNote(): string {
   const ms = session.state.overlays;
@@ -896,6 +946,7 @@ function screenNote(screen?: ScreenContext): string {
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
     screen.frameId && getFrame(screen.frameId) ? `They have your answer [${screen.frameId}] "${getFrame(screen.frameId)!.title}" open — "this answer" means it.` : "",
     markersNote(),
+    storyNote(screen.story),
     screen.selection ? `They have selected this text — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 2000)}\n"""` : "",
   ].filter(Boolean);
   return bits.length ? `\n\n[What's on their screen]\n${bits.join("\n")}` : "";

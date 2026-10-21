@@ -507,4 +507,9 @@ export type ScreenContext = {
   visibleFiles?: number;
   /** The span of history lit on the map, described. */
   range?: string;
+  /**
+   * The story they're watching (beat is 0-based), paused to ask about, or —
+   * closed — the last one they watched.
+   */
+  story?: { id: string; beat: number; playing: boolean; parked?: boolean; closed?: boolean };
 };

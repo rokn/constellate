@@ -19,7 +19,7 @@ import { Dossier, type Pointer } from "./components/Dossier";
 import { FilePanel } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
-import { StoryPlayer } from "./components/StoryPlayer";
+import { StoryPlayer, type StoryControl } from "./components/StoryPlayer";
 import { StoriesPanel } from "./components/StoriesPanel";
 import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
 
@@ -107,7 +107,13 @@ export function App() {
   const [storiesOpen, setStoriesOpen] = useState(false);
   const [answersOpen, setAnswersOpen] = useState(false);
   /** The story playing, the playlist it's in, and whether to start on its own. */
-  const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean } | null>(null);
+  const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean; startAt?: { beat: number; ms: number } } | null>(null);
+  // Questions about a story: where the open one is, one paused to make way
+  // for an answer (with a way back to it), and the last one watched.
+  const [storyAt, setStoryAt] = useState({ beat: 0, playing: false });
+  const [parked, setParked] = useState<{ id: string; queue: string[]; beat: number; ms: number } | null>(null);
+  const [lastStory, setLastStory] = useState<{ id: string; beat: number } | null>(null);
+  const storyCtl = useRef<StoryControl | null>(null);
   /** A branch's code diff against its base, open over everything. */
   const [branchDiff, setBranchDiff] = useState<{ branch: string; base?: string } | null>(null);
   /**
@@ -742,17 +748,37 @@ export function App() {
           : undefined,
       filter: isActive(filter) ? describe(filter) : undefined,
       visibleFiles: visible?.size,
+      story: story
+        ? { id: story.id, beat: storyAt.beat, playing: storyAt.playing }
+        : parked
+          ? { id: parked.id, beat: parked.beat, playing: false, parked: true }
+          : lastStory
+            ? { id: lastStory.id, beat: lastStory.beat, playing: false, closed: true }
+            : undefined,
     }),
     [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits],
   );
+
+  /** Pause the open story and set it aside, so an answer can take the stage; Resume brings it back. */
+  const parkStory = useCallback(() => {
+    if (!story) return null;
+    const at = storyCtl.current?.where() ?? { beat: storyAt.beat, ms: 0 };
+    storyCtl.current?.pause();
+    setParked({ id: story.id, queue: story.queue, ...at });
+    setStory(null);
+    return at;
+  }, [story, storyAt.beat]);
 
   const askNavigator = useCallback(
     (request: string, topicId?: string) => {
       setIntroDone(true);
       setTour(null);
-      void ask(request, { topicId, screen });
+      // Asked mid-story: it's a question about the story, which waits for the answer.
+      const at = parkStory();
+      const asked = at && story ? { ...screen, story: { id: story.id, beat: at.beat, playing: false, parked: true } } : screen;
+      void ask(request, { topicId, screen: asked });
     },
-    [screen],
+    [screen, parkStory, story],
   );
 
   /**
@@ -878,6 +904,7 @@ export function App() {
 
   /** Play a story (in a playlist, for the intro). One voiced with other settings is voiced again first. */
   const playStory = useCallback((id: string, queue: string[] = [], autoplay = true) => {
+    setParked(null);
     setIntroDone(true);
     setTour(null);
     setFrameId(null);
@@ -924,11 +951,13 @@ export function App() {
     if (!fresh.length) return;
     for (const f of fresh) opened.current.add(f.id);
     const f = fresh.at(-1)!;
+    // Asked mid-story (a spoken question comes this way): the story steps aside for it.
+    parkStory();
     setFrameId(f.id);
     panels.current.frame = true;
     setPointer(null);
     record({ kind: "frame", frameId: f.id });
-  }, [frames]);
+  }, [frames, parkStory]);
 
   /* ------------------------------- commands ------------------------------- */
 
@@ -1027,6 +1056,12 @@ export function App() {
   }, [state?.activity]);
 
   const voice = useVoice({ screen, onCommand: (c) => runRef.current(c) });
+
+  // Talking over a story pauses it, so you and the voice can hear each other.
+  useEffect(() => {
+    if (story && (voice.heard || voice.state === "speaking")) storyCtl.current?.pause();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.heard, voice.state]);
   // Talking to the navigator means you're past the intro: the voice opens with
   // the welcome itself, so the title card would only sit on top of the map.
   const startVoice = useCallback(() => {
@@ -1778,8 +1813,48 @@ export function App() {
             onOpenFile={(p, l, e) => openFile(p, l, e)}
             onPick={(id, autoplay) => playStory(id, story.queue, autoplay)}
             onDiff={s.branch ? () => showBranch(s.branch!.name, s.branch!.base) : undefined}
-            onClose={() => setStory(null)}
+            onClose={() => {
+              setLastStory({ id: story.id, beat: storyAt.beat });
+              setStory(null);
+            }}
+            startAt={story.startAt}
+            control={storyCtl}
+            onBeat={(beat, playing) => setStoryAt({ beat, playing })}
           />
+        );
+      })()}
+
+      {parked && !story && (() => {
+        const s = stories.find((x) => x.id === parked.id);
+        if (!s) return null;
+        return (
+          <div className="pointer-events-none absolute bottom-[92px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5">
+            <button
+              onClick={() => {
+                panels.current.frame = true;
+                setFrameId(null);
+                setStory({ id: parked.id, queue: parked.queue, autoplay: true, startAt: { beat: parked.beat, ms: parked.ms } });
+                setParked(null);
+              }}
+              className="glass pointer-events-auto rounded-full px-3.5 py-1 text-[13px]"
+              title="Back to the story, where you paused it"
+            >
+              <span className="text-course">▶</span> Resume “{s.title}”{" "}
+              <span className="ml-1 text-muted">
+                beat {parked.beat + 1} of {s.beats.length}
+              </span>
+            </button>
+            <button
+              onClick={() => {
+                setLastStory({ id: parked.id, beat: parked.beat });
+                setParked(null);
+              }}
+              className="glass pointer-events-auto rounded-full px-2.5 py-1 text-[13px] text-muted hover:text-text"
+              aria-label="Don't resume the story"
+            >
+              ✕
+            </button>
+          </div>
         );
       })()}
 

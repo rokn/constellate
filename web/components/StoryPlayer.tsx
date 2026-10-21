@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Story, View } from "../../shared/types";
@@ -8,6 +8,9 @@ import { CodeBlock } from "./CodeBlock";
 import { CustomView } from "./CustomView";
 import { DiagramView } from "./DiagramView";
 import { DiffStat, DiffView, parseDiff } from "./DiffView";
+
+/** What the page can do to a story from outside: pause it, and ask where it is. */
+export type StoryControl = { pause: () => void; where: () => { beat: number; ms: number } };
 
 const SPEED_KEY = "codeflight.storySpeed";
 const STOP_KEY = "codeflight.storyStopEachBeat";
@@ -46,6 +49,9 @@ export function StoryPlayer({
   onPick,
   onDiff,
   onClose,
+  startAt,
+  control,
+  onBeat,
 }: {
   story: Story;
   /** The playlist this story is part of (the intro's three), if any. */
@@ -58,6 +64,11 @@ export function StoryPlayer({
   /** A branch story: open the branch's whole diff. */
   onDiff?: () => void;
   onClose: () => void;
+  /** Pick up from here (a story paused for a question). */
+  startAt?: { beat: number; ms: number };
+  control?: MutableRefObject<StoryControl | null>;
+  /** Where it is, as the beat or play state changes. */
+  onBeat?: (beat: number, playing: boolean) => void;
 }) {
   const [speed, setSpeedState] = useState(() => stored(SPEED_KEY, 1));
   const [stopEachBeat, setStopState] = useState(() => stored(STOP_KEY, false));
@@ -84,11 +95,17 @@ export function StoryPlayer({
     onEnd: () => next && onPick(next.id, true),
   });
 
+  if (control) control.current = { pause: player.pause, where: () => ({ beat: player.beat, ms: player.ms }) };
+  const onBeatRef = useRef(onBeat);
+  onBeatRef.current = onBeat;
+  useEffect(() => onBeatRef.current?.(player.beat, player.playing), [player.beat, player.playing]);
+
   // Start once it's ready (it may still be voicing when opened).
   const started = useRef<string | null>(null);
   useEffect(() => {
     if (!autoplay || story.state !== "ready" || started.current === story.id) return;
     started.current = story.id;
+    if (startAt) player.seek(startAt.beat, startAt.ms);
     player.play();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [story.id, story.state, autoplay]);
