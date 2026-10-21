@@ -1290,6 +1290,7 @@ export function App() {
     if (j.kind === "file") openFile(j.path);
     else if (j.kind === "symbol") openFile(j.path, j.line);
     else if (j.kind === "module") focusModule(j.id);
+    else if (j.kind === "branch") showBranch(j.name, j.base);
     else {
       const t = overview?.topics.find((x) => x.id === j.id);
       if (t) goTopic(t);

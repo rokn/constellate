@@ -1,9 +1,9 @@
-import { useMemo, useRef, useState, type Ref } from "react";
+import { useCallback, useMemo, useRef, useState, type Ref } from "react";
 import type { Overview, RepoGraph } from "../../shared/types";
 
 /**
  * One box for both kinds of intent. Typing shows places you can jump to —
- * files, symbols, modules, topics — and arrowing into one and pressing Enter
+ * files, symbols, modules, topics, branches — and arrowing into one and pressing Enter
  * flies there instantly. Pressing Enter without picking one asks the
  * navigator, who reads and builds an answer.
  */
@@ -12,7 +12,11 @@ export type Jump =
   | { kind: "file"; path: string }
   | { kind: "symbol"; path: string; line: number; name: string }
   | { kind: "module"; id: string; label: string }
-  | { kind: "topic"; id: string; label: string };
+  | { kind: "topic"; id: string; label: string }
+  /** A branch, lit on the map against its base. */
+  | { kind: "branch"; name: string; base: string };
+
+type Branch = { name: string; current: boolean; remote: boolean; ahead: number };
 
 /** Subsequence match, rewarding contiguous runs and matches in the basename. */
 function score(hay: string, needle: string): number {
@@ -55,11 +59,19 @@ export function CommandBar({
   const [sel, setSel] = useState(-1);
   const [open, setOpen] = useState(false);
   const local = useRef<HTMLInputElement | null>(null);
+  // Branches with work of their own, fetched fresh each time the box opens.
+  const [branches, setBranches] = useState<{ base: string; branches: Branch[] } | null>(null);
+  const loadBranches = useCallback(() => {
+    void fetch("/api/branches")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b: { base: string; branches: Branch[] } | null) => b && setBranches(b))
+      .catch(() => undefined);
+  }, []);
 
   const jumps = useMemo(() => {
     const term = q.trim();
     if (term.length < 2 || !graph) return [];
-    const out: { j: Jump; s: number; text: string; hint: string }[] = [];
+    const out: { j: Jump; s: number; text: string; hint: string; detail?: string }[] = [];
     for (const m of overview?.modules ?? []) {
       const s = score(m.label, term);
       if (s) out.push({ j: { kind: "module", id: m.id, label: m.label }, s: s + 8, text: m.label, hint: "Module" });
@@ -67,6 +79,19 @@ export function CommandBar({
     for (const t of overview?.topics ?? []) {
       const s = score(t.title, term);
       if (s) out.push({ j: { kind: "topic", id: t.id, label: t.title }, s: s + 6, text: t.title, hint: "Topic" });
+    }
+    for (const b of branches?.branches ?? []) {
+      if (b.name === branches!.base || b.ahead === 0) continue;
+      const s = score(b.name, term);
+      if (s) {
+        out.push({
+          j: { kind: "branch", name: b.name, base: branches!.base },
+          s: s + 4,
+          text: b.name,
+          hint: "Branch",
+          detail: `${b.ahead} ahead of ${branches!.base}${b.current ? " · checked out" : ""}`,
+        });
+      }
     }
     for (const f of graph.files) {
       const s = score(f.path, term);
@@ -85,7 +110,7 @@ export function CommandBar({
       }
     }
     return out.sort((a, b) => b.s - a.s).slice(0, 7);
-  }, [q, graph, overview]);
+  }, [q, graph, overview, branches]);
 
   const submit = () => {
     const text = q.trim();
@@ -115,13 +140,14 @@ export function CommandBar({
                 onMouseEnter={() => setSel(i)}
                 className={`flex w-full items-baseline gap-3 px-3 py-1.5 text-left ${i === sel ? "bg-course/15" : ""}`}
               >
-                <span className={`w-16 shrink-0 font-cond text-[12.5px] ${x.j.kind === "module" ? "text-runtime" : x.j.kind === "topic" ? "text-course" : "text-muted"}`}>
+                <span className={`w-16 shrink-0 font-cond text-[12.5px] ${x.j.kind === "module" ? "text-runtime" : x.j.kind === "topic" || x.j.kind === "branch" ? "text-course" : "text-muted"}`}>
                   {x.hint.includes(":") ? "Symbol" : x.hint}
                 </span>
-                <span className={`min-w-0 flex-1 truncate text-[13.5px] ${x.j.kind === "file" || x.j.kind === "symbol" ? "font-mono text-[12.5px]" : ""}`}>
+                <span className={`min-w-0 flex-1 truncate text-[13.5px] ${x.j.kind === "file" || x.j.kind === "symbol" || x.j.kind === "branch" ? "font-mono text-[12.5px]" : ""}`}>
                   {x.text}
                 </span>
                 {x.hint.includes(":") && <span className="shrink-0 font-mono text-[11px] text-muted">{x.hint}</span>}
+                {x.detail && <span className="shrink-0 text-[11.5px] text-muted">{x.detail}</span>}
               </button>
             </li>
           ))}
@@ -148,7 +174,10 @@ export function CommandBar({
             setSel(-1);
             setOpen(true);
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={() => {
+            setOpen(true);
+            loadBranches();
+          }}
           onBlur={() => setOpen(false)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
