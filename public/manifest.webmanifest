@@ -2,6 +2,7 @@
   "name": "Constellate",
   "short_name": "Constellate",
   "description": "Fly through a codebase with a navigator at your side.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
