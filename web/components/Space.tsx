@@ -112,7 +112,7 @@ export type Overlay = {
   label: string;
   paths: string[];
   color: string;
-  /** Why each file is in the group: shown on its spoke. */
+  /** Why each file is in the marker: shown on its spoke. */
   reasons?: Record<string, string>;
   summary?: string;
   by?: "you" | "navigator";
@@ -229,7 +229,7 @@ export function Space({
   overview?: Overview;
   /** Organize by these groups instead of by folder. Null means folders. */
   grouping: Grouping | null;
-  /** Groups drawn on top of the current organization, without moving anything. */
+  /** Markers drawn on top of the current organization, without moving anything. */
   overlays: Overlay[];
   /** Files the filter keeps; null means all of them. */
   visible: Set<string> | null;
@@ -708,7 +708,7 @@ export function Space({
           [
             `<b style="color:${o.color}">${esc(o.label)}</b> <span style="opacity:.55">· ${o.paths.length} files · by ${o.by === "navigator" ? "the navigator" : "you"}</span>`,
             o.summary ? esc(o.summary) : "",
-            `<span style="opacity:.45">click to fly to the group</span>`,
+            `<span style="opacity:.45">click to fly there · right-click to hide</span>`,
           ].filter(Boolean).join("<br/>"),
         );
       } else if (spoke) {
@@ -728,7 +728,7 @@ export function Space({
     host.addEventListener("pointerdown", onDown, true);
     host.addEventListener("pointerup", onUp, true);
     host.addEventListener("pointermove", onHover, true);
-    // Right-click on a beacon hides its group (it stays in the Groups panel).
+    // Right-click on a beacon hides its marker (it stays in the Markers panel).
     // macOS sends contextmenu on press, before we know whether the press is a
     // flight, so the hide happens on release (in endFlight) instead.
     const onContext = (e: MouseEvent) => e.preventDefault();
@@ -1018,7 +1018,7 @@ export function Space({
         handlers.current.onNoteOnLink(endId(line.source), endId(line.target));
         return;
       }
-      // A plain right-click on a beacon hides its group (it stays in the Groups panel).
+      // A plain right-click on a beacon hides its marker (it stays in the Markers panel).
       const id = e && overlayAt(e);
       if (id) {
         beaconClickAt.current = performance.now();

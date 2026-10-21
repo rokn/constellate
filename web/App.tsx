@@ -247,6 +247,24 @@ export function App() {
   const lenses = useMemo(() => state?.lenses ?? [], [state?.lenses]);
   const overlays = useMemo(() => state?.overlays ?? [], [state?.overlays]);
   const notes = useMemo(() => state?.notes ?? [], [state?.notes]);
+  /** Hide, show or delete every marker one answer made; a delete can be undone. */
+  const markersOf = useCallback(
+    (frameId: string, action: "hide" | "show" | "delete") => {
+      const made = overlays.filter((o) => o.frameId === frameId);
+      if (!made.length) return;
+      void post("/api/overlays", { action: action === "delete" ? "delete" : "update", frameId, visible: action === "show" });
+      if (action === "show") return;
+      const n = `${made.length} marker${made.length === 1 ? "" : "s"}`;
+      setToast({
+        text: action === "delete" ? `Deleted ${n} from that answer` : `Hid ${n} from that answer — they're still in Markers`,
+        undo: () =>
+          void (action === "delete"
+            ? post("/api/overlays", { action: "restore", markers: made })
+            : Promise.all(made.filter((o) => o.visible).map((o) => post("/api/overlays", { action: "update", id: o.id, visible: true })))),
+      });
+    },
+    [overlays],
+  );
   const shownOverlays: Overlay[] = useMemo(
     () =>
       overlays
@@ -1183,7 +1201,7 @@ export function App() {
       else if (e.key === "l") setLayers((l) => ({ ...l, logical: !l.logical }));
       else if (e.key === "t" && overview) setTour(0);
       else if (e.key === "f") openPanel(filterOpen ? null : "filter");
-      else if (e.key === "g") openPanel(groupsOpen ? null : "groups");
+      else if (e.key === "m" || e.key === "g") openPanel(groupsOpen ? null : "groups");
       else if (e.key === "s") openPanel(storiesOpen ? null : "stories");
       else if (e.key === "a" && frames.length) {
         // The key press mustn't also land in the search box the panel opens with.
@@ -1292,7 +1310,7 @@ export function App() {
             const g = overlays.find((o) => o.id === id);
             void post("/api/overlays", { action: "update", id, visible: false });
             setToast({
-              text: `Hid the group ${g?.label ?? ""} — it's still in Groups`,
+              text: `Hid the marker ${g?.label ?? ""} — it's still in Markers`,
               undo: () => void post("/api/overlays", { action: "update", id, visible: true }),
             });
           }}
@@ -1436,10 +1454,10 @@ export function App() {
             <button
               onClick={() => openPanel(groupsOpen ? null : "groups")}
               aria-expanded={groupsOpen}
-              title="Mark groups on the map (g)"
+              title="Mark files on the map without moving them (m)"
               className={`rounded-md px-2.5 py-0.5 text-[13px] ${groupsOpen ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
             >
-              Groups{overlays.length ? ` (${overlays.length})` : ""}
+              Markers{overlays.length ? ` (${overlays.length})` : ""}
             </button>
             <button
               onClick={() => openPanel(notesOpen ? null : "notes")}
@@ -1524,6 +1542,7 @@ export function App() {
         {groupsOpen && graph && (
           <GroupsPanel
             overlays={overlays}
+            frames={frames}
             focusCount={emphasis.length}
             focusLabel={focusLabel}
             filterCount={visible?.size ?? null}
@@ -1532,7 +1551,7 @@ export function App() {
               void post("/api/overlays", {
                 action: "add",
                 label,
-                // How the group was made is why its files are in it.
+                // How the marker was made is why its files are in it.
                 ...(from === "focus"
                   ? { paths: emphasis, why: `was in focus${focusLabel ? `: ${focusLabel}` : ""}` }
                   : from === "filter"
@@ -1541,10 +1560,11 @@ export function App() {
               })
             }
             onAskNavigator={(what) =>
-              askNavigator(`Mark on the map, without reorganizing it: ${what}. Use add_groups, then tell me what you marked and why.`)
+              askNavigator(`Mark on the map, without reorganizing it: ${what}. Use add_markers, then tell me what you marked and why.`)
             }
             onToggle={(id, v) => void post("/api/overlays", { action: "update", id, visible: v })}
             onRemove={(id) => void post("/api/overlays", { action: "delete", id })}
+            onAnswer={markersOf}
             onFly={(g) => focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label)}
             onClose={() => setGroupsOpen(false)}
           />
@@ -1573,7 +1593,7 @@ export function App() {
         {state.remote && (state.remote.behind > 0 || state.remote.error) && <RemoteBanner remote={state.remote} />}
         {state.stale && (
           <div className={`glass pointer-events-auto rounded-md px-3 py-1.5 text-[12.5px] text-text/90 ${changesOpen ? "w-[min(440px,calc(100vw-2rem))]" : "max-w-[340px]"}`}>
-            The code has changed since this map was charted. Your groupings, groups and answers are kept.{" "}
+            The code has changed since this map was charted. Your groupings, markers and answers are kept.{" "}
             <button onClick={() => setChangesOpen((o) => !o)} aria-expanded={changesOpen} className="text-text underline-offset-2 hover:underline">
               {changesOpen ? "Hide changes" : "What changed?"}
             </button>{" "}
@@ -1617,9 +1637,9 @@ export function App() {
           <button
             onClick={() => openPanel("groups")}
             className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-muted hover:text-text"
-            title="Keep these files as a marked group"
+            title="Keep these files as a marker on the map"
           >
-            Save as group
+            Save as marker
           </button>
           <button
             onClick={() => hide(emphasis, `${emphasis.length} file${emphasis.length === 1 ? "" : "s"}`)}
@@ -1716,6 +1736,9 @@ export function App() {
             onClose={() => setFrameId(null)}
             onOpenFile={(p, l, e) => openFile(p, l, e)}
             onRetry={(f: Frame) => askNavigator(f.request || f.title, f.topicId)}
+            markers={overlays.filter((o) => o.frameId === activeFrame.id)}
+            onMarkers={(action) => markersOf(activeFrame.id, action)}
+            onFlyMarker={(g) => focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label)}
           />
         </div>
       )}

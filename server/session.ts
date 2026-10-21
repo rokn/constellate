@@ -166,7 +166,9 @@ export function addOverlay(o: Omit<GroupOverlay, "id" | "color" | "visible" | "c
 }
 
 export function updateOverlay(id: string, patch: Partial<Pick<GroupOverlay, "visible" | "label" | "summary" | "paths">>) {
-  session.state.overlays = session.state.overlays.map((o) => (o.id === id ? { ...o, ...patch } : o));
+  // Only what's given changes: a hide sends no label, and mustn't blank it.
+  const given = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+  session.state.overlays = session.state.overlays.map((o) => (o.id === id ? { ...o, ...given } : o));
   emit();
 }
 
@@ -199,6 +201,25 @@ export function restoreNote(note: Note) {
 export function removeOverlay(id: string) {
   session.state.overlays = session.state.overlays.filter((o) => o.id !== id);
   emit();
+}
+
+/** Puts deleted markers back, as they were. */
+export function restoreOverlays(markers: GroupOverlay[]) {
+  const ids = new Set(markers.map((m) => m.id));
+  session.state.overlays = [...session.state.overlays.filter((o) => !ids.has(o.id)), ...markers];
+  emit();
+}
+
+/** Hides, shows or deletes several markers at once; returns the ones it touched. */
+export function changeOverlays(ids: string[], action: "hide" | "show" | "delete"): GroupOverlay[] {
+  const set = new Set(ids);
+  const hit = session.state.overlays.filter((o) => set.has(o.id));
+  session.state.overlays =
+    action === "delete"
+      ? session.state.overlays.filter((o) => !set.has(o.id))
+      : session.state.overlays.map((o) => (set.has(o.id) ? { ...o, visible: action === "show" } : o));
+  emit();
+  return hit;
 }
 
 let frameSeq = 0;

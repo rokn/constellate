@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { EMPTY_FILTER, describe, isActive } from "../../shared/filter";
-import type { GroupOverlay, Lens, LogicalModule, MapFilter, RepoGraph, SavedFilter } from "../../shared/types";
+import type { Frame, GroupOverlay, Lens, LogicalModule, MapFilter, RepoGraph, SavedFilter } from "../../shared/types";
 import { territoryColors } from "../lib/colors";
 
 export const OTHER = "__other";
@@ -469,14 +469,16 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
 
 export { describe as describeFilter };
 
-/* -------------------------------- groups -------------------------------- */
+/* -------------------------------- markers ------------------------------- */
 
 /**
- * Groups marked on top of the map. Making one never moves anything — it
- * draws a beacon over its files, in whatever organization the map is in.
+ * Markers on top of the map. Making one never moves anything — it draws a
+ * beacon over its files, in whatever organization the map is in. The ones an
+ * answer made are listed under it, to hide or delete together.
  */
 export function GroupsPanel({
   overlays,
+  frames,
   focusCount,
   focusLabel,
   filterCount,
@@ -485,10 +487,13 @@ export function GroupsPanel({
   onAskNavigator,
   onToggle,
   onRemove,
+  onAnswer,
   onFly,
   onClose,
 }: {
   overlays: GroupOverlay[];
+  /** For naming the answer each marker came from. */
+  frames: Frame[];
   focusCount: number;
   focusLabel?: string;
   filterCount: number | null;
@@ -497,6 +502,8 @@ export function GroupsPanel({
   onAskNavigator: (what: string) => void;
   onToggle: (id: string, visible: boolean) => void;
   onRemove: (id: string) => void;
+  /** Hide, show or delete every marker one answer made. */
+  onAnswer: (frameId: string, action: "hide" | "show" | "delete") => void;
   onFly: (g: GroupOverlay) => void;
   onClose: () => void;
 }) {
@@ -506,6 +513,21 @@ export function GroupsPanel({
   const [label, setLabel] = useState(focusLabel ?? "");
   const [pattern, setPattern] = useState("");
   const [ask, setAsk] = useState("");
+
+  // Yours first, then each answer's, in the order they were made.
+  const sections = useMemo(() => {
+    const by = new Map<string | undefined, GroupOverlay[]>();
+    for (const g of overlays) {
+      const k = g.frameId && frames.some((f) => f.id === g.frameId) ? g.frameId : undefined;
+      by.set(k, [...(by.get(k) ?? []), g]);
+    }
+    return [...by]
+      .sort(([a], [b]) => (a === undefined ? -1 : b === undefined ? 1 : 0))
+      .map(([frameId, items]) => {
+        const f = frames.find((x) => x.id === frameId);
+        return { frameId, title: f?.request || f?.title || "", items };
+      });
+  }, [overlays, frames]);
 
   const sources = [
     { id: "focus" as const, title: `What's in focus (${focusCount})`, ok: focusCount > 0 },
@@ -530,7 +552,7 @@ export function GroupsPanel({
   return (
     <div className="glass rise pointer-events-auto w-[min(400px,calc(100vw-2rem))] space-y-3 rounded-xl p-3.5">
       <div className="flex items-center justify-between">
-        <h2 className="font-cond text-[18px] font-semibold">Groups</h2>
+        <h2 className="font-cond text-[18px] font-semibold">Markers</h2>
         <div className="flex gap-1">
           {overlays.length > 1 && (
             <button
@@ -548,43 +570,62 @@ export function GroupsPanel({
         </div>
       </div>
       <p className="text-[12.5px] leading-snug text-muted">
-        A group is drawn over its files as a beacon. The map keeps its current layout.
+        A marker is drawn over its files as a beacon. The map keeps its current layout.
       </p>
 
-      {overlays.length > 0 && (
-        <ul className="space-y-0.5">
-          {overlays.map((g) => (
-            <li key={g.id} className={`flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5 ${g.visible ? "" : "opacity-55"}`}>
+      {sections.map((sec) => (
+        <div key={sec.frameId ?? "yours"} className="space-y-0.5">
+          {sec.frameId && (
+            <div className="flex items-baseline gap-2 px-1.5 pt-1 text-[12px] text-muted">
+              <span className="min-w-0 flex-1 truncate" title={sec.title}>
+                From “{sec.title}”
+              </span>
               <button
-                role="switch"
-                aria-checked={g.visible}
-                onClick={() => onToggle(g.id, !g.visible)}
-                title={g.visible ? "Hide" : "Show"}
-                className="h-3 w-3 shrink-0 rounded-full border-2"
-                style={{ borderColor: g.color, background: g.visible ? g.color : "transparent" }}
-              />
-              <button onClick={() => onFly(g)} className="min-w-0 flex-1 truncate text-left text-[13px] hover:text-course" title={g.summary || "Fly there"}>
-                {g.label}
-              </button>
-              <span className="text-[11.5px] tabular-nums text-muted">{g.paths.length}</span>
-              {g.createdBy === "navigator" && <span className="text-[11px] text-muted" title="Marked by the navigator">nav</span>}
-              <button
-                onClick={() => onToggle(g.id, !g.visible)}
-                className="w-10 shrink-0 rounded px-1 text-[12px] text-muted hover:bg-white/5 hover:text-text"
-                title={g.visible ? "Hide from the map — it stays here" : "Show on the map"}
+                onClick={() => onAnswer(sec.frameId!, sec.items.some((g) => g.visible) ? "hide" : "show")}
+                className="shrink-0 rounded px-1 hover:bg-white/5 hover:text-text"
+                title="Every marker this answer made"
               >
-                {g.visible ? "Hide" : "Show"}
+                {sec.items.some((g) => g.visible) ? "Hide" : "Show"}
               </button>
-              <button onClick={() => onRemove(g.id)} className="rounded px-1 text-[12px] text-muted hover:text-bad" aria-label={`Remove ${g.label}`}>
-                ✕
+              <button onClick={() => onAnswer(sec.frameId!, "delete")} className="shrink-0 rounded px-1 hover:text-bad" title="Delete every marker this answer made">
+                Delete
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
+            </div>
+          )}
+          <ul className="space-y-0.5">
+            {sec.items.map((g) => (
+    <li key={g.id} className={`flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5 ${g.visible ? "" : "opacity-55"}`}>
+      <button
+        role="switch"
+        aria-checked={g.visible}
+        onClick={() => onToggle(g.id, !g.visible)}
+        title={g.visible ? "Hide" : "Show"}
+        className="h-3 w-3 shrink-0 rounded-full border-2"
+        style={{ borderColor: g.color, background: g.visible ? g.color : "transparent" }}
+      />
+      <button onClick={() => onFly(g)} className="min-w-0 flex-1 truncate text-left text-[13px] hover:text-course" title={g.summary || "Fly there"}>
+        {g.label}
+      </button>
+      <span className="text-[11.5px] tabular-nums text-muted">{g.paths.length}</span>
+      {g.createdBy === "navigator" && <span className="text-[11px] text-muted" title="Marked by the navigator">nav</span>}
+      <button
+        onClick={() => onToggle(g.id, !g.visible)}
+        className="w-10 shrink-0 rounded px-1 text-[12px] text-muted hover:bg-white/5 hover:text-text"
+        title={g.visible ? "Hide from the map — it stays here" : "Show on the map"}
+      >
+        {g.visible ? "Hide" : "Show"}
+      </button>
+      <button onClick={() => onRemove(g.id)} className="rounded px-1 text-[12px] text-muted hover:text-bad" aria-label={`Remove ${g.label}`}>
+        ✕
+      </button>
+    </li>
+            ))}
+          </ul>
+        </div>
+      ))}
 
       <div className="space-y-2 border-t border-line pt-3">
-        <p className="text-[12.5px] text-muted">New group from</p>
+        <p className="text-[12.5px] text-muted">New marker from</p>
         <div className="flex flex-wrap gap-1.5">
           {sources.map((s) => (
             <button
@@ -620,9 +661,9 @@ export function GroupsPanel({
               <input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="Group name"
+                placeholder="Marker name"
                 className="w-full rounded-md border border-line bg-panelsolid px-2.5 py-1.5 text-[13px] focus:border-course/60 focus:outline-none"
-                aria-label="Group name"
+                aria-label="Marker name"
               />
               {from === "pattern" && (
                 <input
@@ -639,7 +680,7 @@ export function GroupsPanel({
             disabled={from === "navigator" && busy}
             className="rounded-md bg-course px-3 py-1 font-cond text-[15px] font-semibold text-night disabled:opacity-50"
           >
-            {from === "navigator" ? "Ask to mark it" : "Add group"}
+            {from === "navigator" ? "Ask to mark it" : "Add marker"}
           </button>
         </form>
       </div>

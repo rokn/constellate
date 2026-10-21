@@ -5,7 +5,7 @@ import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import type { Frame, ScreenContext, UiCommand, View } from "../shared/types";
 import { ask, interrupt } from "./navigator";
 import { findPath } from "./scan";
-import { addOverlay, findView, removeOverlay, session, subscribe } from "./session";
+import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -69,11 +69,16 @@ const TOOLS = [
   }, ["span"]),
   fn("clear_history", "Back to the present: stop showing history on the map."),
   fn("replay_history", "Play through the commits toward the present, one at a time: the map turns to each commit in turn."),
-  fn("mark_group", "Mark a group of files on top of the map by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a group that needs the code read to choose, ask the navigator.", {
+  fn("add_marker", "Put a marker on files by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a marker that needs the code read to choose its files, ask the navigator.", {
     label: { type: "string" },
     include: { type: "array", items: { type: "string" } },
   }, ["label", "include"]),
-  fn("remove_group", "Remove a marked group (ids from the marked groups list).", { groupId: { type: "string" } }, ["groupId"]),
+  fn("edit_markers", "Hide, show or delete markers: by id (from the markers list), every marker one answer made (its answer id), or all of them. Delete only when they ask to remove or delete; otherwise hide.", {
+    action: { type: "string", enum: ["hide", "show", "delete"] },
+    ids: { type: "array", items: { type: "string" } },
+    answerId: { type: "string" },
+    all: { type: "boolean" },
+  }, ["action"]),
   fn("set_lens", "Organize the map by an existing grouping: 'folders', 'modules', or one of the lens ids listed. To get a NEW grouping (by layer, by feature…), ask the navigator for it.", {
     lensId: { type: "string" },
   }, ["lensId"]),
@@ -86,7 +91,7 @@ const TOOLS = [
 ];
 
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "remove_group"]);
+const SILENT = new Set(["clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
 
@@ -163,7 +168,7 @@ function instructions(screen: ScreenContext): string {
       : "The map is still being charted — the navigator is reading the repo. If they talk to you, say so in a line and let them look around.",
     `Ways to organize the map (for set_lens): [folders] by directory${o ? "; [modules] the logical modules" : ""}${s.lenses.map((l) => `; [${l.id}] ${l.title} — ${l.description}`).join("")}`,
     s.overlays.length
-      ? `Groups marked on the map (for remove_group): ${s.overlays.map((g) => `[${g.id}] ${g.label} — ${g.paths.length} files${g.visible ? "" : " (hidden)"}`).join("; ")}`
+      ? `Markers on the map (for edit_markers): ${s.overlays.map((g) => `[${g.id}] ${g.label} — ${g.paths.length} files${g.frameId ? `, from answer ${g.frameId}` : ""}${g.visible ? "" : " (hidden)"}`).join("; ")}`
       : "",
     screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.lens ? `The map is organized by: ${screen.lens}.` : "",
@@ -393,7 +398,7 @@ function bridge(client: WebSocket) {
       case "replay_history":
         command({ cmd: "replay" });
         return { ok: true, say: "Narrate each commit briefly as it flies by." };
-      case "mark_group": {
+      case "add_marker": {
         const include = Array.isArray(args.include) ? args.include.map(String).filter(Boolean) : [];
         const paths = idx ? [...(applyFilter(idx.graph.files, { ...EMPTY_FILTER, include }) ?? [])] : [];
         if (!str("label") || !paths.length) return { ok: false, error: "Nothing matches those patterns." };
@@ -401,9 +406,16 @@ function bridge(client: WebSocket) {
         const g = addOverlay({ label: str("label"), summary: "", paths, reasons: Object.fromEntries(paths.map((p) => [p, why])), createdBy: "you" });
         return { ok: true, files: g.paths.length };
       }
-      case "remove_group":
-        removeOverlay(str("groupId"));
-        return { ok: true };
+      case "edit_markers": {
+        const action = str("action") as "hide" | "show" | "delete";
+        if (!["hide", "show", "delete"].includes(action)) return { ok: false, error: "Unknown action." };
+        const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
+        const answer = str("answerId");
+        const picked = session.state.overlays.filter((o) => args.all === true || ids.includes(o.id) || (!!answer && o.frameId === answer));
+        if (!picked.length) return { ok: false, error: "No markers match." };
+        changeOverlays(picked.map((o) => o.id), action);
+        return { ok: true, count: picked.length };
+      }
       case "set_lens": {
         const id = str("lensId");
         const known = id === "folders" || (id === "modules" && !!session.state.overview) || session.state.lenses.some((l) => l.id === id);

@@ -40,7 +40,7 @@ It has no login of its own, so put it behind an authenticating proxy before expo
 | `Esc` | Close the top thing, and last of all show every module again |
 | `o` | Overview |
 | `[` `]` | Back and forward through what you've opened |
-| `f` / `g` | Filter / groups |
+| `f` / `m` | Filter / markers on the map |
 | `h` | History: the map at each commit, `↑` `↓` to step |
 | `a` | Answers so far |
 | `n` | Note on the open file or hovered import |

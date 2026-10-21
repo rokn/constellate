@@ -15,6 +15,7 @@ import {
   removeLens,
   setModules,
   addOverlay,
+  changeOverlays,
   addView,
   getFrame,
   newFrame,
@@ -59,7 +60,8 @@ const FLIGHT_TOOLS = [
   "get_lens",
   "revise_lens",
   "remove_lens",
-  "add_groups",
+  "add_markers",
+  "edit_markers",
   "history",
   "show_diff",
   "set_time_range",
@@ -318,13 +320,14 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
         },
       ),
       tool(
-        "add_groups",
+        "add_markers",
         [
-          "Mark groups on top of the map without reorganizing it: each becomes a coloured beacon over its files, with spokes to each one, while the current layout and separation stay exactly as they are.",
-          "Use it to point out cross-cutting sets — everything that touches billing, the hot path of a request, the files a change would ripple into — or when they ask to group or mark something without asking to reorganize.",
+          "Put markers on top of the map without reorganizing it: each becomes a coloured beacon over its files, with spokes to each one, while the current layout and separation stay exactly as they are.",
+          "Use it to point out cross-cutting sets — everything that touches billing, the hot path of a request, the files a change would ripple into — or when they ask to mark something, or group it without asking to reorganize.",
+          "Markers are not groupings: a grouping (set_lens) reorganizes the whole map; a marker only points.",
         ].join(" "),
         {
-          groups: z
+          markers: z
             .array(
               z.object({
                 label: z.string().describe("2–4 words"),
@@ -340,7 +343,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
             .max(8),
         },
         async (a) => {
-          const made = a.groups
+          const made = a.markers
             .map((g) => {
               // Each entry's reason covers every file it expands to.
               const reasons: Record<string, string> = {};
@@ -355,9 +358,40 @@ function flightServer(frameId: string | null, mode: "intro" | "ask") {
               return { ...g, paths: paths.slice(0, 1500), reasons };
             })
             .filter((g) => g.paths.length)
-            .map((g) => addOverlay({ label: g.label, summary: g.summary, paths: g.paths, reasons: g.reasons, createdBy: "navigator" }));
+            .map((g) =>
+              addOverlay({ label: g.label, summary: g.summary, paths: g.paths, reasons: g.reasons, createdBy: "navigator", frameId: frameId ?? undefined }),
+            );
           if (!made.length) return fail("None of those paths are in the repository.");
-          return ok(`Marked ${made.map((m) => `"${m.label}" (${m.paths.length} files)`).join(", ")} on the map. The layout is unchanged.`);
+          return ok(`Marked ${made.map((m) => `"${m.label}" [${m.id}] (${m.paths.length} files)`).join(", ")} on the map. The layout is unchanged.`);
+        },
+      ),
+      tool(
+        "edit_markers",
+        [
+          "Hide, show or delete markers on the map. Pick them by id (the screen note lists every marker with its id and the answer that made it), by `answer` — every marker one answer made, using the answer's id, or 'this' for the answer you're writing now — or with `all`.",
+          "Hidden markers stay in their list for the reader to bring back; deleted ones are gone. Only delete when they ask to remove or delete; 'hide', 'clear' or 'get rid of for now' means hide.",
+        ].join(" "),
+        {
+          action: z.enum(["hide", "show", "delete"]),
+          ids: z.array(z.string()).optional().describe("Marker ids"),
+          answer: z.string().optional().describe("An answer's id, or 'this': every marker that answer made"),
+          all: z.boolean().optional().describe("Every marker on the map"),
+        },
+        async (a) => {
+          const answer = a.answer === "this" ? frameId : a.answer;
+          const picked = session.state.overlays.filter(
+            (o) => a.all || a.ids?.includes(o.id) || (!!answer && o.frameId === answer),
+          );
+          if (!picked.length) {
+            const list = session.state.overlays.map((o) => `[${o.id}] ${o.label}`).join("; ");
+            return fail(`No markers match. ${list ? `On the map: ${list}.` : "There are none on the map."}`);
+          }
+          changeOverlays(
+            picked.map((o) => o.id),
+            a.action,
+          );
+          const done = { hide: "Hid", show: "Showed", delete: "Deleted" }[a.action];
+          return ok(`${done} ${picked.map((o) => `"${o.label}"`).join(", ")}.`);
         },
       ),
       tool(
@@ -716,7 +750,7 @@ Static vs logical: static dependencies are the import graph. Logical dependencie
 
 Shaping the map: when a question is about part of the codebase, filter_map can hide the rest so the reader only flies through what matters. When they want the code organized differently from folders — layers, features, services, data flow — publish a grouping with set_lens; the map regroups itself.
 
-Changing a grouping they already have is not a new grouping. If they're in a grouping (or in Modules) and ask for something that reads as a change to it — split this group, merge those, move these files over, rename it, add a group for X, take Y out — revise it in place with revise_lens (get_lens first, to see what it holds). The screen note says which grouping is showing and its id; "this module", "that group" and the like mean that grouping. Only publish a new grouping with set_lens when they ask for a different way of organizing the code altogether. When it's unclear, prefer the in-place edit: a duplicate grouping with one change is clutter they have to clean up. remove_lens is for when they ask to delete one. To point out a set of files without disturbing the layout — or when they ask to group or mark something but not to reorganize — use add_groups, which draws beacons on top of whatever organization they're in. Both are cheap; use them when they help.
+Changing a grouping they already have is not a new grouping. If they're in a grouping (or in Modules) and ask for something that reads as a change to it — split this group, merge those, move these files over, rename it, add a group for X, take Y out — revise it in place with revise_lens (get_lens first, to see what it holds). The screen note says which grouping is showing and its id; "this module", "that group" and the like mean that grouping. Only publish a new grouping with set_lens when they ask for a different way of organizing the code altogether. When it's unclear, prefer the in-place edit: a duplicate grouping with one change is clutter they have to clean up. remove_lens is for when they ask to delete one. To point out a set of files without disturbing the layout — or when they ask to mark something, or to group it but not to reorganize — use add_markers, which draws beacons on top of whatever organization they're in. Both are cheap; use them when they help. Markers stay until removed: when they ask to hide, clear or delete markers — one, the ones from an answer, or all of them — use edit_markers; "this answer" is the one they have open (the screen note says which).
 
 History: you can read git history (history), show real diffs (show_diff), and light a span of history on the map (set_time_range). For questions about what changed, when, why, or what tends to change together, ground the answer in commits and diffs rather than the current code alone.
 
@@ -835,6 +869,17 @@ function notesOn(path?: string): string {
     .join("\n")}`;
 }
 
+/** The markers on the map, with ids and the answer that made each, for edit_markers. */
+function markersNote(): string {
+  const ms = session.state.overlays;
+  if (!ms.length) return "";
+  const from = (id?: string) => {
+    const f = id ? getFrame(id) : undefined;
+    return f ? `from answer [${f.id}] "${f.title}"` : "marked by them";
+  };
+  return `Markers on the map: ${ms.map((o) => `[${o.id}] ${o.label} (${o.paths.length} files, ${from(o.frameId)}${o.visible ? "" : ", hidden"})`).join("; ")}.`;
+}
+
 function screenNote(screen?: ScreenContext): string {
   if (!screen) return "";
   const bits = [
@@ -844,6 +889,8 @@ function screenNote(screen?: ScreenContext): string {
     screen.lens ? `The map is organized by ${screen.lens}${screen.lensId && screen.lensId !== "folders" ? ` (grouping id: ${screen.lensId})` : ""}.` : "",
     screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
+    screen.frameId && getFrame(screen.frameId) ? `They have your answer [${screen.frameId}] "${getFrame(screen.frameId)!.title}" open — "this answer" means it.` : "",
+    markersNote(),
     screen.selection ? `They have selected this text — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 2000)}\n"""` : "",
   ].filter(Boolean);
   return bits.length ? `\n\n[What's on their screen]\n${bits.join("\n")}` : "";
@@ -899,8 +946,11 @@ function narrate(msg: SDKMessage, root: string) {
       case "show_diff":
         pushActivity({ kind: "tool", detail: `Cutting the diff of ${String(input.path)}` });
         break;
-      case "add_groups":
-        pushActivity({ kind: "tool", detail: "Marking groups on the map" });
+      case "add_markers":
+        pushActivity({ kind: "tool", detail: "Marking the map" });
+        break;
+      case "edit_markers":
+        pushActivity({ kind: "tool", detail: `${{ hide: "Hiding", show: "Showing", delete: "Deleting" }[String(input.action)] ?? "Changing"} markers` });
         break;
       case "set_lens":
         pushActivity({ kind: "tool", detail: `Regrouping the map ${String(input.title ?? "")}`.trim() });

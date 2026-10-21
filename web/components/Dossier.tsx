@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Activity, Frame, View } from "../../shared/types";
+import type { Activity, Frame, GroupOverlay, View } from "../../shared/types";
 import { CodeBlock } from "./CodeBlock";
 import { CustomView } from "./CustomView";
 import { DiagramView } from "./DiagramView";
@@ -24,6 +24,9 @@ export function Dossier({
   onClose,
   onOpenFile,
   onRetry,
+  markers,
+  onMarkers,
+  onFlyMarker,
 }: {
   frames: Frame[];
   frameId: string;
@@ -33,6 +36,10 @@ export function Dossier({
   onClose: () => void;
   onOpenFile: (path: string, line?: number, endLine?: number) => void;
   onRetry: (frame: Frame) => void;
+  /** The markers this answer put on the map. */
+  markers: GroupOverlay[];
+  onMarkers: (action: "hide" | "show" | "delete") => void;
+  onFlyMarker: (g: GroupOverlay) => void;
 }) {
   const i = frames.findIndex((f) => f.id === frameId);
   const frame = frames[i];
@@ -88,6 +95,31 @@ export function Dossier({
         ) : working ? (
           <p className="text-[14px] text-muted">{latest?.detail ?? "Setting a course…"}</p>
         ) : null}
+
+        {markers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted">
+            <span>Marked on the map:</span>
+            {markers.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => onFlyMarker(g)}
+                className={`inline-flex items-center gap-1 hover:text-text ${g.visible ? "" : "opacity-55"}`}
+                title={g.summary || "Fly there"}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ background: g.visible ? g.color : "transparent", border: `1.5px solid ${g.color}` }} />
+                {g.label}
+              </button>
+            ))}
+            <span className="ml-auto flex gap-1">
+              <button onClick={() => onMarkers(markers.some((g) => g.visible) ? "hide" : "show")} className="rounded px-1.5 hover:bg-white/5 hover:text-text">
+                {markers.some((g) => g.visible) ? "Hide" : "Show"}
+              </button>
+              <button onClick={() => onMarkers("delete")} className="rounded px-1.5 hover:text-bad">
+                Delete
+              </button>
+            </span>
+          </div>
+        )}
 
         {frame.state === "error" && (
           <div className="rounded-md border border-bad/40 bg-bad/10 px-3 py-2 text-[13.5px] text-bad">

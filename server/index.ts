@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Lens, Note, NoteTarget, ScreenContext, StorySettings, ViewSettings } from "../shared/types";
+import type { GroupOverlay, Lens, Note, NoteTarget, ScreenContext, StorySettings, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro } from "./navigator";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
@@ -11,6 +11,8 @@ import { changesSince, commitMessage, diffFile, graphAt, loadHistory } from "./h
 import {
   addNote,
   addOverlay,
+  changeOverlays,
+  restoreOverlays,
   dropOverview,
   openRepo,
   pullRemote,
@@ -317,10 +319,14 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       return json(res, 400, { error: "Unknown action." }), true;
     }
     case "POST /api/overlays": {
-      // Groups you mark yourself: from the focus, the filter, or patterns.
+      // Markers you add yourself: from the focus, the filter, or patterns.
       const b = await body<{
-        action?: "add" | "update" | "delete";
+        action?: "add" | "update" | "delete" | "restore";
         id?: string;
+        /** update / delete: every marker this answer made. */
+        frameId?: string;
+        /** restore: markers deleted a moment ago, put back as they were. */
+        markers?: GroupOverlay[];
         label?: string;
         summary?: string;
         paths?: string[];
@@ -330,6 +336,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
         why?: string;
       }>(req);
       if (!session.idx) return json(res, 400, { error: "No repository open." }), true;
+      if (b.action === "restore" && Array.isArray(b.markers)) {
+        restoreOverlays(b.markers);
+        return json(res, 200, { ok: true }), true;
+      }
+      if ((b.action === "delete" || b.action === "update") && b.frameId) {
+        const ids = session.state.overlays.filter((o) => o.frameId === b.frameId).map((o) => o.id);
+        changeOverlays(ids, b.action === "delete" ? "delete" : b.visible ? "show" : "hide");
+        return json(res, 200, { ok: true, count: ids.length }), true;
+      }
       if (b.action === "delete" && b.id) {
         removeOverlay(b.id);
         return json(res, 200, { ok: true }), true;
@@ -341,7 +356,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       const known = new Set(session.idx.graph.files.map((f) => f.path));
       const paths = b.paths?.filter((p) => known.has(p)) ??
         [...(applyFilter(session.idx.graph.files, { ...EMPTY_FILTER, include: b.include ?? [] }) ?? [])];
-      if (!b.label?.trim() || !paths.length) return json(res, 400, { error: "A group needs a name and at least one file." }), true;
+      if (!b.label?.trim() || !paths.length) return json(res, 400, { error: "A marker needs a name and at least one file." }), true;
       const why = b.why?.trim() || (b.include?.length ? `matches ${b.include.join(", ")}` : "");
       const o = addOverlay({
         label: b.label.trim(),

@@ -195,9 +195,9 @@ export const SECTIONS: Section[] = [
       r("particles", "Particles per link", 0, 8, 1),
       r("particleSpeed", "Particle speed", 0.1, 4, 0.05),
       r("particleSize", "Particle size", 0.2, 4, 0.05),
-      r("groupSpokes", "Group spokes", 0, 1, 0.01, "Lines from a marked group's beacon to its files"),
+      r("groupSpokes", "Marker spokes", 0, 1, 0.01, "Lines from a marker's beacon to its files"),
       r("groupBeaconSize", "Group beacon size", 0.3, 3, 0.05),
-      r("groupRings", "Group rings", 0, 1, 0.01, "Rings around files in marked groups, one per group"),
+      r("groupRings", "Marker rings", 0, 1, 0.01, "Rings around marked files, one per marker"),
     ],
   },
   {

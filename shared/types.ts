@@ -116,11 +116,6 @@ export type Lens = {
   createdAt: number;
 };
 
-/**
- * A group marked on top of the map — "everything touching billing", "the
- * hot path" — without reorganizing it. Drawn as a beacon over its files; the
- * layout, and whatever separation it has, stays exactly as it is.
- */
 /** Where a note is pinned: a file, or an import line between two files. */
 export type NoteTarget = { kind: "file"; path: string } | { kind: "link"; from: string; to: string };
 
@@ -133,6 +128,12 @@ export type Note = {
   updatedAt: number;
 };
 
+/**
+ * A marker on top of the map — "everything touching billing", "the hot
+ * path" — that points at files without reorganizing them. Drawn as a beacon
+ * over its files; the layout, and whatever separation it has, stays exactly
+ * as it is.
+ */
 export type GroupOverlay = {
   id: string;
   label: string;
@@ -143,6 +144,8 @@ export type GroupOverlay = {
   color: string;
   visible: boolean;
   createdBy: "you" | "navigator";
+  /** The answer that marked it, so an answer's markers can go together. */
+  frameId?: string;
   createdAt: number;
 };
 
