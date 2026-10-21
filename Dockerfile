@@ -2,7 +2,7 @@
 # on first start (see docker/entrypoint.sh); everything the app writes —
 # groupings, notes, answers, voiced audio — lives under /data too.
 
-FROM golang:1.26-bookworm AS gopls
+FROM golang:1.27-bookworm AS gopls
 # gopls powers go-to-definition and hovers in the code panel for Go repos.
 RUN GOBIN=/out go install golang.org/x/tools/gopls@v0.24.0
 
@@ -17,7 +17,7 @@ FROM node:24-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git openssh-client ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=golang:1.26-bookworm /usr/local/go /usr/local/go
+COPY --from=golang:1.27-bookworm /usr/local/go /usr/local/go
 COPY --from=gopls /out/gopls /usr/local/bin/gopls
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
