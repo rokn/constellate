@@ -37,7 +37,7 @@ It has no login of its own, so put it behind an authenticating proxy before expo
 | --- | --- |
 | `/` or `⌘K` | Ask the navigator, or jump to a file, symbol or module |
 | `Space` | Frame the selection: the file, then the file with its connections |
-| `Esc` | Close the top thing, and last of all show every module again |
+| `Esc` | Close the top thing, and last of all undo "show only" (modules you hid stay hidden) |
 | `o` | Overview |
 | `[` `]` | Back and forward through what you've opened |
 | `f` / `m` | Filter / markers on the map |

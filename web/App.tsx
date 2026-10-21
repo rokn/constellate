@@ -1169,8 +1169,14 @@ export function App() {
           setEmphasis([]);
           setFocusLabel(undefined);
         }
-        // Nothing else on screen: the last step back is the whole map again.
-        else if (filter.isolate?.length) setFilter((f) => ({ ...f, isolate: undefined }));
+        // Nothing else on screen: the last step back undoes "show only" — but
+        // what you hid by hand stays hidden; that's a choice, not a view.
+        else if (filter.isolate?.some((i) => !i.exclude)) {
+          setFilter((f) => {
+            const kept = f.isolate?.filter((i) => i.exclude);
+            return { ...f, isolate: kept?.length ? kept : undefined };
+          });
+        }
         else setIntroDone(true);
       } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && historyOpen && listed.length) {
         // Down is older, as the list reads.
