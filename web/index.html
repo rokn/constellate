@@ -6,7 +6,9 @@
     <title>Constellate</title>
     <meta name="description" content="Fly through a codebase with a navigator at your side." />
     <meta name="theme-color" content="#060b16" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- With credentials: behind an authenticating proxy, a manifest fetched
+         without the login cookie gets the login page, and the app can't install. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
     <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
