@@ -12,7 +12,13 @@ import { DiagramView } from "./DiagramView";
 import { DiffStat, DiffView, parseDiff } from "./DiffView";
 
 /** What the page can do to a story from outside: pause it, and ask where it is. */
-export type StoryControl = { pause: () => void; where: () => { beat: number; ms: number } };
+export type StoryControl = {
+  pause: () => void;
+  where: () => { beat: number; ms: number; playing: boolean };
+  /** For the headset's story panel, which has its own play button. */
+  toggle: () => void;
+  seek: (beat: number) => void;
+};
 
 const SPEED_KEY = "codeflight.storySpeed";
 const STOP_KEY = "codeflight.storyStopEachBeat";
@@ -97,7 +103,13 @@ export function StoryPlayer({
     onEnd: () => next && onPick(next.id, true),
   });
 
-  if (control) control.current = { pause: player.pause, where: () => ({ beat: player.beat, ms: player.ms }) };
+  if (control)
+    control.current = {
+      pause: player.pause,
+      where: () => ({ beat: player.beat, ms: player.ms, playing: player.playing }),
+      toggle: player.toggle,
+      seek: (beat) => player.seek(beat, 0),
+    };
   const onBeatRef = useRef(onBeat);
   onBeatRef.current = onBeat;
   useEffect(() => onBeatRef.current?.(player.beat, player.playing), [player.beat, player.playing]);

@@ -1,0 +1,237 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { LibraryRepo } from "../../shared/types";
+import { fetchFile, type FileData } from "../lib/api";
+import type { Mode } from "./engine";
+import type { MapHit, MapInput, MapStyle } from "./map";
+import type { Actions, AppActions, AppModel, Model } from "./model";
+import type { Room, StorySource } from "./room";
+import { suggest } from "./suggest";
+
+/**
+ * The headset, as part of the desktop app. Finds out whether a headset is
+ * there (a Quest's browser, or a PC with Link or SteamVR connected) and, only
+ * then, loads the room. While you're in it, the room draws the desktop's own
+ * state: the same open file, focus, answers and filter, so you can go in and
+ * out without losing your place. The menu, keyboard and AR placement are the
+ * headset's own; everything else calls back into the desktop app.
+ */
+
+export type TagLine = { text: string; color?: string; bold?: boolean; mono?: boolean };
+
+export type AppHandlers = {
+  onPick: (hit: MapHit) => void;
+  describe: (hit: MapHit) => TagLine[];
+  onBackground: () => void;
+  onButton: (b: "back" | "forward" | "voice" | "overview" | "frame") => void;
+};
+
+export type XRFeed = {
+  model: AppModel;
+  actions: AppActions;
+  handlers: AppHandlers;
+  map: MapInput | null;
+  style: MapStyle;
+  story: StorySource;
+};
+
+export type XR = ReturnType<typeof useXR>;
+
+export function useXR(feed: XRFeed) {
+  const [support, setSupport] = useState({ vr: false, ar: false });
+  const [room, setRoom] = useState<Room | null>(null);
+  const [mode, setMode] = useState<Mode>("flat");
+  const [placing, setPlacing] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
+  const [fileData, setFileData] = useState<FileData | null>(null);
+  const [repos, setRepos] = useState<LibraryRepo[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [entering, setEntering] = useState(false);
+  const feedRef = useRef(feed);
+  feedRef.current = feed;
+  const roomRef = useRef<Room | null>(null);
+  const presenting = mode !== "flat";
+
+  // Is there a headset? Asked again whenever one is plugged in or taken away.
+  useEffect(() => {
+    const xr = navigator.xr;
+    if (!xr) return;
+    let live = true;
+    const check = () =>
+      void Promise.all([xr.isSessionSupported("immersive-vr").catch(() => false), xr.isSessionSupported("immersive-ar").catch(() => false)]).then(
+        ([vr, ar]) => live && setSupport({ vr, ar }),
+      );
+    check();
+    xr.addEventListener("devicechange", check);
+    return () => {
+      live = false;
+      xr.removeEventListener("devicechange", check);
+    };
+  }, []);
+  // There is one: fetch the room now, so pressing the button goes straight in.
+  useEffect(() => {
+    if (support.vr || support.ar) void import("./room");
+  }, [support.vr, support.ar]);
+
+  /* ------------------------------- actions ------------------------------- */
+
+  const menuRef = useRef(menuOpen);
+  menuRef.current = menuOpen;
+  const keyboardRef = useRef(keyboard);
+  keyboardRef.current = keyboard;
+
+  const own = useRef<Partial<Actions>>({});
+  own.current = {
+    toggleMenu: () => setMenuOpen((o) => !o),
+    openKeyboard: (m, target) => {
+      setMenuOpen(false);
+      setKeyboard({ mode: m, target });
+    },
+    closeKeyboard: () => setKeyboard(null),
+    submitKeyboard: (text) => {
+      const kb = keyboardRef.current;
+      const a = feedRef.current.actions;
+      setKeyboard(null);
+      if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
+      else if (kb?.mode === "repo") a.openPath(text);
+      else if (text.startsWith("story:")) a.writeStory(text.slice(6));
+      else a.ask(text);
+    },
+    suggest: (q) => suggest(feedRef.current.map?.graph ?? null, feedRef.current.model.overview, q),
+    jump: (j) => {
+      const a = feedRef.current.actions;
+      setKeyboard(null);
+      if (j.kind === "module" && j.id) a.focusModule(j.id);
+      else if (j.path) a.openFile(j.path, j.line);
+    },
+    enter: (m) => void enter(m),
+    exitXR: () => roomRef.current?.engine.exit(),
+    placeMap: () => {
+      setMenuOpen(false);
+      setPlacing(true);
+      roomRef.current?.engine.startPlacing();
+    },
+    recenterPanels: () => roomRef.current?.engine.recenterPanels(),
+    // Going somewhere from the menu closes it, so you can see where you went.
+    showFrame: (id) => {
+      setMenuOpen(false);
+      feedRef.current.actions.showFrame(id);
+    },
+    playStory: (id) => {
+      setMenuOpen(false);
+      feedRef.current.actions.playStory(id);
+    },
+    startTour: () => {
+      setMenuOpen(false);
+      feedRef.current.actions.startTour();
+    },
+  };
+  /** Every action, current: the headset's own first, then the desktop's. */
+  const actions = useMemo(
+    () =>
+      new Proxy({} as Actions, {
+        get: (_t, k: string) => (...args: unknown[]) => {
+          const f = (own.current[k as keyof Actions] ?? feedRef.current.actions[k as keyof AppActions]) as (...a: unknown[]) => unknown;
+          return f(...args);
+        },
+      }),
+    [],
+  );
+
+  /* ------------------------------- sessions ------------------------------- */
+
+  const enter = useCallback(
+    async (m: "vr" | "ar") => {
+      setError(null);
+      setEntering(true);
+      try {
+        let r = roomRef.current;
+        if (!r) {
+          const { Room } = await import("./room");
+          r = new Room(
+            {
+              onPick: (h) => feedRef.current.handlers.onPick(h),
+              describe: (h) => feedRef.current.handlers.describe(h),
+              onBackground: () => (menuRef.current ? setMenuOpen(false) : feedRef.current.handlers.onBackground()),
+              onButton: (b) => {
+                if (b === "menu") return setMenuOpen((o) => !o);
+                if (b === "ask") return setKeyboard((k) => (k ? null : { mode: "ask" }));
+                feedRef.current.handlers.onButton(b);
+              },
+              onMode: (md) => {
+                setMode(md);
+                if (md === "flat") {
+                  setMenuOpen(false);
+                  setKeyboard(null);
+                  setPlacing(false);
+                }
+              },
+              onPlaced: () => setPlacing(false),
+              // In you go: to what you were looking at on the desktop, or the whole map.
+              onEntered: () => feedRef.current.actions.frameSelection(),
+            },
+            actions,
+            () => feedRef.current.story(),
+          );
+          roomRef.current = r;
+          setRoom(r);
+          // For poking at the room from devtools, and for scripted checks: ?debug.
+          if (import.meta.env.DEV || location.search.includes("debug")) (window as unknown as { __xr: unknown }).__xr = r.engine;
+        }
+        const f = feedRef.current;
+        r.setStyle(f.style);
+        if (f.map) r.setMap(f.map);
+        await r.engine.enter(m);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setEntering(false);
+      }
+    },
+    [actions],
+  );
+
+  /* ---------------------------- feeding the room ---------------------------- */
+
+  // The map is only kept up to date while you're in the headset; going in sends it fresh.
+  useEffect(() => {
+    if (room && presenting && feed.map) room.setMap(feed.map);
+  }, [room, presenting, feed.map]);
+  useEffect(() => {
+    if (room && presenting) room.setStyle(feed.style);
+  }, [room, presenting, feed.style]);
+
+  const path = feed.model.file?.path;
+  useEffect(() => {
+    if (!presenting || !path) return setFileData(null);
+    let live = true;
+    void fetchFile(path).then((d) => live && setFileData(d));
+    return () => {
+      live = false;
+    };
+  }, [presenting, path]);
+  useEffect(() => {
+    if (presenting && menuOpen && feed.model.library) void fetch("/api/repos").then((r) => (r.ok ? r.json() : [])).then(setRepos).catch(() => {});
+  }, [presenting, menuOpen, feed.model.library]);
+
+  useEffect(() => {
+    if (!room || !presenting) return;
+    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard });
+  });
+
+  /* --------------------------- the desktop's camera --------------------------- */
+
+  /** Whether the headset is showing the map right now (read at call time, not render time). */
+  const live = () => !!roomRef.current && roomRef.current.engine.mode !== "flat";
+  const camera = useMemo(
+    () => ({
+      flyTo: (p: string) => live() && roomRef.current!.engine.flyTo(p),
+      focus: (ps: string[]) => live() && roomRef.current!.engine.focus(ps),
+      overview: () => live() && roomRef.current!.engine.overview(),
+      pulse: (p: string) => live() && roomRef.current!.engine.map.pulse(p),
+    }),
+    [],
+  );
+
+  return { support, presenting, mode, entering, error, enter, camera };
+}

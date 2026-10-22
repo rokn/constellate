@@ -1,0 +1,907 @@
+import * as THREE from "three";
+import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerModelFactory.js";
+import { XRHandModelFactory } from "three/examples/jsm/webxr/XRHandModelFactory.js";
+import { MapView, type MapHit } from "./map";
+import { C, Panel, Tag } from "./ui";
+
+/**
+ * The room you stand in. One renderer serves three ways of looking:
+ *
+ *  - vr: an immersive session in the night sky, the map all around you;
+ *  - ar: passthrough on the Quest 3, the map a hologram in your room,
+ *        placeable on a table or the floor through hit-testing;
+ *  - flat: no headset, a mouse preview of the same scene (for the desktop,
+ *        and for checking a change without putting the headset on).
+ *
+ * You never move through the map: the map moves around you. Grabbing,
+ * scaling, thumbstick flight and every camera flight the navigator asks for
+ * move the world group, which keeps the real room (in AR) and your own body
+ * (in VR) where they are, and is the comfortable way to fly in a headset.
+ */
+
+export type Mode = "flat" | "vr" | "ar";
+export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
+export type Slot = "left" | "right" | "center" | "low" | "dock";
+
+export type EngineHandlers = {
+  onPick: (hit: MapHit) => void;
+  onBackground: () => void;
+  onButton: (b: Button) => void;
+  /** What the hover tag says about something on the map. */
+  describe: (hit: MapHit) => { text: string; color?: string; bold?: boolean; mono?: boolean }[];
+  onMode: (m: Mode) => void;
+  onPlaced?: () => void;
+  /** Each frame in the headset, before the panels paint. */
+  onFrame?: () => void;
+  /** A session just started. */
+  onEntered?: () => void;
+};
+
+type Grab = { p: Pointer; at0: THREE.Vector3 };
+type Press =
+  | { kind: "panel"; panel: Panel }
+  | { kind: "map"; hit: MapHit; from: THREE.Vector3 }
+  | { kind: "grab"; from: THREE.Vector3; moved: boolean };
+
+type Pointer = {
+  id: string;
+  kind: "controller" | "hand" | "mouse";
+  handedness: "left" | "right" | "none";
+  ray: THREE.Object3D;
+  line: THREE.Line;
+  dot: THREE.Mesh;
+  source?: XRInputSource;
+  origin: THREE.Vector3;
+  dir: THREE.Vector3;
+  hoverPanel: { panel: Panel; x: number; y: number } | null;
+  hoverMap: MapHit | null;
+  press: Press | null;
+  squeezing: boolean;
+  /** A panel held with the grip: it follows the hand. */
+  carry: { panel: Panel; offset: THREE.Matrix4 } | null;
+  buttons: boolean[];
+  /** Thumbstick turned past the snap threshold, waiting for it to come back. */
+  snapped: boolean;
+  lastHapticId: string | null;
+};
+
+const SNAP = THREE.MathUtils.degToRad(30);
+const MIN_SCALE = 0.00015;
+const MAX_SCALE = 0.25;
+const tmpM = new THREE.Matrix4();
+const tmpV = new THREE.Vector3();
+const Y = new THREE.Vector3(0, 1, 0);
+
+export class Engine {
+  readonly renderer: THREE.WebGLRenderer;
+  readonly scene = new THREE.Scene();
+  readonly camera: THREE.PerspectiveCamera;
+  /** Map units → metres. Everything the map is lives in here. */
+  readonly world = new THREE.Group();
+  readonly map = new MapView();
+  readonly hud = new THREE.Group();
+  mode: Mode = "flat";
+
+  private stars: THREE.Points;
+  private panels: Panel[] = [];
+  private slots = new Map<Panel, Slot>();
+  private pointers = new Map<string, Pointer>();
+  private grabs: Grab[] = [];
+  private grabStart: { pos: THREE.Vector3; quat: THREE.Quaternion; scale: number; a: THREE.Vector3; b?: THREE.Vector3 } | null = null;
+  private flight: { fromP: THREE.Vector3; fromQ: THREE.Quaternion; fromS: number; toP: THREE.Vector3; toQ: THREE.Quaternion; toS: number; t0: number; ms: number } | null = null;
+  private tag = new Tag();
+  private timer = new THREE.Timer();
+  private session: XRSession | null = null;
+  private hitSource: XRHitTestSource | null = null;
+  private reticle: THREE.Mesh;
+  placing = false;
+  /** Where the map was put down in your room (AR), for the overview to return to. */
+  private anchor: THREE.Vector3 | null = null;
+  private mouse = { x: 0, y: 0, down: -1, lastX: 0, lastY: 0, moved: false, keys: new Set<string>() };
+  private dockYaw = 0;
+  /** When the user last moved the map themselves; automatic refits made before that are dropped. */
+  userMovedAt = 0;
+
+  /**
+   * `preview`: also draw when no headset is on, driven by the mouse. Off in
+   * the desktop app, whose own map is on screen until you put the headset on.
+   */
+  constructor(
+    private host: HTMLElement,
+    private h: EngineHandlers,
+    private preview = false,
+  ) {
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+    this.renderer.setSize(host.clientWidth, host.clientHeight);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.xr.enabled = true;
+    this.renderer.xr.setReferenceSpaceType("local-floor");
+    this.renderer.xr.setFoveation(0.4);
+    host.appendChild(this.renderer.domElement);
+
+    this.camera = new THREE.PerspectiveCamera(70, host.clientWidth / host.clientHeight, 0.02, 400);
+    this.camera.position.set(0, 1.6, 0);
+    this.scene.add(this.camera);
+    this.scene.background = new THREE.Color(C.night);
+
+    this.world.add(this.map.root);
+    this.world.scale.setScalar(0.004);
+    this.world.position.set(0, 1.5, -2);
+    this.scene.add(this.world, this.hud);
+    // Only the controller and hand models are lit; the map and panels glow on their own.
+    this.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2238, 2.2));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    sun.position.set(0.5, 2, 1);
+    this.scene.add(sun);
+    this.tag.sprite.visible = false;
+    this.scene.add(this.tag.sprite);
+
+    // A far starfield, so there is something to fly past. It belongs to the
+    // room, not the map: it holds still while the map moves, which keeps the
+    // horizon steady in a headset.
+    const pts = new Float32Array(2400 * 3);
+    for (let i = 0; i < 2400; i++) {
+      const r = 60 + Math.random() * 80;
+      const t = Math.random() * Math.PI * 2;
+      const p = Math.acos(2 * Math.random() - 1);
+      pts.set([r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), r * Math.cos(p)], i * 3);
+    }
+    const starGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(pts, 3));
+    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x8fa3c8, size: 2, sizeAttenuation: false, transparent: true, opacity: 0.55 }));
+    this.scene.add(this.stars);
+
+    this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: C.course, toneMapped: false }));
+    this.reticle.visible = false;
+    this.scene.add(this.reticle);
+
+    this.setupXRInput();
+    this.setupMouse();
+    window.addEventListener("resize", this.onResize);
+    this.renderer.setAnimationLoop(this.frame);
+  }
+
+  dispose() {
+    this.renderer.setAnimationLoop(null);
+    window.removeEventListener("resize", this.onResize);
+    this.map.dispose();
+    this.renderer.dispose();
+  }
+
+  private onResize = () => {
+    if (this.renderer.xr.isPresenting) return;
+    this.camera.aspect = this.host.clientWidth / this.host.clientHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(this.host.clientWidth, this.host.clientHeight);
+  };
+
+  /* ------------------------------- sessions ------------------------------- */
+
+  static async supports(mode: "vr" | "ar") {
+    try {
+      return !!(await navigator.xr?.isSessionSupported(mode === "vr" ? "immersive-vr" : "immersive-ar"));
+    } catch {
+      return false;
+    }
+  }
+
+  async enter(mode: "vr" | "ar") {
+    if (!navigator.xr) throw new Error("This browser has no WebXR.");
+    if (this.session) {
+      // Switching between VR and passthrough: end this one, then start the
+      // other while the click that asked for it still counts as a gesture.
+      const old = this.session;
+      this.session = null;
+      await old.end().catch(() => {});
+    }
+    const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
+      requiredFeatures: ["local-floor"],
+      optionalFeatures: mode === "ar" ? ["hand-tracking", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "bounded-floor"],
+    });
+    this.session = session;
+    session.addEventListener("end", () => {
+      if (this.session !== session) return;
+      this.session = null;
+      this.hitSource?.cancel();
+      this.hitSource = null;
+      this.setMode("flat");
+    });
+    await this.renderer.xr.setSession(session);
+    this.setMode(mode);
+    // Once the first poses are in, frame what you were looking at (or the whole map).
+    setTimeout(() => (this.h.onEntered ? this.h.onEntered() : this.overview(900)), 400);
+  }
+
+  exit() {
+    void this.session?.end();
+  }
+
+  private setMode(mode: Mode) {
+    this.mode = mode;
+    const ar = mode === "ar";
+    this.scene.background = ar ? null : new THREE.Color(C.night);
+    this.renderer.setClearColor(0x000000, ar ? 0 : 1);
+    this.stars.visible = !ar;
+    this.placing = false;
+    this.reticle.visible = false;
+    if (!ar) this.anchor = null;
+    for (const [p, slot] of this.slots) if (p.open) this.place(p, slot);
+    this.h.onMode(mode);
+  }
+
+  /** AR: point at a table or the floor, pull the trigger, and the map sits there. */
+  startPlacing() {
+    if (this.mode !== "ar") return;
+    this.placing = true;
+    const src = [...this.pointers.values()].find((p) => p.handedness === "right" && p.source)?.source ?? [...this.pointers.values()].find((p) => p.source)?.source;
+    this.hitSource?.cancel();
+    this.hitSource = null;
+    const space = src?.targetRaySpace;
+    if (space && this.session?.requestHitTestSource) {
+      void this.session.requestHitTestSource({ space })?.then((s) => (this.hitSource = s)).catch(() => {});
+    }
+  }
+
+  /* -------------------------------- panels -------------------------------- */
+
+  addPanel(p: Panel) {
+    this.panels.push(p);
+    this.hud.add(p.mesh);
+  }
+
+  show(p: Panel, slot: Slot) {
+    const was = p.open;
+    p.mesh.visible = true;
+    p.invalidate();
+    if (!was || this.slots.get(p) !== slot) this.place(p, slot);
+    this.slots.set(p, slot);
+  }
+
+  hide(p: Panel) {
+    p.mesh.visible = false;
+    for (const ptr of this.pointers.values()) {
+      if (ptr.hoverPanel?.panel === p) ptr.hoverPanel = null;
+      if (ptr.carry?.panel === p) ptr.carry = null;
+      if (ptr.press?.kind === "panel" && ptr.press.panel === p) ptr.press = null;
+    }
+  }
+
+  /** Put every open panel back around where you're looking. */
+  recenterPanels() {
+    for (const [p, slot] of this.slots) if (p.open) this.place(p, slot);
+  }
+
+  private place(p: Panel, slot: Slot) {
+    const { pos, yaw } = this.head();
+    const spec = {
+      left: { yaw: 0.6, dist: 0.95, dy: -0.06, tilt: 0 },
+      right: { yaw: -0.6, dist: 0.95, dy: -0.06, tilt: 0 },
+      center: { yaw: 0, dist: 0.85, dy: -0.18, tilt: 0.15 },
+      low: { yaw: 0, dist: 0.62, dy: -0.38, tilt: 0.6 },
+      dock: { yaw: 0, dist: 0.95, dy: -0.48, tilt: 0.55 },
+    }[slot];
+    // A desktop window sees a much narrower cone than a headset: the preview
+    // sets the same panels further out and closer to the middle.
+    const flat = this.mode === "flat";
+    const a = yaw + spec.yaw * (flat ? 0.62 : 1);
+    const dist = spec.dist * (flat ? 1.4 : 1);
+    const dy = spec.dy * (flat ? 1.25 : 1);
+    if (slot === "dock") this.dockYaw = yaw;
+    p.mesh.position.set(pos.x - Math.sin(a) * dist, pos.y + dy, pos.z - Math.cos(a) * dist);
+    // Face the head, then tilt back so a low panel reads like a lectern.
+    p.mesh.lookAt(pos.x, p.mesh.position.y, pos.z);
+    p.mesh.rotateX(-spec.tilt);
+  }
+
+  /* --------------------------------- head --------------------------------- */
+
+  head(): { pos: THREE.Vector3; quat: THREE.Quaternion; yaw: number; forward: THREE.Vector3 } {
+    const cam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    cam.updateMatrixWorld();
+    const pos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+    const quat = new THREE.Quaternion().setFromRotationMatrix(cam.matrixWorld);
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quat);
+    const yaw = Math.atan2(-forward.x, -forward.z);
+    // A head in a fresh session sits at the floor until the first pose lands.
+    if (pos.y < 0.3 && this.renderer.xr.isPresenting) pos.y = 1.5;
+    return { pos, quat, yaw, forward };
+  }
+
+  /* -------------------------------- flights -------------------------------- */
+
+  /**
+   * Bring map point `c` (map units) to `dist` metres in front of you at a
+   * scale where `radius` map units are `radiusM` metres. The map keeps its
+   * heading; only where it is and how big it is change.
+   */
+  frameAt(c: THREE.Vector3, radius: number, o: { radiusM: number; dist: number; dy?: number; ms?: number; at?: THREE.Vector3 }) {
+    const { pos, yaw } = this.head();
+    const s = THREE.MathUtils.clamp(o.radiusM / Math.max(1e-3, radius), MIN_SCALE, MAX_SCALE);
+    // The preview's window is a narrower cone than a headset's view.
+    const dist = o.dist * (this.mode === "flat" ? 1.6 : 1);
+    const target = o.at?.clone() ?? new THREE.Vector3(pos.x - Math.sin(yaw) * dist, pos.y + (o.dy ?? 0), pos.z - Math.cos(yaw) * dist);
+    const q = this.world.quaternion.clone();
+    const p = target.sub(c.clone().multiplyScalar(s).applyQuaternion(q));
+    this.flyWorld(p, q, s, o.ms ?? 1300);
+  }
+
+  private flyWorld(p: THREE.Vector3, q: THREE.Quaternion, s: number, ms: number) {
+    this.flight = {
+      fromP: this.world.position.clone(),
+      fromQ: this.world.quaternion.clone(),
+      fromS: this.world.scale.x,
+      toP: p,
+      toQ: q,
+      toS: s,
+      t0: performance.now(),
+      ms,
+    };
+  }
+
+  /** Frame the whole map, the way the overview does: around you in VR, on the table in AR. */
+  overview(ms = 1400) {
+    const b = this.map.bounds();
+    if (!b) return;
+    if (this.mode === "ar") {
+      const at = this.anchor ? this.anchor.clone().add(new THREE.Vector3(0, 0.38, 0)) : undefined;
+      this.frameAt(b.center, b.radius, { radiusM: 0.38, dist: 0.95, dy: -0.4, ms, at });
+    } else if (this.mode === "vr") this.frameAt(b.center, b.radius, { radiusM: 1.1, dist: 2.0, dy: -0.1, ms });
+    else this.frameAt(b.center, b.radius, { radiusM: 0.85, dist: 1.65, dy: 0.05, ms });
+  }
+
+  /** Fly to some files: the focus fills a comfortable cone in front of you. */
+  focus(ids: string[], ms = 1300) {
+    const b = this.map.bounds(ids);
+    if (!b) return;
+    const ar = this.mode === "ar";
+    this.frameAt(b.center, b.radius, { radiusM: ar ? 0.3 : 0.42, dist: ar ? 0.8 : 1.0, dy: ar ? -0.25 : -0.08, ms });
+  }
+
+  /** Fly to a file: it in the middle, its neighbourhood around it within reach. */
+  flyTo(path: string, ms = 1300) {
+    const at = this.map.positionOf(path);
+    if (!at) return;
+    const around = this.map.bounds([path, ...this.map.neighboursOf(path)]);
+    const r = THREE.MathUtils.clamp(around ? around.center.distanceTo(at) + around.radius * 0.5 : 30, 30, 90);
+    const ar = this.mode === "ar";
+    this.frameAt(at, r, { radiusM: ar ? 0.22 : 0.32, dist: ar ? 0.65 : 0.85, dy: ar ? -0.2 : -0.06, ms });
+  }
+
+  /* --------------------------------- input --------------------------------- */
+
+  private makeRayVisual() {
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]),
+      new THREE.LineBasicMaterial({ color: C.static, transparent: true, opacity: 0.55, toneMapped: false }),
+    );
+    line.scale.z = 3;
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 10, 8), new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, depthTest: false }));
+    dot.renderOrder = 30;
+    dot.visible = false;
+    this.scene.add(dot);
+    return { line, dot };
+  }
+
+  private setupXRInput() {
+    const controllerModels = new XRControllerModelFactory();
+    const handModels = new XRHandModelFactory();
+    for (let i = 0; i < 2; i++) {
+      const ray = this.renderer.xr.getController(i);
+      const grip = this.renderer.xr.getControllerGrip(i);
+      const hand = this.renderer.xr.getHand(i);
+      grip.add(controllerModels.createControllerModel(grip));
+      hand.add(handModels.createHandModel(hand, "mesh"));
+      this.scene.add(ray, grip, hand);
+      const { line, dot } = this.makeRayVisual();
+      ray.add(line);
+      const id = `xr${i}`;
+      ray.addEventListener("connected", (e) => {
+        const source = (e as unknown as { data: XRInputSource }).data;
+        this.pointers.set(id, {
+          id,
+          kind: source.hand ? "hand" : "controller",
+          handedness: source.handedness === "left" ? "left" : source.handedness === "right" ? "right" : "none",
+          ray,
+          line,
+          dot,
+          source,
+          origin: new THREE.Vector3(),
+          dir: new THREE.Vector3(),
+          hoverPanel: null,
+          hoverMap: null,
+          press: null,
+          squeezing: false,
+          carry: null,
+          buttons: [],
+          snapped: false,
+          lastHapticId: null,
+        });
+        line.visible = true;
+      });
+      ray.addEventListener("disconnected", () => {
+        const p = this.pointers.get(id);
+        if (p) this.endGrab(p);
+        this.pointers.delete(id);
+        line.visible = false;
+        dot.visible = false;
+      });
+      ray.addEventListener("selectstart", () => this.pressStart(id));
+      ray.addEventListener("selectend", () => this.pressEnd(id));
+      ray.addEventListener("squeezestart", () => this.squeezeStart(id));
+      ray.addEventListener("squeezeend", () => this.squeezeEnd(id));
+    }
+  }
+
+  private setupMouse() {
+    const el = this.renderer.domElement;
+    const { line, dot } = this.makeRayVisual();
+    line.visible = false;
+    const ray = new THREE.Object3D();
+    this.scene.add(ray);
+    const p: Pointer = {
+      id: "mouse",
+      kind: "mouse",
+      handedness: "none",
+      ray,
+      line,
+      dot,
+      origin: new THREE.Vector3(),
+      dir: new THREE.Vector3(),
+      hoverPanel: null,
+      hoverMap: null,
+      press: null,
+      squeezing: false,
+      carry: null,
+      buttons: [],
+      snapped: false,
+      lastHapticId: null,
+    };
+    this.pointers.set("mouse", p);
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
+    el.addEventListener("pointermove", (e) => {
+      const r = el.getBoundingClientRect();
+      this.mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+      this.mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+      const dx = e.clientX - this.mouse.lastX;
+      const dy = e.clientY - this.mouse.lastY;
+      this.mouse.lastX = e.clientX;
+      this.mouse.lastY = e.clientY;
+      if (this.mouse.down < 0) return;
+      if (Math.abs(dx) + Math.abs(dy) > 0) this.mouse.moved = true;
+      // Right drag turns the map about its middle; left drag on open sky moves it.
+      if (this.mouse.down === 2) {
+        this.userMovedAt = performance.now();
+        this.flight = null;
+        const b = this.map.bounds();
+        const pivot = b ? this.map.toWorld(b.center) : this.world.position.clone();
+        this.rotateWorldAbout(pivot, dx * 0.006);
+        const right = new THREE.Vector3(1, 0, 0);
+        const qx = new THREE.Quaternion().setFromAxisAngle(right, dy * 0.004);
+        this.world.position.sub(pivot).applyQuaternion(qx).add(pivot);
+        this.world.quaternion.premultiply(qx);
+      } else if (this.mouse.down === 0 && p.press?.kind === "grab") {
+        this.userMovedAt = performance.now();
+        this.flight = null;
+        const d = pivotDistance(this.world, this.camera);
+        const k = (d * 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) / r.height;
+        this.world.position.add(new THREE.Vector3(dx * k, -dy * k, 0));
+      }
+    });
+    el.addEventListener("pointerdown", (e) => {
+      if (this.renderer.xr.isPresenting) return;
+      el.setPointerCapture(e.pointerId);
+      this.mouse.down = e.button;
+      this.mouse.moved = false;
+      this.mouse.lastX = e.clientX;
+      this.mouse.lastY = e.clientY;
+      if (e.button === 0) this.pressStart("mouse");
+    });
+    el.addEventListener("pointerup", (e) => {
+      if (e.button === 0) this.pressEnd("mouse");
+      this.mouse.down = -1;
+    });
+    el.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        const ptr = this.pointers.get("mouse")!;
+        if (ptr.hoverPanel) return ptr.hoverPanel.panel.scrollBy(e.deltaY * 1.2);
+        // Zoom toward what's under the pointer, as the desktop does.
+        const pivot = ptr.origin.clone().add(ptr.dir.clone().multiplyScalar(ptr.hoverMap ? this.hitDistanceM(ptr, ptr.hoverMap) : 2));
+        this.scaleWorldAbout(pivot, Math.exp(-e.deltaY * 0.0015));
+      },
+      { passive: false },
+    );
+    window.addEventListener("keydown", (e) => {
+      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+      this.mouse.keys.add(e.key.toLowerCase());
+    });
+    window.addEventListener("keyup", (e) => this.mouse.keys.delete(e.key.toLowerCase()));
+    window.addEventListener("blur", () => this.mouse.keys.clear());
+  }
+
+  private hitDistanceM(p: Pointer, hit: MapHit) {
+    return hit.t * this.world.scale.x || p.origin.distanceTo(this.world.position);
+  }
+
+  private pressStart(id: string) {
+    const p = this.pointers.get(id);
+    if (!p) return;
+    if (this.placing && this.reticle.visible) {
+      this.placeAt(this.reticle.position.clone());
+      return;
+    }
+    if (p.hoverPanel) {
+      p.press = { kind: "panel", panel: p.hoverPanel.panel };
+      p.hoverPanel.panel.pointer("down", p.hoverPanel.x, p.hoverPanel.y, p.id);
+      this.haptic(p, 0.3, 20);
+      return;
+    }
+    if (p.hoverMap) {
+      p.press = { kind: "map", hit: p.hoverMap, from: p.origin.clone().add(p.dir) };
+      return;
+    }
+    // Open sky: the trigger (or a pinch) grabs the map; let go without moving to clear.
+    p.press = { kind: "grab", from: p.origin.clone().add(p.dir), moved: false };
+    if (p.kind !== "mouse") this.beginGrab(p);
+  }
+
+  private pressEnd(id: string) {
+    const p = this.pointers.get(id);
+    if (!p?.press) return;
+    const press = p.press;
+    p.press = null;
+    const moved = (from: THREE.Vector3) => from.distanceTo(p.origin.clone().add(p.dir)) > (p.kind === "mouse" ? 0.02 : 0.035);
+    if (press.kind === "panel") {
+      const hp = p.hoverPanel?.panel === press.panel ? p.hoverPanel : null;
+      press.panel.pointer("up", hp?.x ?? -1, hp?.y ?? -1, p.id);
+    } else if (press.kind === "map") {
+      const still = p.kind === "mouse" ? !this.mouse.moved : !moved(press.from);
+      if (still) {
+        this.haptic(p, 0.5, 30);
+        this.h.onPick(press.hit);
+      }
+    } else {
+      if (p.kind !== "mouse") this.endGrab(p);
+      const wasMoved = p.kind === "mouse" ? this.mouse.moved : moved(press.from);
+      if (!wasMoved) this.h.onBackground();
+    }
+  }
+
+  private squeezeStart(id: string) {
+    const p = this.pointers.get(id);
+    if (!p) return;
+    p.squeezing = true;
+    // The grip on a panel picks it up; anywhere else it grabs the map.
+    if (p.hoverPanel) {
+      const panel = p.hoverPanel.panel;
+      p.ray.updateMatrixWorld();
+      p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
+      this.haptic(p, 0.4, 25);
+      return;
+    }
+    this.beginGrab(p);
+  }
+
+  private squeezeEnd(id: string) {
+    const p = this.pointers.get(id);
+    if (!p) return;
+    p.squeezing = false;
+    if (p.carry) {
+      p.carry = null;
+      return;
+    }
+    this.endGrab(p);
+  }
+
+  private grabPoint(p: Pointer) {
+    p.ray.updateMatrixWorld();
+    return new THREE.Vector3().setFromMatrixPosition(p.ray.matrixWorld);
+  }
+
+  private beginGrab(p: Pointer) {
+    if (this.grabs.some((g) => g.p === p)) return;
+    this.flight = null;
+    this.grabs.push({ p, at0: this.grabPoint(p) });
+    this.resetGrab();
+    this.haptic(p, 0.25, 15);
+  }
+
+  private endGrab(p: Pointer) {
+    const before = this.grabs.length;
+    this.grabs = this.grabs.filter((g) => g.p !== p);
+    if (this.grabs.length !== before) this.resetGrab();
+  }
+
+  /** Grabs restart from where the world is now whenever a hand joins or leaves. */
+  private resetGrab() {
+    if (!this.grabs.length) return void (this.grabStart = null);
+    for (const g of this.grabs) g.at0 = this.grabPoint(g.p);
+    this.grabStart = {
+      pos: this.world.position.clone(),
+      quat: this.world.quaternion.clone(),
+      scale: this.world.scale.x,
+      a: this.grabs[0].at0.clone(),
+      b: this.grabs[1]?.at0.clone(),
+    };
+  }
+
+  private applyGrab() {
+    const s0 = this.grabStart;
+    if (!s0 || !this.grabs.length) return;
+    this.userMovedAt = performance.now();
+    if (this.grabs.length === 1 || !s0.b) {
+      // One hand: drag the map through the room.
+      const now = this.grabPoint(this.grabs[0].p);
+      this.world.position.copy(s0.pos).add(now.sub(s0.a));
+      for (const g of this.grabs) if (g.p.press?.kind === "grab" && g.at0.distanceTo(this.grabPoint(g.p)) > 0.03) g.p.press.moved = true;
+      return;
+    }
+    // Two hands: stretch to scale, turn to rotate, both about the midpoint.
+    const a = this.grabPoint(this.grabs[0].p);
+    const b = this.grabPoint(this.grabs[1].p);
+    const d0 = s0.b.distanceTo(s0.a);
+    const k = THREE.MathUtils.clamp(s0.scale * (a.distanceTo(b) / Math.max(0.01, d0)), MIN_SCALE, MAX_SCALE) / s0.scale;
+    const yaw0 = Math.atan2(s0.b.x - s0.a.x, s0.b.z - s0.a.z);
+    const yaw1 = Math.atan2(b.x - a.x, b.z - a.z);
+    const q = new THREE.Quaternion().setFromAxisAngle(Y, yaw1 - yaw0);
+    const mid0 = s0.a.clone().add(s0.b).multiplyScalar(0.5);
+    const mid1 = a.clone().add(b).multiplyScalar(0.5);
+    this.world.scale.setScalar(s0.scale * k);
+    this.world.quaternion.copy(q).multiply(s0.quat);
+    this.world.position.copy(s0.pos).sub(mid0).multiplyScalar(k).applyQuaternion(q).add(mid1);
+    for (const g of this.grabs) if (g.p.press?.kind === "grab") g.p.press.moved = true;
+  }
+
+  private rotateWorldAbout(pivot: THREE.Vector3, angle: number) {
+    const q = new THREE.Quaternion().setFromAxisAngle(Y, angle);
+    this.world.position.sub(pivot).applyQuaternion(q).add(pivot);
+    this.world.quaternion.premultiply(q);
+  }
+
+  private scaleWorldAbout(pivot: THREE.Vector3, k: number) {
+    this.userMovedAt = performance.now();
+    this.flight = null;
+    const s = THREE.MathUtils.clamp(this.world.scale.x * k, MIN_SCALE, MAX_SCALE);
+    const kk = s / this.world.scale.x;
+    this.world.position.sub(pivot).multiplyScalar(kk).add(pivot);
+    this.world.scale.setScalar(s);
+  }
+
+  private haptic(p: Pointer, intensity: number, ms: number) {
+    const act = p.source?.gamepad?.hapticActuators?.[0] as unknown as { pulse?: (v: number, d: number) => void } | undefined;
+    try {
+      act?.pulse?.(intensity, ms);
+    } catch {
+      /* not every runtime has haptics */
+    }
+  }
+
+  private placeAt(at: THREE.Vector3) {
+    this.anchor = at;
+    this.placing = false;
+    this.reticle.visible = false;
+    this.hitSource?.cancel();
+    this.hitSource = null;
+    this.overview(900);
+    this.h.onPlaced?.();
+  }
+
+  /* --------------------------------- frame --------------------------------- */
+
+  private frame = (_t: number, xrFrame?: XRFrame) => {
+    if (!this.preview && !this.renderer.xr.isPresenting) return;
+    this.timer.update();
+    const dt = Math.min(0.05, this.timer.getDelta());
+    const now = performance.now();
+
+    // A flight in progress eases the world to where it's going.
+    if (this.flight) {
+      const f = this.flight;
+      const u = Math.min(1, (now - f.t0) / f.ms);
+      const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+      this.world.position.lerpVectors(f.fromP, f.toP, e);
+      this.world.quaternion.slerpQuaternions(f.fromQ, f.toQ, e);
+      this.world.scale.setScalar(Math.exp(THREE.MathUtils.lerp(Math.log(f.fromS), Math.log(f.toS), e)));
+      if (u >= 1) this.flight = null;
+    }
+    this.applyGrab();
+    this.readGamepads(dt);
+    this.flatKeys(dt);
+
+    // Pointers: what each ray lands on.
+    for (const p of this.pointers.values()) this.updatePointer(p);
+
+    // A panel being carried follows its hand, still facing you.
+    const head = this.head();
+    for (const p of this.pointers.values()) {
+      if (!p.carry) continue;
+      p.ray.updateMatrixWorld();
+      const m = p.ray.matrixWorld.clone().multiply(p.carry.offset);
+      p.carry.panel.mesh.position.setFromMatrixPosition(m);
+      p.carry.panel.mesh.lookAt(head.pos);
+    }
+
+    // The dock follows lazily: it only turns with you once you've looked well away.
+    for (const [panel, slot] of this.slots) {
+      if (slot !== "dock" || !panel.open || this.pointers.size === 0) continue;
+      let d = head.yaw - this.dockYaw;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      if (Math.abs(d) > 0.6) this.place(panel, "dock");
+    }
+
+    // AR placement: the reticle sits where the ray meets a real surface.
+    if (this.placing && xrFrame && this.hitSource) {
+      const ref = this.renderer.xr.getReferenceSpace();
+      const hit = ref ? xrFrame.getHitTestResults(this.hitSource)[0]?.getPose(ref) : undefined;
+      this.reticle.visible = !!hit;
+      if (hit) this.reticle.position.set(hit.transform.position.x, hit.transform.position.y, hit.transform.position.z);
+    } else if (this.placing && !this.hitSource) {
+      // No hit-testing on this device: place where the ray is, a metre out.
+      const ptrs = [...this.pointers.values()].filter((x) => x.kind !== "mouse");
+      const p = ptrs.find((x) => x.handedness === "right") ?? ptrs[0];
+      if (p) {
+        this.reticle.visible = true;
+        this.reticle.position.copy(p.origin).addScaledVector(p.dir, 1);
+      }
+    }
+
+    // The map, with names sized for the eye that's looking.
+    this.world.updateMatrixWorld();
+    const eyeLocal = this.map.root.worldToLocal(head.pos.clone());
+    this.map.update(eyeLocal, now, 1 / this.world.scale.x);
+
+    this.h.onFrame?.();
+    for (const panel of this.panels) panel.render();
+    this.renderer.render(this.scene, this.camera);
+  };
+
+  private updatePointer(p: Pointer) {
+    if (p.kind === "mouse") {
+      if (this.renderer.xr.isPresenting) return;
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(new THREE.Vector2(this.mouse.x, this.mouse.y), this.camera);
+      p.origin.copy(rc.ray.origin);
+      p.dir.copy(rc.ray.direction);
+    } else {
+      p.ray.updateMatrixWorld();
+      p.origin.setFromMatrixPosition(p.ray.matrixWorld);
+      p.dir.set(0, 0, -1).transformDirection(p.ray.matrixWorld);
+    }
+
+    // Panels first: they're in front of the map whenever they're in the way.
+    const rc = new THREE.Raycaster(p.origin, p.dir, 0.01, 20);
+    const open = this.panels.filter((x) => x.open && x !== p.carry?.panel).map((x) => x.mesh);
+    const hit = rc.intersectObjects(open, false)[0];
+    let panelHit: Pointer["hoverPanel"] = null;
+    if (hit?.uv) {
+      const panel = hit.object.userData.panel as Panel;
+      panelHit = { panel, x: hit.uv.x * panel.W, y: (1 - hit.uv.y) * panel.H };
+    }
+    // A press on a panel keeps talking to that panel until it's let go (a drag scrolls).
+    if (p.press?.kind === "panel") {
+      const pp = p.press.panel;
+      if (panelHit?.panel === pp) pp.pointer("move", panelHit.x, panelHit.y, p.id);
+    } else if (panelHit) {
+      panelHit.panel.pointer("move", panelHit.x, panelHit.y, p.id);
+    }
+    if (p.hoverPanel && p.hoverPanel.panel !== panelHit?.panel && p.press?.kind !== "panel") {
+      // Only clear the hover if no other pointer is on that panel.
+      const other = [...this.pointers.values()].some((o) => o !== p && o.hoverPanel?.panel === p.hoverPanel!.panel);
+      if (!other) p.hoverPanel.panel.pointer("leave", 0, 0, p.id);
+    }
+    p.hoverPanel = panelHit;
+
+    let mapHit: MapHit | null = null;
+    if (!panelHit && !p.carry && !(p.press?.kind === "grab" && this.grabs.length)) mapHit = this.map.pick(p.origin, p.dir);
+    const hoverKey = (h: MapHit | null) => (h ? `${h.kind}:${h.id}` : null);
+    if (hoverKey(mapHit) !== hoverKey(p.hoverMap) && mapHit) {
+      if (p.lastHapticId !== hoverKey(mapHit)) this.haptic(p, 0.12, 8);
+      p.lastHapticId = hoverKey(mapHit);
+    }
+    p.hoverMap = mapHit;
+
+    // The ray stops at what it hits.
+    const len = panelHit ? hit!.distance : mapHit ? this.hitDistanceM(p, mapHit) : 3;
+    p.line.scale.z = len;
+    (p.line.material as THREE.LineBasicMaterial).color.set(mapHit || panelHit ? "#ffffff" : C.static);
+    p.dot.visible = !!(panelHit || mapHit) && (p.kind !== "mouse" || this.renderer.xr.isPresenting);
+    p.dot.position.copy(p.origin).addScaledVector(p.dir, len);
+    p.dot.scale.setScalar(Math.max(0.6, len * 0.8));
+
+    this.updateHover();
+  }
+
+  /** The map hovers what the most recent pointer is on; its tag says what it is. */
+  private updateHover() {
+    const ptrs = [...this.pointers.values()].filter((p) => p.kind !== "mouse" || !this.renderer.xr.isPresenting);
+    const hit = ptrs.find((p) => p.hoverMap)?.hoverMap ?? null;
+    this.map.setHover(hit?.kind === "file" ? hit.id : null);
+    if (!hit) return void (this.tag.sprite.visible = false);
+    const at =
+      hit.kind === "file" || hit.kind === "module" || hit.kind === "dir"
+        ? this.map.positionOf(hit.kind === "file" ? hit.id : hit.kind === "module" ? (this.map.has(`mod:${hit.id}`) ? `mod:${hit.id}` : `grp:${hit.id}`) : `dir:${hit.id}`)
+        : null;
+    const owner = ptrs.find((p) => p.hoverMap === hit)!;
+    const world = at ? this.map.toWorld(at) : owner.origin.clone().addScaledVector(owner.dir, this.hitDistanceM(owner, hit));
+    const head = this.head();
+    // Lift the tag a little above the body, in metres, toward the viewer.
+    world.add(new THREE.Vector3(0, 1, 0).multiplyScalar(Math.max(0.02, world.distanceTo(head.pos) * 0.03)));
+    this.tag.set(this.h.describe(hit));
+    this.tag.place(world, head.pos, 0.11);
+    this.tag.sprite.visible = true;
+  }
+
+  private readGamepads(dt: number) {
+    for (const p of this.pointers.values()) {
+      const gp = p.source?.gamepad;
+      if (!gp || p.kind !== "controller") continue;
+      const pressed = gp.buttons.map((b) => b.pressed);
+      const edge = (i: number) => pressed[i] && !p.buttons[i];
+      // xr-standard: 3 stick press, 4 A/X, 5 B/Y.
+      if (p.handedness === "right") {
+        if (edge(4)) this.h.onButton("menu");
+        if (edge(5)) this.h.onButton("back");
+        if (edge(3)) this.h.onButton("frame");
+      } else {
+        if (edge(4)) this.h.onButton("voice");
+        if (edge(5)) this.h.onButton("overview");
+        if (edge(3)) this.h.onButton("ask");
+      }
+      p.buttons = pressed;
+
+      const ax = gp.axes[2] ?? 0;
+      const ay = gp.axes[3] ?? 0;
+      const dead = 0.18;
+      // Pointing at a panel, either stick scrolls it.
+      if (p.hoverPanel && Math.abs(ay) > dead) {
+        p.hoverPanel.panel.scrollBy(ay * dt * 1400);
+        continue;
+      }
+      if (p.handedness === "left") {
+        // Fly: push the stick and the map streams past, the way the controller points.
+        if (Math.abs(ax) > dead || Math.abs(ay) > dead) {
+          this.flight = null;
+          this.userMovedAt = performance.now();
+          const speed = 1.4 * (gp.buttons[1]?.pressed ? 3 : 1);
+          const fwd = p.dir.clone();
+          const right = new THREE.Vector3().crossVectors(fwd, Y).normalize();
+          const move = fwd.multiplyScalar(-ay).add(right.multiplyScalar(ax)).multiplyScalar(speed * dt);
+          this.world.position.sub(move);
+        }
+      } else if (p.handedness === "right") {
+        // Snap turn on X, scale on Y (toward what you're pointing at).
+        if (Math.abs(ax) > 0.7 && !p.snapped) {
+          p.snapped = true;
+          this.flight = null;
+          this.rotateWorldAbout(this.head().pos, ax > 0 ? -SNAP : SNAP);
+        } else if (Math.abs(ax) < 0.3) p.snapped = false;
+        if (Math.abs(ay) > dead && Math.abs(ax) < 0.5) {
+          const pivot = p.hoverMap ? p.origin.clone().addScaledVector(p.dir, this.hitDistanceM(p, p.hoverMap)) : p.origin.clone().addScaledVector(p.dir, 0.8);
+          this.scaleWorldAbout(pivot, Math.exp(-ay * dt * 1.6));
+        }
+      }
+    }
+  }
+
+  /** Flat preview: the arrow keys fly (Shift for faster), Page Up/Down rise and sink. */
+  private flatKeys(dt: number) {
+    if (this.renderer.xr.isPresenting) return;
+    const k = this.mouse.keys;
+    if (!k.size) return;
+    const v = new THREE.Vector3(
+      (k.has("arrowright") ? 1 : 0) - (k.has("arrowleft") ? 1 : 0),
+      (k.has("pageup") ? 1 : 0) - (k.has("pagedown") ? 1 : 0),
+      (k.has("arrowdown") ? 1 : 0) - (k.has("arrowup") ? 1 : 0),
+    );
+    if (!v.lengthSq()) return;
+    this.flight = null;
+    this.userMovedAt = performance.now();
+    this.world.position.sub(v.multiplyScalar(1.2 * dt * (k.has("shift") ? 3 : 1)).applyQuaternion(this.camera.quaternion));
+  }
+}
+
+/** How far the map's middle is from the camera, for turning mouse pixels into metres. */
+function pivotDistance(world: THREE.Group, camera: THREE.Camera) {
+  return Math.max(0.3, world.position.distanceTo(tmpV.setFromMatrixPosition(camera.matrixWorld)));
+}

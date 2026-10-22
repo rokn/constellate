@@ -11,7 +11,7 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node", "vite/client"]
+    "types": ["node", "vite/client", "webxr"]
   },
   "include": ["server", "shared", "web"]
 }

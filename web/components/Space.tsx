@@ -152,6 +152,8 @@ export type SpaceHandle = {
   flyToNote: (id: string) => void;
   /** Turn tilt-to-look on or off; resolves to whether it's on (the device may say no). */
   setTilt: (on: boolean) => Promise<boolean>;
+  /** Stop drawing (and resume): the headset draws the map while you're in it. */
+  setPaused: (on: boolean) => void;
 };
 
 /**
@@ -2411,6 +2413,10 @@ export function Space({
     },
     relayout() {
       fg.current?.d3ReheatSimulation();
+    },
+    setPaused(on) {
+      if (on) fg.current?.pauseAnimation();
+      else fg.current?.resumeAnimation();
     },
     warp() {
       const g = fg.current;

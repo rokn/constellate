@@ -26,6 +26,9 @@ import { EdgeScrub } from "./components/EdgeScrub";
 import { buzz, touchFirst } from "./lib/haptics";
 import { StoriesPanel } from "./components/StoriesPanel";
 import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
+import { useXR, type XR, type XRFeed } from "./xr/useXR";
+import { XRButtons } from "./xr/XRButtons";
+import type { MapInput, MapStyle } from "./xr/map";
 
 const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true };
 
@@ -37,6 +40,7 @@ type Stop =
   | { kind: "frame"; frameId: string };
 
 const TOUR_STEP_MS = 7000;
+const NO_ACTIVITY: never[] = [];
 
 export function App() {
   const { state } = useSession();
@@ -64,7 +68,30 @@ export function App() {
     [],
   );
 
-  const space = useRef<SpaceHandle>(null);
+  /**
+   * The camera. Every flight goes to the desktop map and, while you're in a
+   * headset, to the headset's map too, so both are always looking at the same
+   * thing and taking the headset off lands you where you were.
+   */
+  const desk = useRef<SpaceHandle>(null);
+  const xrRef = useRef<XR | null>(null);
+  const space = useMemo(
+    () => ({
+      get current(): SpaceHandle | null {
+        const d = desk.current;
+        const cam = xrRef.current?.camera;
+        if (!d || !cam) return d;
+        return {
+          ...d,
+          flyTo: (p, shift) => (d.flyTo(p, shift), void cam.flyTo(p)),
+          focus: (ps, shift) => (d.focus(ps, shift), void cam.focus(ps)),
+          overview: () => (d.overview(), void cam.overview()),
+          pulse: (p) => (d.pulse(p), void cam.pulse(p)),
+        };
+      },
+    }),
+    [],
+  );
   // Map labels are painted to canvas once, so the faces have to be loaded first.
   const [fontsReady, setFontsReady] = useState(false);
   useEffect(() => {
@@ -1349,6 +1376,194 @@ export function App() {
 
   /* -------------------------------- render -------------------------------- */
 
+  /* -------------------------------- headset -------------------------------- */
+
+  // The headset draws this same state; see xr/useXR. These parts are kept as
+  // stable objects so its panels repaint only when what they show changes.
+  const xrLegend = useMemo((): XRFeed["model"]["legend"] => {
+    if (!legend) return { kind: "dir", rows: [] };
+    const colors = legend.colors ?? territoryColors((grouping?.groups ?? []).map((g) => g.id));
+    return {
+      kind: legend.kind,
+      rows: legend.groups.map((g) => ({
+        id: g.id,
+        label: g.label,
+        color: g.id === OTHER ? "#5d6a85" : colors.get(g.id),
+        count: legend.counts.get(g.id) ?? 0,
+        isolated: isolatedIds.get(g.id),
+      })),
+    };
+  }, [legend, grouping, isolatedIds]);
+  const xrVoice = useMemo(
+    () => ({ available: voiceAvailable, state: voice.state, caption: voice.caption, heard: voice.heard, error: voice.error }),
+    [voiceAvailable, voice.state, voice.caption, voice.heard, voice.error],
+  );
+  const xrTour = useMemo(() => {
+    const ms = overview?.modules ?? [];
+    return tour !== null && ms[tour] ? { index: tour, total: ms.length, label: ms[tour].label, summary: ms[tour].summary } : null;
+  }, [tour, overview]);
+  const xrLenses = useMemo(() => lenses.map((l) => ({ id: l.id, title: l.title })), [lenses]);
+  const xrFilter = useMemo(
+    () => ({ active: isActive(filter), label: isActive(filter) ? describe(filter) : undefined, hideTests: filter.hideTests, hideDocs: filter.hideDocs }),
+    [filter],
+  );
+  const xrMap = useMemo(
+    (): MapInput | null => (mapGraph ? { graph: mapGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning } : null),
+    [mapGraph, overview, grouping, visible, notes, shownOverlays, tuning],
+  );
+  const xrStyle = useMemo((): MapStyle => ({ emphasis, active: file?.path ?? null, layers }), [emphasis, file?.path, layers]);
+  /** What's under a folder on the map. */
+  const filesUnder = (dir: string) => (mapGraph?.files ?? []).map((f) => f.path).filter((p) => (dir === "." ? !p.includes("/") : p.startsWith(`${dir}/`)));
+  const recenterRef = useRef(recenter);
+  recenterRef.current = recenter;
+  const xr = useXR({
+    model: {
+      status,
+      error: state?.error,
+      repoName: state?.repo?.name,
+      headline: overview?.headline,
+      library: !!state?.library,
+      locked: !!state?.locked,
+      busy: !!state?.busy,
+      activity: state?.activity ?? NO_ACTIVITY,
+      overview,
+      frames,
+      frameId,
+      pointer,
+      file,
+      intro: !introDone,
+      voice: xrVoice,
+      tour: xrTour,
+      toast,
+      layers,
+      lensId,
+      lenses: xrLenses,
+      legend: xrLegend,
+      visibleCount: visible?.size ?? mapGraph?.files.length ?? 0,
+      totalCount: mapGraph?.files.length ?? 0,
+      filter: xrFilter,
+      stories,
+    },
+    actions: {
+      openFile: (p, l, e) => openFile(p, l, e),
+      // A folder row is the files under it; a module row, the module.
+      focusModule: (id) => (legend?.kind === "dir" ? focus(filesUnder(id), id === "." ? "files at the root" : `${id}/`) : focusModule(id)),
+      isolate: (id, how) => {
+        const row = xrLegend.rows.find((r) => r.id === id);
+        const m = legend?.kind === "module" ? (grouping?.groups ?? overview?.modules ?? []).find((g) => g.id === id) : undefined;
+        if (!row) return;
+        const item: Isolated = m ? { kind: "module", id, label: m.label, paths: m.paths } : { kind: "dir", id, label: row.label };
+        if (how === "solo") return soloIsolate(item);
+        const wasHidden = filter.isolate?.some((i) => i.kind === item.kind && i.id === id && i.exclude);
+        toggleIsolate(item, how === "exclude");
+        if (how === "exclude" && !wasHidden) setToast({ text: `Hid ${item.label}`, undo: () => toggleIsolate(item, true) });
+      },
+      overview: toOverview,
+      back,
+      forward,
+      frameSelection: recenter,
+      showFrame,
+      closeFrame: () => {
+        setIntroDone(true);
+        setFrameId(null);
+        setPointer(null);
+      },
+      closeFile: () => setFile(null),
+      ask: (t, topicId) => askNavigator(t, topicId),
+      interrupt: () => void post("/api/interrupt"),
+      toggleVoice: () => (voice.state === "idle" || voice.state === "error" ? startVoice() : voice.stop()),
+      setLayer: (l, on) => setLayers((x) => ({ ...x, [l]: on })),
+      setLens: (id) => {
+        setTour(null);
+        setLensId(id);
+      },
+      setFilter: (patch) => setFilter((f) => ({ ...f, ...patch })),
+      clearFilter: () => setFilter((f) => ({ ...EMPTY_FILTER, hidden: f.hidden })),
+      hide: (p) => hide([p], p.split("/").pop()!),
+      startTour: () => {
+        setIntroDone(true);
+        setTour(0);
+      },
+      stopTour: () => setTour(null),
+      playStory: (id) => playStory(id),
+      storyToggle: () => storyCtl.current?.toggle(),
+      storySeek: (beat) => storyCtl.current?.seek(beat),
+      closeStory: () => {
+        if (story) setLastStory({ id: story.id, beat: storyAt.beat });
+        setStory(null);
+      },
+      writeStory: (request) => {
+        void post("/api/stories", { action: "create", request });
+        setToast({ text: "Writing the story — it plays when it's ready." });
+      },
+      openRepo: (id) => void post("/api/open", { github: id }),
+      openPath: (t) => void post("/api/open", state?.library ? { github: t } : { path: t }),
+      reanalyze: () => void post("/api/reanalyze"),
+      addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
+      isFile: (p) => onMap.has(p),
+    },
+    handlers: {
+      onPick: (h) => {
+        if (h.kind === "file") return openFile(h.id, undefined, undefined, false);
+        if (h.kind === "module") return focusModule(h.id);
+        if (h.kind === "dir") return focus(filesUnder(h.id), `${h.id}/`);
+        if (h.kind === "overlay") {
+          const g = overlays.find((o) => o.id === h.id);
+          if (g) focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label);
+          return;
+        }
+        const n = notes.find((x) => x.id === h.id);
+        if (!n) return;
+        if (n.target.kind === "file") return openFile(n.target.path);
+        const t = n.target;
+        openFile(t.from, mapGraph?.imports.find((e) => e.from === t.from && e.to === t.to)?.line);
+      },
+      describe: (h) => {
+        if (h.kind === "file") {
+          const f = mapGraph?.files.find((x) => x.path === h.id);
+          return [
+            { text: h.id.split("/").pop()!, bold: true },
+            { text: h.id, mono: true },
+            { text: `${f?.loc ?? 0} lines · ${f?.lang ?? ""} · ${neighbours.get(h.id)?.size ?? 0} connections` },
+          ];
+        }
+        if (h.kind === "module") return [{ text: h.label, bold: true, color: "#ffb547" }, ...(h.summary ? [{ text: h.summary }] : []), { text: `${h.files ?? 0} files` }];
+        if (h.kind === "dir") return [{ text: `${h.id}/`, bold: true }];
+        if (h.kind === "overlay") {
+          const o = overlays.find((x) => x.id === h.id);
+          return [{ text: o?.label ?? "Marker", bold: true, color: o?.color }, ...(o?.summary ? [{ text: o.summary }] : [])];
+        }
+        const n = notes.find((x) => x.id === h.id);
+        return [{ text: "Note", bold: true, color: "#ffd75e" }, { text: n?.text.split("\n")[0] ?? "" }];
+      },
+      onBackground: () => setPointer(null),
+      onButton: (b) => {
+        if (b === "back") return back();
+        if (b === "forward") return forward();
+        if (b === "overview") return toOverview();
+        if (b === "frame") return recenter();
+        if (voice.state === "idle" || voice.state === "error") startVoice();
+        else voice.stop();
+      },
+    },
+    map: xrMap,
+    style: xrStyle,
+    story: () => {
+      const s = story && stories.find((x) => x.id === story.id);
+      const at = storyCtl.current?.where();
+      return s && at ? { story: s, ...at } : null;
+    },
+  });
+  xrRef.current = xr;
+  // In the headset, the desktop map stops drawing. Coming back out, it frames
+  // whatever you were on in there, so the desktop picks up where you were.
+  const wasPresenting = useRef(false);
+  useEffect(() => {
+    desk.current?.setPaused(xr.presenting);
+    if (wasPresenting.current && !xr.presenting) setTimeout(() => recenterRef.current(), 150);
+    wasPresenting.current = xr.presenting;
+  }, [xr.presenting]);
+
   if (!state) return <div className="h-full bg-night" />;
 
   if (status === "idle" || (!graph && status === "error")) {
@@ -1476,7 +1691,7 @@ export function App() {
     <div className="relative h-full overflow-hidden bg-night">
       {graph && fontsReady && (
         <Space
-          ref={space}
+          ref={desk}
           graph={mapGraph!}
           overview={overview}
           grouping={grouping}
@@ -2187,7 +2402,8 @@ export function App() {
             onJump={onJump}
             onStop={() => void post("/api/interrupt")}
           />
-          <div className="flex min-w-0 flex-1 justify-end">
+          <div className="flex min-w-0 flex-1 items-end justify-end gap-2">
+            <XRButtons xr={xr} />
             <VoiceDock
               available={voiceAvailable}
               state={voice.state}

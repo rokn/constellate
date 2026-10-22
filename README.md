@@ -33,6 +33,27 @@ Or one container for any GitHub repo: set `CODEFLIGHT_REPOS_DIR=/data/repos` ins
 
 It has no login of its own, so put it behind an authenticating proxy before exposing it.
 
+## In a headset
+
+With a Meta Quest 3 (its browser), or a PC with Link or SteamVR connected, **VR** and
+**Passthrough** buttons appear next to the voice button. Nothing else changes when there's
+no headset. Go in and out freely: the open file, the focus, answers and stories carry
+across both ways. In passthrough, Menu → **Place on a surface** puts the map on a table.
+
+WebXR needs a secure page. Over USB, run `adb reverse tcp:4317 tcp:4317` and open
+`http://localhost:4317` on the Quest. Over Wi-Fi, put a [mkcert](https://github.com/FiloSottile/mkcert)
+certificate for your LAN address in `.certs/codeflight.pem` and `.certs/codeflight-key.pem`,
+and open `https://<your-LAN-address>:4443`.
+
+| Quest controller | |
+| --- | --- |
+| Trigger, or pinch | Point and select; on open sky, drag the map |
+| Grip | Grab the map; both grips to scale and turn it; on a panel, carry it |
+| Left stick · right stick | Fly where you point · snap turn ← →, zoom ↑ ↓ |
+| A · B · X · Y | Menu · back · voice · the whole map |
+
+History, branch view, tuning and custom views stay on the desktop for now.
+
 ## Shortcuts
 
 | Key | |
