@@ -129,7 +129,7 @@ export type Overlay = {
   /** Why each file is in the marker: shown on its spoke. */
   reasons?: Record<string, string>;
   summary?: string;
-  by?: "you" | "navigator";
+  by?: "you" | "navigator" | "agent";
 };
 
 /** Blend toward `to` by t; used to turn a 0..1 brightness knob into a colour. */
@@ -745,7 +745,7 @@ export function Space({
         showTip(
           e,
           [
-            `<b style="color:${o.color}">${esc(o.label)}</b> <span style="opacity:.55">· ${o.paths.length} files · by ${o.by === "navigator" ? "the navigator" : "you"}</span>`,
+            `<b style="color:${o.color}">${esc(o.label)}</b> <span style="opacity:.55">· ${o.paths.length} files · by ${o.by === "navigator" ? "the navigator" : o.by === "agent" ? "an agent" : "you"}</span>`,
             o.summary ? esc(o.summary) : "",
             `<span style="opacity:.45">click to fly there · right-click to hide</span>`,
           ].filter(Boolean).join("<br/>"),

@@ -6,6 +6,7 @@ import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
 import { ChartChanges } from "./components/ChartChanges";
 import { RemoteBanner } from "./components/RemoteBanner";
 import { AnswersPanel } from "./components/AnswersPanel";
+import { AgentsPanel } from "./components/AgentsPanel";
 import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
 import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
@@ -175,6 +176,7 @@ export function App() {
   const [notesOpen, setNotesOpen] = useState(false);
   const [storiesOpen, setStoriesOpen] = useState(false);
   const [answersOpen, setAnswersOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   /** The story playing, the playlist it's in, and whether to start on its own. */
   const [story, setStory] = useState<{ id: string; queue: string[]; autoplay: boolean; startAt?: { beat: number; ms: number } } | null>(null);
   // Questions about a story: where the open one is, one paused to make way
@@ -211,7 +213,8 @@ export function App() {
   /** Where a Shift-selection started, and where its moving end is. */
   const anchor = useRef<string | null>(null);
   /** Opening one left-hand panel closes the other; they share the column. */
-  const openPanel = (which: "filter" | "groups" | "notes" | "stories" | "answers" | null) => {
+  const openPanel = (which: "filter" | "groups" | "notes" | "stories" | "answers" | "agents" | null) => {
+    setAgentsOpen(which === "agents");
     setFilterOpen(which === "filter");
     setGroupsOpen(which === "groups");
     setNotesOpen(which === "notes");
@@ -1118,6 +1121,8 @@ export function App() {
           return showRange(null);
         case "replay":
           return startPlay();
+        case "show_branch":
+          return showBranch(c.branch, c.base);
         case "renamed": {
           // The server moved everything it keeps; this is what the page keeps.
           const to = renamer(c.renames);
@@ -1128,7 +1133,7 @@ export function App() {
         }
       }
     },
-    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding],
+    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch],
   );
   const runRef = useRef(run);
   runRef.current = run;
@@ -1946,6 +1951,11 @@ export function App() {
             <Btn onClick={() => openPanel(storiesOpen ? null : "stories")} hint="s">
               Stories{stories.length ? ` (${stories.length})` : ""}
             </Btn>
+            {state.agentsOn && (
+              <Btn onClick={() => openPanel(agentsOpen ? null : "agents")}>
+                Agents{state.agents.length ? ` (${state.agents.filter((a) => a.status === "working" || a.status === "starting").length || state.agents.length})` : ""}
+              </Btn>
+            )}
             {frames.length > 0 && !frameId && (
               <Btn onClick={() => openPanel(answersOpen ? null : "answers")} hint="a">
                 Answers ({frames.length})
@@ -2041,6 +2051,16 @@ export function App() {
             onClose={() => setFilterOpen(false)}
           />
         )}
+        {agentsOpen && state && (
+          <AgentsPanel
+            agents={state.agents}
+            onShow={(a) => {
+              setAgentsOpen(false);
+              showBranch(a.branch, a.base === "HEAD" ? a.baseSha : a.base);
+            }}
+            onClose={() => setAgentsOpen(false)}
+          />
+        )}
         {answersOpen && (
           <AnswersPanel frames={frames} current={frameId} onOpen={(id) => showFrame(id)} onClose={() => setAnswersOpen(false)} />
         )}
@@ -2103,7 +2123,7 @@ export function App() {
             onClose={() => setGroupsOpen(false)}
           />
         )}
-        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && !storiesOpen && !answersOpen && legend && !file && (
+        {!showIntro && !filterOpen && !groupsOpen && !notesOpen && !storiesOpen && !answersOpen && !agentsOpen && legend && !file && (
           <Legend
             groups={legend.groups}
             counts={legend.counts}

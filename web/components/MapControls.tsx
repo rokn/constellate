@@ -607,6 +607,7 @@ export function GroupsPanel({
       </button>
       <span className="text-[11.5px] tabular-nums text-muted">{g.paths.length}</span>
       {g.createdBy === "navigator" && <span className="text-[11px] text-muted" title="Marked by the navigator">nav</span>}
+      {g.createdBy === "agent" && <span className="text-[11px] text-muted" title="The files an agent changed">agent</span>}
       <button
         onClick={() => onToggle(g.id, !g.visible)}
         className="w-10 shrink-0 rounded px-1 text-[12px] text-muted hover:bg-white/5 hover:text-text"

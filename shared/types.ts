@@ -144,7 +144,7 @@ export type GroupOverlay = {
   reasons?: Record<string, string>;
   color: string;
   visible: boolean;
-  createdBy: "you" | "navigator";
+  createdBy: "you" | "navigator" | "agent";
   /** The answer that marked it, so an answer's markers can go together. */
   frameId?: string;
   createdAt: number;
@@ -407,6 +407,8 @@ export type UiCommand =
   | { cmd: "clear_range" }
   /** Fly through the commits in the current range, one by one. */
   | { cmd: "replay" }
+  /** Put a branch on the map, lit against where it forked from `base`. */
+  | { cmd: "show_branch"; branch: string; base?: string }
   /** Files moved; what the page keeps by path (its filter) follows them. */
   | { cmd: "renamed"; renames: Renames };
 
@@ -478,6 +480,46 @@ export type SessionState = {
   locked?: boolean;
   /** The server clones GitHub repos on request and switches between them (see /api/repos). */
   library?: boolean;
+  /** Coding agents working on this repo, each on its own branch in its own worktree. */
+  agents: AgentRun[];
+  /** Whether this server lets you start agents at all. */
+  agentsOn?: boolean;
+};
+
+export type AgentStatus = "starting" | "working" | "done" | "failed" | "stopped";
+
+/**
+ * A coding agent: one Agent SDK session working in a git worktree of the
+ * repo, on a branch of its own. What it changes is committed to that branch
+ * when a turn ends; landing it is yours.
+ */
+export type AgentRun = {
+  id: string;
+  title: string;
+  /** What it was asked to do first. */
+  task: string;
+  status: AgentStatus;
+  /** Its branch, e.g. agent/add-logging-x1y2. */
+  branch: string;
+  /** The branch (or HEAD) it started from, and that commit. */
+  base: string;
+  baseSha: string;
+  worktree: string;
+  /** Files it has changed since it started, repo-relative. */
+  files: string[];
+  /** Commits on its branch since it started. */
+  commits: number;
+  /** What it's doing right now, in a line. */
+  activity?: string;
+  /** Its last word on what it did. */
+  summary?: string;
+  error?: string;
+  costUsd?: number;
+  /** The Agent SDK session, resumed for follow-ups. */
+  sessionId?: string;
+  turns: { role: "you" | "agent"; text: string; at: number }[];
+  createdAt: number;
+  updatedAt: number;
 };
 
 /** A GitHub repo cloned on a server that keeps several (CODEFLIGHT_REPOS_DIR). */

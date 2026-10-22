@@ -39,6 +39,7 @@ import {
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
+import { AGENTS_ON, discardAgent, getAgent, messageAgent, startAgent, stopAgent, stopAllAgents } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
 import { branchDiff, branchFileDiff, fetchRemotes, listBranches } from "./branch";
@@ -116,6 +117,7 @@ async function open(root: string) {
   stopNavigator();
   stopGo();
   cancelStories();
+  stopAllAgents();
   try {
     await openRepo(root);
     // A freshly charted repo gets its intro stories written right after.
@@ -140,6 +142,7 @@ async function openGitHub(id: string) {
   stopNavigator();
   stopGo();
   cancelStories();
+  stopAllAgents();
   const root = rootOf(id);
   resetSession(root, id.split("/")[1]);
   try {
@@ -554,6 +557,28 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       json(res, 200, { ok: true });
       return true;
     }
+    case "POST /api/agents": {
+      // Coding agents: start one, tell one more, stop one, or throw its work away.
+      const b = await body<{ action?: string; id?: string; task?: string; title?: string; text?: string }>(req);
+      try {
+        switch (b.action) {
+          case "start":
+            return json(res, 200, { ok: true, agent: await startAgent(b.task ?? "", { title: b.title }) }), true;
+          case "message":
+            return json(res, 200, { ok: true, status: messageAgent(b.id ?? "", b.text ?? "") }), true;
+          case "stop":
+            return json(res, 200, { ok: stopAgent(b.id ?? "") }), true;
+          case "discard":
+            if (!getAgent(b.id ?? "")) return json(res, 404, { error: "No such agent." }), true;
+            await discardAgent(b.id!);
+            return json(res, 200, { ok: true }), true;
+        }
+      } catch (err) {
+        return json(res, 400, { error: err instanceof Error ? err.message : String(err) }), true;
+      }
+      json(res, 400, { error: "Unknown action." });
+      return true;
+    }
     case "POST /api/interrupt":
       json(res, 200, { ok: interrupt() });
       return true;
@@ -699,6 +724,7 @@ async function main() {
   }
 
   session.state.locked = LOCKED;
+  session.state.agentsOn = AGENTS_ON;
   if (REPOS_DIR) {
     // A shelf of GitHub repos: pick up where the last visit left off.
     session.state.library = true;
