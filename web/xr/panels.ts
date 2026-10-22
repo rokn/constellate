@@ -3,6 +3,7 @@ import { clock, liveDiagrams, storyMs, absMs, wordAt } from "../lib/story";
 import type { Actions, Model } from "./model";
 import { CodeView, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
 import type { Engine } from "./engine";
+import { HintsPanel, TunePanel } from "./tune";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
 
 /**
@@ -89,7 +90,7 @@ abstract class ScrollPanel extends Panel {
 export class DockPanel extends Panel {
   m: Model | null = null;
   constructor(private a: Actions) {
-    super("dock", 0.66, 0.15);
+    super("dock", 0.8, 0.15);
   }
   update(m: Model) {
     const p = this.m;
@@ -103,6 +104,8 @@ export class DockPanel extends Panel {
       p.tour !== m.tour ||
       p.toast !== m.toast ||
       p.menuOpen !== m.menuOpen ||
+      p.tuneOpen !== m.tuneOpen ||
+      p.hintsOpen !== m.hintsOpen ||
       p.repoName !== m.repoName ||
       p.placing !== m.placing ||
       p.visibleCount !== m.visibleCount
@@ -132,7 +135,7 @@ export class DockPanel extends Panel {
 
     // Middle: the voice, a tour caption, a toast, or what the navigator is doing.
     const midX = 360;
-    const midW = W - midX - 420;
+    const midW = W - midX - 620;
     ctx.font = sans(23);
     let line = "";
     let color = C.text;
@@ -148,14 +151,16 @@ export class DockPanel extends Panel {
     lines.forEach((l, i) => ctx.fillText(l, midX, 52 + i * 32 + (3 - lines.length) * 16));
     if (m.toast?.undo) this.button(ctx, "undo", midX + midW - 100, this.H - 64, "Undo", m.toast.undo, { size: 22, w: 100 });
 
-    // Right: menu, voice, ask.
-    let x = W - PAD - 400;
+    // Right: menu, tune, voice, ask, hints.
+    let x = W - PAD - 596;
     const y = (this.H - 64) / 2;
-    x = this.button(ctx, "menu", x, y, "Menu", this.a.toggleMenu, { w: 120, h: 64, active: m.menuOpen }) + 12;
+    x = this.button(ctx, "menu", x, y, "Menu", this.a.toggleMenu, { w: 112, h: 64, active: m.menuOpen }) + 10;
+    x = this.button(ctx, "tune", x, y, "Tune", this.a.toggleTune, { w: 104, h: 64, active: m.tuneOpen }) + 10;
     const v = m.voice.state;
     const voiceLabel = v === "listening" ? "Listening" : v === "speaking" ? "Speaking" : v === "connecting" ? "…" : "Voice";
-    x = this.button(ctx, "voice", x, y, voiceLabel, this.a.toggleVoice, { w: 140, h: 64, active: v !== "idle" && v !== "error", accent: C.course, disabled: !m.voice.available }) + 12;
-    this.button(ctx, "ask", x, y, "Ask", () => this.a.openKeyboard("ask"), { w: 116, h: 64 });
+    x = this.button(ctx, "voice", x, y, voiceLabel, this.a.toggleVoice, { w: 136, h: 64, active: v !== "idle" && v !== "error", accent: C.course, disabled: !m.voice.available }) + 10;
+    x = this.button(ctx, "ask", x, y, "Ask", () => this.a.openKeyboard("ask"), { w: 96, h: 64 }) + 10;
+    this.button(ctx, "hints", x, y, "?", this.a.toggleHints, { w: 64, h: 64, active: m.hintsOpen });
   }
 }
 
@@ -260,6 +265,8 @@ export class MenuPanel extends Panel {
     if (m.mode !== "ar" && m.canAR) x = this.button(ctx, "ar", x, y, "Passthrough (AR)", () => a.enter("ar"), { size: 24, accent: C.course }) + 10;
     if (m.mode === "ar") x = this.button(ctx, "place", x, y, "Place on a surface", a.placeMap, { size: 24, active: m.placing }) + 10;
     x = this.button(ctx, "recenter", x, y, "Recenter panels", a.recenterPanels, { size: 24 }) + 10;
+    x = this.button(ctx, "tune", x, y, "Tune…", a.toggleTune, { size: 24 }) + 10;
+    x = this.button(ctx, "hints", x, y, "Controls", a.toggleHints, { size: 24 }) + 10;
     if (m.mode !== "flat") x = this.button(ctx, "exit", x, y, "Exit", a.exitXR, { size: 24 }) + 10;
   }
 
@@ -775,6 +782,8 @@ export class Panels {
   readonly answer: AnswerPanel;
   readonly story: StoryPanel;
   readonly keyboard: KeyboardPanel;
+  readonly tune: TunePanel;
+  readonly hints: HintsPanel;
   private lastKeyboard: Model["keyboard"] = null;
 
   constructor(
@@ -788,15 +797,21 @@ export class Panels {
     this.answer = new AnswerPanel(a, links);
     this.story = new StoryPanel(a, links);
     this.keyboard = new KeyboardPanel(a);
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard]) engine.addPanel(p);
+    this.tune = new TunePanel(a);
+    this.hints = new HintsPanel(a);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints]) engine.addPanel(p);
   }
 
   update(m: Model) {
     const e = this.engine;
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story]) p.update(m);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune]) p.update(m);
     e.show(this.dock, "dock");
     if (m.menuOpen) e.show(this.menu, "center");
     else e.hide(this.menu);
+    if (m.tuneOpen) e.show(this.tune, "tune");
+    else e.hide(this.tune);
+    if (m.hintsOpen) e.show(this.hints, "hints");
+    else e.hide(this.hints);
     if (m.file) e.show(this.file, "right");
     else e.hide(this.file);
     // Answers and stories share the left: a story takes the stage while it plays.

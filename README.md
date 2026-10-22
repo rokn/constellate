@@ -47,12 +47,18 @@ and open `https://<your-LAN-address>:4443`.
 
 | Quest controller | |
 | --- | --- |
-| Trigger, or pinch | Point and select; on open sky, drag the map |
-| Grip | Grab the map; both grips to scale and turn it; on a panel, carry it |
-| Left stick · right stick | Fly where you point · snap turn ← →, zoom ↑ ↓ |
+| Trigger, or pinch | Point and select; held and moved on a body, drag it; on open sky, drag the map |
+| Grip | Grab the map; both grips to scale and turn it; on a panel or its handle, carry it |
+| Left stick · right stick | Fly where you point · turn ← →, zoom ↑ ↓ (or push and pull a held body) |
 | A · B · X · Y | Menu · back · voice · the whole map |
 
-History, branch view, tuning and custom views stay on the desktop for now.
+The dock's **?** shows these in the headset. **Tune** there holds every knob the desktop's
+Tune panel has (the same settings, so changes carry across), plus the headset's own:
+render resolution and bloom, how much of the room shows through in passthrough, a floor
+grid in VR, turning and speeds, and the voice volume. Panels stay where you carry them;
+Menu → **Recenter panels** brings them back in front of you.
+
+History, branch view and custom views stay on the desktop for now.
 
 ## Shortcuts
 

@@ -15,6 +15,7 @@ import { Space, type Grouping, type Overlay, type SpaceHandle, type TouchHit, ty
 import { FilterPanel, GroupsPanel, Legend, OTHER, OrganizeBar } from "./components/MapControls";
 import { TuningPanel } from "./components/TuningPanel";
 import { DEFAULT_TUNING, loadTuning, saveTuning, type Tuning } from "./lib/tuning";
+import { loadXR, saveXR, sound, type XRSettings } from "./lib/xrSettings";
 import { Dossier, type Pointer } from "./components/Dossier";
 import { FilePanel } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
@@ -164,6 +165,12 @@ export function App() {
   // own saved view replaces them when it opens (see the repo-change effect).
   const [tuning, setTuning] = useState<Tuning>(loadTuning);
   const [tuneOpen, setTuneOpen] = useState(false);
+  // The headset's own knobs (and the voice volume), kept per browser.
+  const [xrSettings, setXRSettings] = useState<XRSettings>(loadXR);
+  useEffect(() => {
+    saveXR(xrSettings);
+    sound.volume = xrSettings.voiceVolume;
+  }, [xrSettings]);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [storiesOpen, setStoriesOpen] = useState(false);
@@ -1155,7 +1162,7 @@ export function App() {
     }
   }, [state?.activity]);
 
-  const voice = useVoice({ screen, onCommand: (c) => runRef.current(c) });
+  const voice = useVoice({ screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume });
 
   // Talking over a story pauses it, so you and the voice can hear each other.
   useEffect(() => {
@@ -1443,6 +1450,8 @@ export function App() {
       totalCount: mapGraph?.files.length ?? 0,
       filter: xrFilter,
       stories,
+      tuning,
+      settings: xrSettings,
     },
     actions: {
       openFile: (p, l, e) => openFile(p, l, e),
@@ -1501,6 +1510,8 @@ export function App() {
       reanalyze: () => void post("/api/reanalyze"),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
       isFile: (p) => onMap.has(p),
+      setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),
+      setXR: (patch) => setXRSettings((x) => ({ ...x, ...patch })),
     },
     handlers: {
       onPick: (h) => {

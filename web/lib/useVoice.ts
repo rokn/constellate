@@ -28,7 +28,7 @@ function fromBase64(b64: string): Float32Array {
   return out;
 }
 
-export function useVoice({ screen, onCommand }: { screen: ScreenContext; onCommand: (cmd: UiCommand) => void }) {
+export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenContext; onCommand: (cmd: UiCommand) => void; volume?: number }) {
   const [state, setState] = useState<VoiceState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
@@ -39,6 +39,12 @@ export function useVoice({ screen, onCommand }: { screen: ScreenContext; onComma
   const audio = useRef<AudioContext | null>(null);
   const mic = useRef<MediaStream | null>(null);
   const playback = useRef<AudioWorkletNode | null>(null);
+  const gain = useRef<GainNode | null>(null);
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  useEffect(() => {
+    if (gain.current) gain.current.gain.value = volume;
+  }, [volume]);
   const partial = useRef({ user: "", voice: "" });
   const onCommandRef = useRef(onCommand);
   onCommandRef.current = onCommand;
@@ -71,6 +77,7 @@ export function useVoice({ screen, onCommand }: { screen: ScreenContext; onComma
     void audio.current?.close();
     audio.current = null;
     playback.current = null;
+    gain.current = null;
     setState("idle");
     setHeard("");
     commitVoice();
@@ -88,7 +95,11 @@ export function useVoice({ screen, onCommand }: { screen: ScreenContext; onComma
       await ctx.audioWorklet.addModule("/pcm-worklets.js");
 
       const play = new AudioWorkletNode(ctx, "playback-processor", { outputChannelCount: [1] });
-      play.connect(ctx.destination);
+      // Through a gain, so the voice can be turned up (a headset's speakers are quiet) or down.
+      const g = ctx.createGain();
+      g.gain.value = volumeRef.current;
+      gain.current = g;
+      play.connect(g).connect(ctx.destination);
       play.port.onmessage = (e) => {
         if (e.data?.type === "playing") setState(e.data.value ? "speaking" : "listening");
       };
