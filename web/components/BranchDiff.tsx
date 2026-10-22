@@ -269,10 +269,12 @@ export function BranchMapBar({
   onClose: () => void;
 }) {
   const [showCommits, setShowCommits] = useState(false);
+  // The file chips sit over the map; on a tablet or a narrow window they start folded away.
+  const [showFiles, setShowFiles] = useState(() => matchMedia("(min-width: 1024px) and (pointer: fine)").matches);
   const totals = (sum?.files ?? []).reduce((t, f) => ({ add: t.add + f.add, del: t.del + f.del }), { add: 0, del: 0 });
   const files = [...(sum?.files ?? [])].sort((a, b) => b.add + b.del - (a.add + a.del));
   return (
-    <div className="glass rise pointer-events-auto w-full max-w-[980px] rounded-xl px-4 py-3">
+    <div className="glass rise pointer-events-auto w-full max-w-[980px] rounded-xl px-3 py-2 sm:px-4 sm:py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="rounded border border-course/50 px-1.5 font-cond text-[11.5px] font-medium tracking-wide text-course">Branch</span>
         <h2 className="min-w-0 font-cond text-[18px] font-semibold">
@@ -281,7 +283,7 @@ export function BranchMapBar({
           <span className="font-mono text-[14.5px]">{sum?.base ?? "…"}</span>
         </h2>
         {sum && (
-          <span className="text-[12.5px] text-muted">
+          <span className="hidden text-[12.5px] text-muted md:inline">
             {sum.commits.length} commit{sum.commits.length === 1 ? "" : "s"} · {sum.files.length} file{sum.files.length === 1 ? "" : "s"} ·{" "}
             <span className="text-good">+{totals.add}</span> <span className="text-bad">−{totals.del}</span> · since{" "}
             <span className="font-mono">{sum.mergeBase.slice(0, 7)}</span>
@@ -294,11 +296,16 @@ export function BranchMapBar({
               <button onClick={() => setShowCommits((s) => !s)} aria-expanded={showCommits} className={`rounded px-2 py-0.5 hover:bg-white/5 ${showCommits ? "text-text" : "text-muted hover:text-text"}`}>
                 Commits
               </button>
+              {files.length > 0 && (
+                <button onClick={() => setShowFiles((s) => !s)} aria-expanded={showFiles} className={`rounded px-2 py-0.5 hover:bg-white/5 ${showFiles ? "text-text" : "text-muted hover:text-text"}`}>
+                  Files <span className="tabular-nums text-muted/80">{files.length}</span>
+                </button>
+              )}
               <button onClick={onCodeDiff} className="rounded px-2 py-0.5 text-muted hover:bg-white/5 hover:text-text" title="Every changed file's diff, side by side">
                 Code diff
               </button>
               <button onClick={onExplain} className="rounded-md bg-course px-2.5 py-0.5 font-cond text-[14.5px] font-semibold text-night hover:brightness-110">
-                Explain as a story
+                Explain<span className="hidden sm:inline"> as a story</span>
               </button>
             </>
           )}
@@ -309,7 +316,7 @@ export function BranchMapBar({
       </div>
       {error && <p className="mt-1.5 text-[13px] text-bad">{error}</p>}
       {showCommits && sum && (
-        <ul className="mt-2 max-h-[120px] space-y-0.5 overflow-y-auto">
+        <ul className="mt-2 max-h-[min(120px,18vh)] space-y-0.5 overflow-y-auto">
           {sum.commits.map((c) => (
             <li key={c.sha} className="flex gap-2 text-[12.5px]">
               <span className="shrink-0 font-mono text-muted">{c.sha.slice(0, 7)}</span>
@@ -319,8 +326,8 @@ export function BranchMapBar({
           ))}
         </ul>
       )}
-      {sum && files.length > 0 && (
-        <ul className="mt-2 flex max-h-[96px] flex-wrap gap-1 overflow-y-auto">
+      {showFiles && sum && files.length > 0 && (
+        <ul className="mt-2 flex max-h-[min(96px,15vh)] flex-wrap gap-1 overflow-y-auto">
           {files.map((f) => {
             const st = STATUS[f.status[0]] ?? { label: f.status[0], tone: "text-muted" };
             const here = onMapPaths.has(f.path);
