@@ -51,6 +51,7 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
         {a.pr && (
           <a href={a.pr.url} target="_blank" rel="noreferrer" className="ml-1.5 text-course hover:underline">
             PR #{a.pr.number}
+            {a.pr.state === "merged" ? " merged" : ""}
           </a>
         )}
       </p>
@@ -96,7 +97,7 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
                 Stop
               </button>
             )}
-            {!running && a.commits > 0 && (!a.pr || a.pr.state !== "open") && (
+            {!running && a.commits > 0 && !a.pr && (
               <button
                 onClick={() => void run({ action: "pr" })}
                 disabled={busy}
@@ -104,6 +105,18 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
                 title="Push its branch and open a pull request on GitHub"
               >
                 {busy ? "Opening…" : "Open PR"}
+              </button>
+            )}
+            {!running && a.pr?.state === "open" && (
+              <button
+                onClick={() => {
+                  if (confirm(`Merge PR #${a.pr!.number} "${a.title}" into ${a.pr!.base}? Merging to main deploys.`)) void run({ action: "merge" });
+                }}
+                disabled={busy}
+                className="glass rounded-md px-2 py-0.5 text-good hover:text-text disabled:opacity-40"
+                title="Rebase-merge its pull request on GitHub"
+              >
+                {busy ? "Merging…" : "Merge"}
               </button>
             )}
             <button

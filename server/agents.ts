@@ -279,9 +279,12 @@ async function turn(id: string, prompt: string) {
   const next = stopped ? undefined : entry.queue.shift();
   if (next) return turn(id, next);
   live.delete(id);
-  // Its pull request follows its branch: a follow-up's commits go up too.
+  // Finished work goes up as a pull request on its own (when the server has a
+  // GitHub token), and a follow-up's commits go to the same one.
   const after = getAgent(id);
-  if (after?.pr && !stopped) await openPullRequest(id).catch((err) => patch(id, { error: `Could not update the PR: ${err instanceof Error ? err.message : String(err)}` }));
+  if (after && after.status === "done" && after.commits > 0 && TOKEN()) {
+    await openPullRequest(id).catch((err) => patch(id, { error: `Could not open the PR: ${err instanceof Error ? err.message : String(err)}` }));
+  }
   const done = getAgent(id);
   if (done) for (const fn of finished) fn(done);
 }
@@ -391,13 +394,19 @@ function prBody(a: AgentRun) {
     a.task,
     "",
     a.summary ? `**What the agent said:** ${a.summary}` : "",
-    a.files.length ? `\n**Files:** ${a.files.map((f) => `\`${f}\``).join(", ")}` : "",
+    a.files.length ? `**Files:** ${a.files.map((f) => `\`${f}\``).join(", ")}` : "",
     "",
     "---",
     "_Opened from Constellate by a coding agent._",
   ]
     .filter((l, i, all) => l || all[i - 1])
     .join("\n");
+}
+
+async function githubRepo(root: string) {
+  const repo = parseGitHub(await git(root, ["remote", "get-url", "origin"]).catch(() => ""));
+  if (!repo) throw new Error("Its origin isn't a GitHub repository.");
+  return repo;
 }
 
 /**
@@ -413,8 +422,7 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
   const root = session.state.repo?.root;
   if (!root) throw new Error("No repository is open.");
   if (!TOKEN()) throw new Error("No GitHub token on the server (GIT_TOKEN), so it can't open pull requests.");
-  const repo = parseGitHub(await git(root, ["remote", "get-url", "origin"]).catch(() => ""));
-  if (!repo) throw new Error("Its origin isn't a GitHub repository.");
+  const repo = await githubRepo(root);
 
   const head = await git(root, ["rev-parse", `refs/heads/${a.branch}`]);
   if (a.pr?.pushedSha !== head) {
@@ -458,4 +466,38 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
   pr = { ...pr, pushedSha: head };
   patch(id, { pr, error: undefined });
   return pr;
+}
+
+/**
+ * Rebase-merge an agent's pull request on GitHub, pushing anything it hasn't
+ * yet. Its branch is deleted on GitHub afterwards; the local one stays until
+ * you discard the agent.
+ */
+export async function mergePullRequest(id: string): Promise<NonNullable<AgentRun["pr"]>> {
+  if (live.has(id)) throw new Error("It's still working; wait for it to finish.");
+  // Brings the PR up to date with the branch (or opens it, if it has none yet).
+  const pr = await openPullRequest(id);
+  const a = getAgent(id)!;
+  const root = session.state.repo!.root;
+  const repo = await githubRepo(root);
+  patch(id, { activity: "Merging its PR" });
+  try {
+    type Merge = { merged?: boolean; message?: string };
+    const res = await github<Merge>("PUT", `/repos/${repo}/pulls/${pr.number}/merge`, {
+      // Its commits land as they are, one per turn, on top of the base.
+      merge_method: "rebase",
+      // Only what was reviewed: if the branch moved since, GitHub refuses.
+      sha: pr.pushedSha,
+    });
+    if (res.status !== 200 || !res.data.merged) {
+      const now = await github<{ merged?: boolean; state?: string }>("GET", `/repos/${repo}/pulls/${pr.number}`);
+      if (!now.data.merged) throw new Error(`GitHub wouldn't merge it: ${res.data.message ?? res.status}`);
+    }
+    const merged = { ...pr, state: "merged" as const };
+    patch(id, { pr: merged, error: undefined });
+    await github("DELETE", `/repos/${repo}/git/refs/heads/${a.branch.split("/").map(encodeURIComponent).join("/")}`).catch(() => {});
+    return merged;
+  } finally {
+    patch(id, { activity: undefined });
+  }
 }

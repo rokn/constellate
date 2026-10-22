@@ -172,6 +172,8 @@ type Tab = "map" | "modules" | "answers" | "stories" | "agents" | "repo";
 export class MenuPanel extends Panel {
   m: Model | null = null;
   tab: Tab = "map";
+  /** The agent whose Merge was pressed once, waiting for the second press. */
+  private armed: string | null = null;
   constructor(private a: Actions) {
     super("menu", 0.78, 0.6);
   }
@@ -316,12 +318,24 @@ export class MenuPanel extends Panel {
         const running = ag.status === "working" || ag.status === "starting";
         const extra: Row["extra"] = [];
         if (running) extra.push({ label: "Stop", onClick: () => a.agentAction(ag.id, "stop") });
-        else if (ag.commits > 0 && ag.pr?.state !== "open") extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
+        else if (ag.pr?.state === "open") {
+          // Merging deploys: the first press arms it, the second merges.
+          const armed = this.armed === ag.id;
+          extra.push({
+            label: armed ? "Sure?" : "Merge",
+            active: armed,
+            onClick: () => {
+              if (armed) a.agentAction(ag.id, "merge");
+              this.armed = armed ? null : ag.id;
+              this.invalidate();
+            },
+          });
+        } else if (ag.commits > 0 && !ag.pr) extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
         const what = running ? ag.activity ?? "working…" : ag.error ?? ag.summary ?? ag.status;
         return {
           id: ag.id,
           label: ag.title,
-          detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}` : ""} · ${what}`,
+          detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}${ag.pr.state === "merged" ? " merged" : ""}` : ""} · ${what}`,
           color: dot[ag.status],
           onClick: () => a.focusAgent(ag.id),
           extra,

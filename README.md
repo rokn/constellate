@@ -43,11 +43,14 @@ a marker as it goes, and when it finishes the voice tells you what it did. **Sho
 (or "show me what it did") puts its branch on the map against where it started; you can
 send it follow-ups, stop it, or discard it with its branch.
 
-What it changed is committed to its branch when it stops; it never pushes on its own.
-**Open PR** (or "open a PR for it") pushes the branch and opens a pull request into the
-branch it started from, using `GIT_TOKEN` (a fine-grained token needs Contents and Pull
-requests read and write). After that, follow-ups you send it are pushed to the same PR.
-In the headset, the menu's **Agents** tab lists them, starts new ones, and opens PRs. An agent can read and edit files only inside its worktree, and has no
+What it changed is committed to its branch when it stops. With `GIT_TOKEN` set, the
+branch is then pushed and a pull request opened into the branch it started from (a
+fine-grained token needs Contents and Pull requests read and write); follow-ups you send
+it go to the same PR. **Merge** in the panel (or "merge it" to the voice, which asks
+first) rebase-merges the PR on GitHub. Without a token, nothing leaves the box. In the headset,
+the menu's **Agents** tab lists them, starts new ones, and merges them (press Merge twice).
+
+An agent can read and edit files only inside its worktree, and has no
 shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
 
 ## In a headset

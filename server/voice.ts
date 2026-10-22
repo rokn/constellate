@@ -6,7 +6,7 @@ import type { Frame, ScreenContext, UiCommand, View } from "../shared/types";
 import { ask, interrupt, storyNote } from "./navigator";
 import { findPath } from "./scan";
 import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
-import { AGENTS_ON, discardAgent, findAgent, messageAgent, onAgentFinished, openPullRequest, startAgent, stopAgent } from "./agents";
+import { AGENTS_ON, discardAgent, findAgent, mergePullRequest, messageAgent, onAgentFinished, openPullRequest, startAgent, stopAgent } from "./agents";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -109,6 +109,7 @@ const AGENT_TOOLS = [
   fn("stop_agent", "Stop an agent. What it changed so far stays on its branch.", { agent: { type: "string" } }, ["agent"]),
   fn("show_agent", "Show what an agent changed: its branch on the map, lit against where it started, and the camera on its files. Instant.", { agent: { type: "string" } }, ["agent"]),
   fn("open_pr", "Land an agent's work: push its branch and open a pull request on GitHub (or update the one it has). Only when they ask to open a PR, land, ship or submit it. Takes a few seconds; you'll be told the result.", { agent: { type: "string" } }, ["agent"]),
+  fn("merge_pr", "Merge an agent's pull request (rebase) into its base branch. On this server merging to main deploys, so before calling it, say what will be merged and get a clear yes in this turn. Takes a few seconds; you'll be told the result.", { agent: { type: "string" } }, ["agent"]),
   fn("discard_agent", "Throw an agent's work away: its branch and its copy of the repo are deleted. Only when they explicitly ask to discard or delete it.", { agent: { type: "string" } }, ["agent"]),
 ];
 
@@ -172,7 +173,7 @@ function instructions(screen: ScreenContext): string {
     "If they just want to go somewhere — 'take me to the auth code', 'open the server' — that's navigation: use fly_to or focus_module yourself, no navigator needed.",
     "",
     AGENTS_ON
-      ? "You can also start coding agents (start_agent) when they want the code changed: each works on its own branch, and they review what it did on the map (show_agent) and land it as a pull request (open_pr) when they say so. Questions still go to the navigator."
+      ? "You can also start coding agents (start_agent) when they want the code changed: each works on its own branch, and they review what it did on the map (show_agent). A finished agent's work opens as a pull request on its own; merge_pr merges it, only after they confirm. Questions still go to the navigator."
       : "",
     "",
     `Repository: ${s.repo?.name ?? "(none)"} — status: ${s.status}${s.busy ? " (the navigator is working)" : ""}`,
@@ -201,10 +202,10 @@ function instructions(screen: ScreenContext): string {
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
     s.agents.length
       ? [
-          "Coding agents (for message_agent, stop_agent, show_agent, open_pr):",
+          "Coding agents (for message_agent, stop_agent, show_agent, open_pr, merge_pr):",
           ...s.agents.map(
             (a) =>
-              `  [${a.id}] ${a.title} — ${a.status}${a.activity ? `, ${a.activity}` : ""}; ${a.files.length} files changed on ${a.branch}${a.summary && a.status !== "working" ? `. It said: ${a.summary.slice(0, 400)}` : ""}${a.pr ? `; PR #${a.pr.number} open` : ""}${a.error ? ` (${a.error})` : ""}`,
+              `  [${a.id}] ${a.title} — ${a.status}${a.activity ? `, ${a.activity}` : ""}; ${a.files.length} files changed on ${a.branch}${a.summary && a.status !== "working" ? `. It said: ${a.summary.slice(0, 400)}` : ""}${a.pr ? `; PR #${a.pr.number} ${a.pr.state}` : ""}${a.error ? ` (${a.error})` : ""}`,
           ),
         ].join("\n")
       : "",
@@ -522,6 +523,15 @@ function bridge(client: WebSocket) {
           (err) => deliver(`Opening the pull request for "${a.title}" failed: ${err instanceof Error ? err.message : String(err)}. Tell them briefly.`),
         );
         return { ok: true, status: "working", say: "A few words that you're opening it." };
+      }
+      case "merge_pr": {
+        const a = findAgent(str("agent"));
+        if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
+        mergePullRequest(a.id).then(
+          (pr) => (sync(), deliver(`"${a.title}" is merged: PR #${pr.number} into ${pr.base}. Tell them in a line.`)),
+          (err) => deliver(`Merging "${a.title}" failed: ${err instanceof Error ? err.message : String(err)}. Tell them briefly.`),
+        );
+        return { ok: true, status: "working", say: "A few words that you're merging it." };
       }
       case "discard_agent": {
         const a = findAgent(str("agent"));

@@ -137,7 +137,7 @@ export type Actions = {
   startAgent: (task: string) => void;
   /** Light up an agent's files and fly there. */
   focusAgent: (id: string) => void;
-  agentAction: (id: string, action: "stop" | "pr") => void;
+  agentAction: (id: string, action: "stop" | "pr" | "merge") => void;
   isFile: (p: string) => boolean;
 };
 
