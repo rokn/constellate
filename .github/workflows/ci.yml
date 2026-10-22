@@ -50,3 +50,53 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Deploys main: bumps the image in HomeLab, which ArgoCD syncs to the cluster.
+  # HOMELAB_TOKEN is a fine-grained PAT with Contents: read and write on rokn/HomeLab.
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # One bump at a time, in push order.
+    concurrency:
+      group: homelab-bump
+      cancel-in-progress: false
+    steps:
+      # A slower run for an older commit must not roll back a newer one.
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
+          echo "current=$([ "$head" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.latest.outputs.current == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: rokn/HomeLab
+          token: ${{ secrets.HOMELAB_TOKEN }}
+      - if: steps.latest.outputs.current == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - if: steps.latest.outputs.current == 'true'
+        name: Bump image and regenerate manifests
+        env:
+          SUBJECT: ${{ github.event.head_commit.message }}
+        run: |
+          tag="sha-${GITHUB_SHA::7}"
+          sed -i -E "s|(ghcr.io/rokn/constellate:)sha-[0-9a-f]+|\1${tag}|" apps/constellate/app.go
+          grep -q "constellate:${tag}\"" apps/constellate/app.go
+          go run main.go
+          if git diff --quiet; then
+            echo "HomeLab already on ${tag}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/constellate
+          git commit -m "constellate: image ${tag} (${SUBJECT%%$'\n'*})"
+          for i in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git pull --rebase origin main
+          done
+          exit 1

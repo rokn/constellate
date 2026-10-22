@@ -2,9 +2,9 @@
 
 ## Deploying
 
-Pushing to `main` runs CI (`.github/workflows/ci.yml`), which builds and pushes `ghcr.io/rokn/constellate:sha-<short sha>`. That alone deploys nothing.
+Pushing to `main` runs CI (`.github/workflows/ci.yml`), which builds and pushes `ghcr.io/rokn/constellate:sha-<short sha>`, then its `deploy` job bumps the image in HomeLab and pushes to HomeLab's `main`. ArgoCD syncs the cluster from there. The job needs the `HOMELAB_TOKEN` secret (a fine-grained PAT with Contents read and write on `rokn/HomeLab`), and skips a commit that is no longer the head of `main`.
 
-To deploy, bump the image in the HomeLab repo (`~/programming/HomeLab`), directly on `main`:
+To deploy by hand (if the job fails), bump the image in the HomeLab repo (`~/programming/HomeLab`), directly on `main`:
 
 1. Wait for the CI run of the commit to succeed (`gh run list`), so the image exists.
 2. In HomeLab, change the `image` tag in `apps/constellate/app.go` to the new `sha-<short sha>`.
