@@ -31,6 +31,9 @@ type N = {
   id: string;
   type: NodeType;
   label: string;
+  /** Modules: what it does, and how many files it holds — for the hover tag. */
+  summary?: string;
+  files?: number;
   top?: string;
   loc?: number;
   depth?: number;
@@ -383,7 +386,13 @@ export function Space({
         n.type === "file"
           ? `${n.id}<br/><span style="opacity:.6">${n.loc ?? 0} lines</span>`
           : n.type === "module"
-            ? `<b>${n.label}</b>`
+            ? [
+                `<b>${esc(n.label)}</b>${n.files ? ` <span style="opacity:.55">· ${n.files} files</span>` : ""}`,
+                n.summary ? `<span style="display:inline-block;max-width:340px;white-space:normal">${esc(n.summary)}</span>` : "",
+                `<span style="opacity:.45">click to fly there · double-click to show only it · right-click to hide</span>`,
+              ]
+                .filter(Boolean)
+                .join("<br/>")
             : `${n.id.slice(4)}/`,
       )
       .nodeThreeObject((n) => objectFor(n))
@@ -1563,7 +1572,7 @@ export function Space({
     };
     const keep = (n: N) => {
       const prev = nodes.current.get(n.id);
-      next.set(n.id, prev ? Object.assign(prev, { label: n.label, loc: n.loc, top: n.top, depth: n.depth }) : { ...(n.x === undefined ? birthplace(n.id) : null), ...n });
+      next.set(n.id, prev ? Object.assign(prev, { label: n.label, summary: n.summary, files: n.files, loc: n.loc, top: n.top, depth: n.depth }) : { ...(n.x === undefined ? birthplace(n.id) : null), ...n });
     };
     const links: L[] = [];
 
@@ -1586,7 +1595,7 @@ export function Space({
       for (const m of overview?.modules ?? []) {
         const members = m.paths.filter((p) => next.has(p));
         if (!members.length) continue;
-        keep({ id: `mod:${m.id}`, type: "module", label: m.label });
+        keep({ id: `mod:${m.id}`, type: "module", label: m.label, summary: m.summary, files: members.length });
         // Tethering to every file would make big modules rigid; a sample holds
         // the beacon at the territory's centre just as well.
         const step = Math.max(1, Math.floor(members.length / 24));
@@ -1605,7 +1614,7 @@ export function Space({
         // A new beacon is born where its files already are, so the regroup
         // reads as the files gathering, not as everything flying to the origin.
         const born = !nodes.current.has(id) || modeChanged ? centroid(members) : null;
-        keep({ id, type: "module", label: gr.label, ...(born ?? {}) });
+        keep({ id, type: "module", label: gr.label, summary: gr.summary, files: members.length, ...(born ?? {}) });
         for (const p of members) links.push({ source: id, target: p, type: "member" });
       }
       for (const e of grouping!.edges) {

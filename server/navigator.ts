@@ -335,7 +335,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
             .array(
               z.object({
                 label: z.string().describe("2–4 words"),
-                summary: z.string().describe("One sentence"),
+                summary: z.string().describe("One short sentence, under 20 words: what it does. Shown when its beacon is hovered"),
                 paths: z
                   .array(z.union([z.string(), z.object({ path: z.string(), why: z.string() })]))
                   .describe(
@@ -413,7 +413,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
               z.object({
                 id: z.string(),
                 label: z.string().describe("2–4 words"),
-                summary: z.string().describe("One sentence"),
+                summary: z.string().describe("One short sentence, under 20 words: what it does. Shown when its beacon is hovered"),
                 paths: z.array(z.string()),
               }),
             )
@@ -482,7 +482,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
                 op: z.enum(["upsert_group", "move", "remove_group", "add_edge", "remove_edge"]),
                 id: z.string().optional().describe("upsert_group / remove_group: the group"),
                 label: z.string().optional(),
-                summary: z.string().optional(),
+                summary: z.string().optional().describe("One short sentence, under 20 words: what it does. Shown when its beacon is hovered"),
                 paths: z.array(z.string()).optional().describe("upsert_group / move: files or folder prefixes"),
                 to: z.string().optional().describe("move: target group; remove_group: where its files go; add_edge / remove_edge: target group"),
                 from: z.string().optional().describe("add_edge / remove_edge: source group"),
@@ -683,7 +683,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
               z.object({
                 id: z.string(),
                 label: z.string().describe("2–4 words"),
-                summary: z.string().describe("One sentence"),
+                summary: z.string().describe("One short sentence, under 20 words: what it does. Shown when its beacon is hovered"),
                 paths: z.array(z.string()).describe("Files, or directory prefixes ending with '/'"),
               }),
             )
@@ -1173,7 +1173,7 @@ async function placeNewFiles(): Promise<void> {
   const prompt = [
     "New files have appeared in the repository since the reader's map was organized, and the groupings below don't hold them yet, so they sit in \"Other\". Place them.",
     "",
-    "For each grouping: put each new file into the group it belongs to (revise_lens: move, or upsert_group with paths). When several new files together form something the groups don't cover — a new subsystem, a new feature area — add a group for them (upsert_group with a new id, a short label and a one-sentence summary). Leave everything that's already placed where it is; don't rename, merge or retire groups. A file that fits nowhere (a stray script, a fixture) can stay out.",
+    "For each grouping: put each new file into the group it belongs to (revise_lens: move, or upsert_group with paths). When several new files together form something the groups don't cover — a new subsystem, a new feature area — add a group for them (upsert_group with a new id, a short label and a summary of under 20 words). Leave everything that's already placed where it is; don't rename, merge or retire groups. A file that fits nowhere (a stray script, a fixture) can stay out.",
     "Decide from paths, outline and deps first; read a file only when they don't settle it. Groupings are independent: place the files in each one by its own logic.",
     "",
     ...groupings.flatMap((g) => [
