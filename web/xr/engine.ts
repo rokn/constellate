@@ -45,6 +45,8 @@ export type EngineHandlers = {
   onFocus?: (hit: MapHit) => void;
   /** A held body thrown away: hide it. */
   onFlick?: (hit: MapHit) => void;
+  /** A key pressed in the headset (a Bluetooth keyboard, say): true if it was used, so nothing else sees it. */
+  onKey?: (e: KeyboardEvent) => boolean;
 };
 
 type Grab = { p: Pointer; at0: THREE.Vector3 };
@@ -91,6 +93,8 @@ const MAX_SCALE = 0.25;
 const tmpM = new THREE.Matrix4();
 const tmpV = new THREE.Vector3();
 const Y = new THREE.Vector3(0, 1, 0);
+/** Keys that fly in the headset: the preview's, and the desktop's WASD and Q / E. */
+const FLY_KEYS = new Set(["arrowup", "arrowdown", "arrowleft", "arrowright", "pageup", "pagedown", "w", "a", "s", "d", "q", "e", "shift"]);
 
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
@@ -278,9 +282,12 @@ export class Engine {
       this.session = null;
       this.hitSource?.cancel();
       this.hitSource = null;
+      this.mouse.keys.clear();
       this.setMode("flat");
     });
     await this.renderer.xr.setSession(session);
+    // Keys typed in the headset are the room's: none should land in a desktop field you can't see.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     // A new session is a new room: panels open in front of you again.
     this.placed.clear();
     this.setMode(mode);
@@ -650,11 +657,34 @@ export class Engine {
       },
       { passive: false },
     );
-    window.addEventListener("keydown", (e) => {
-      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
-      this.mouse.keys.add(e.key.toLowerCase());
-    });
-    window.addEventListener("keyup", (e) => this.mouse.keys.delete(e.key.toLowerCase()));
+    // In the headset a keyboard is the room's: the panels have it first, then
+    // it flies, and the desktop's shortcuts get only what's left. Captured, so
+    // they don't see what was used.
+    const ours = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        const xr = this.renderer.xr.isPresenting;
+        if (!xr && (e.target as HTMLElement)?.tagName === "INPUT") return;
+        if (xr && this.h.onKey?.(e)) return ours(e);
+        const key = e.key.toLowerCase();
+        this.mouse.keys.add(key);
+        if (xr && FLY_KEYS.has(key) && !e.ctrlKey && !e.metaKey && !e.altKey) ours(e);
+      },
+      true,
+    );
+    window.addEventListener(
+      "keyup",
+      (e) => {
+        const key = e.key.toLowerCase();
+        this.mouse.keys.delete(key);
+        if (this.renderer.xr.isPresenting && FLY_KEYS.has(key)) ours(e);
+      },
+      true,
+    );
     window.addEventListener("blur", () => this.mouse.keys.clear());
   }
 
@@ -913,7 +943,7 @@ export class Engine {
     }
     this.applyGrab();
     this.readGamepads(dt);
-    this.flatKeys(dt);
+    this.keyFlight(dt);
 
     // The overview drifts round, slowly, until you touch it.
     const tu = this.map.tuning;
@@ -1213,19 +1243,28 @@ export class Engine {
     return head.pos;
   }
 
-  /** Flat preview: the arrow keys fly (Shift for faster), Page Up/Down rise and sink. */
-  private flatKeys(dt: number) {
-    if (this.renderer.xr.isPresenting) return;
+  /**
+   * The arrow keys fly (Shift for faster), Page Up/Down rise and sink. In the
+   * headset (a Bluetooth keyboard) WASD and Q / E do too, as on the desktop.
+   */
+  private keyFlight(dt: number) {
     const k = this.mouse.keys;
     if (!k.size) return;
+    const xr = this.renderer.xr.isPresenting;
+    const on = (key: string, letter: string) => k.has(key) || (xr && k.has(letter));
     const v = new THREE.Vector3(
-      (k.has("arrowright") ? 1 : 0) - (k.has("arrowleft") ? 1 : 0),
-      (k.has("pageup") ? 1 : 0) - (k.has("pagedown") ? 1 : 0),
-      (k.has("arrowdown") ? 1 : 0) - (k.has("arrowup") ? 1 : 0),
+      (on("arrowright", "d") ? 1 : 0) - (on("arrowleft", "a") ? 1 : 0),
+      (on("pageup", "e") ? 1 : 0) - (on("pagedown", "q") ? 1 : 0),
+      (on("arrowdown", "s") ? 1 : 0) - (on("arrowup", "w") ? 1 : 0),
     );
     if (!v.lengthSq()) return;
     this.touched();
-    this.world.position.sub(v.multiplyScalar(1.2 * dt * (k.has("shift") ? 3 : 1)).applyQuaternion(this.camera.quaternion));
+    const fast = k.has("shift") ? 3 : 1;
+    if (!xr) return void this.world.position.sub(v.multiplyScalar(1.2 * dt * fast).applyQuaternion(this.camera.quaternion));
+    // Level, the way you're facing, at the left stick's speed and with its settings.
+    const move = v.multiplyScalar(1.4 * this.settings.flySpeed * fast * dt).applyAxisAngle(Y, this.head().yaw);
+    if (this.settings.stickMovesMap) this.world.position.add(move);
+    else this.world.position.sub(move);
   }
 }
 

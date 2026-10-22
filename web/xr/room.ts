@@ -20,7 +20,11 @@ export class Room {
   /** The story position the panels last painted; null forces a paint. */
   private storyKey: string | null = null;
 
-  constructor(handlers: EngineHandlers, actions: Actions, private story: StorySource) {
+  constructor(
+    handlers: EngineHandlers,
+    private actions: Actions,
+    private story: StorySource,
+  ) {
     // The headset draws into its own framebuffer; the canvas only needs to exist.
     const host = document.createElement("div");
     host.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
@@ -32,6 +36,7 @@ export class Room {
     this.engine = new Engine(host, {
       ...handlers,
       onFrame: () => this.tick(),
+      onKey: (e) => this.key(e),
       onMode: (m) => {
         if (mirror) host.style.visibility = m === "flat" ? "hidden" : "visible";
         onMode(m);
@@ -52,6 +57,29 @@ export class Room {
     this.model = model;
     this.storyKey = null;
     this.tick();
+  }
+
+  /**
+   * A real keyboard in the headset (a Bluetooth one paired with the Quest, or
+   * the PC's over Link). With the room's keyboard open it types there: Enter
+   * sends, Esc closes. Closed, Enter or / opens it to ask, as / does on the
+   * desktop. What's not used here flies (see Engine) or reaches the desktop's
+   * own shortcuts.
+   */
+  private key(e: KeyboardEvent) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    const kb = this.panels.keyboard;
+    if (!kb.open) {
+      if (e.key !== "Enter" && e.key !== "/") return false;
+      this.actions.openKeyboard("ask");
+      return true;
+    }
+    if (e.key === "Enter") kb.submit();
+    else if (e.key === "Escape") this.actions.closeKeyboard();
+    else if (e.key === "Backspace") kb.backspace();
+    else if (e.key.length === 1) kb.type(e.key);
+    // Anything else is swallowed while typing, so no shortcut fires under the keyboard.
+    return true;
   }
 
   /**

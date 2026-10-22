@@ -70,6 +70,12 @@ and open `https://<your-LAN-address>:4443`.
 | Right stick click | On a body, focus on it; again, a ring more of its connections (the bar over the dock widens and narrows it, and **Only these** hides the rest of the map) |
 | A · B · X · Y | Menu · back · voice · the whole map |
 
+A keyboard works in the headset too, in VR and passthrough (a Bluetooth one paired with
+the Quest, or the PC's own over Link). **Enter** or **/** opens the room's keyboard to ask,
+and while it's open you type into it: **Enter** sends, **Esc** closes. Otherwise the arrows
+or **WASD** fly the way you're facing, **Q / E** (or Page Down / Up) sink and rise, and
+**Shift** goes faster; other keys are the desktop's shortcuts.
+
 The dock's **?** shows these in the headset. **Tune** there holds every knob the desktop's
 Tune panel has (the same settings, so changes carry across), plus the headset's own:
 render resolution and bloom, how much of the room shows through in passthrough, a floor
