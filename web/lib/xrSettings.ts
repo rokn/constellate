@@ -26,6 +26,18 @@ export type XRSettings = {
   floorInAR: boolean;
   // Comfort
   flySpeed: number;
+  /** The left stick pushes the map around instead of flying you through it. */
+  stickMovesMap: boolean;
+  /** Fly toward where your head looks, not where the controller points. */
+  flyWhereLooking: boolean;
+  /** Turn about yourself instead of about the middle of what you're looking at. */
+  turnAroundMe: boolean;
+  /** In passthrough, once the map is set on a surface, flights keep it there instead of bringing it to you. */
+  keepOnSurface: boolean;
+  /** Fling a held body away to hide it. */
+  flick: boolean;
+  /** How fast (m/s, at the end of a metre-long ray) a fling must be. */
+  flickSpeed: number;
   scaleSpeed: number;
   snapTurn: number;
   smoothTurn: boolean;
@@ -51,6 +63,12 @@ export const DEFAULT_XR: XRSettings = {
   floorSize: 8,
   floorInAR: false,
   flySpeed: 1,
+  stickMovesMap: false,
+  flyWhereLooking: false,
+  turnAroundMe: false,
+  keepOnSurface: true,
+  flick: true,
+  flickSpeed: 3,
   scaleSpeed: 1,
   snapTurn: 30,
   smoothTurn: false,
@@ -103,10 +121,16 @@ export const XR_SECTIONS: XRSection[] = [
     title: "Headset · Moving",
     knobs: [
       r("flySpeed", "Fly speed", 0.2, 5, 0.05, "Left stick"),
+      t("stickMovesMap", "Stick moves the map", "Push the map around with the left stick, instead of flying through it"),
+      t("flyWhereLooking", "Fly where you look", "The left stick flies toward where your head faces, not where the controller points"),
       r("scaleSpeed", "Zoom speed", 0.2, 5, 0.05, "Right stick up and down"),
       t("smoothTurn", "Smooth turn", "Right stick turns continuously instead of in steps"),
       r("snapTurn", "Snap turn (°)", 10, 90, 5),
       r("turnSpeed", "Smooth turn speed", 0.2, 4, 0.05),
+      t("turnAroundMe", "Turn around me", "Off: the right stick turns the map about the middle of what you're looking at"),
+      t("keepOnSurface", "Stay on the surface", "In passthrough, after placing the map, focusing keeps it on the table instead of bringing it to you"),
+      t("flick", "Fling to hide", "Throw a held body away to hide it from the map"),
+      r("flickSpeed", "Fling speed", 1, 8, 0.1, "How hard a throw has to be"),
       t("dockFollows", "Dock follows you", "The bar under your gaze turns with you. Off, it stays where you put it"),
       r("panelDistance", "Panel distance", 0.6, 2, 0.05, "How far panels open from you"),
     ],

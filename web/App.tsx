@@ -29,7 +29,7 @@ import { StoriesPanel } from "./components/StoriesPanel";
 import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
 import { useXR, type XR, type XRFeed } from "./xr/useXR";
 import { XRButtons } from "./xr/XRButtons";
-import type { MapInput, MapStyle } from "./xr/map";
+import type { MapHit, MapInput, MapStyle } from "./xr/map";
 
 const DEFAULT_LAYERS: Record<Layer, boolean> = { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true };
 
@@ -1421,6 +1421,26 @@ export function App() {
   const xrStyle = useMemo((): MapStyle => ({ emphasis, active: file?.path ?? null, layers }), [emphasis, file?.path, layers]);
   /** What's under a folder on the map. */
   const filesUnder = (dir: string) => (mapGraph?.files ?? []).map((f) => f.path).filter((p) => (dir === "." ? !p.includes("/") : p.startsWith(`${dir}/`)));
+  /** The files and name behind something pointed at on the map in the headset. */
+  const filesOfHit = (h: MapHit): { paths: string[]; label: string; module?: { id: string; label: string; paths: string[] } } => {
+    if (h.kind === "file") return { paths: [h.id], label: h.id.split("/").pop()! };
+    if (h.kind === "dir") return { paths: filesUnder(h.id), label: `${h.id}/` };
+    if (h.kind === "module") {
+      const m = (grouping?.groups ?? []).find((g) => g.id === h.id) ?? overview?.modules.find((g) => g.id === h.id);
+      return { paths: m?.paths ?? [], label: h.label, module: m && { id: m.id, label: m.label, paths: m.paths } };
+    }
+    if (h.kind === "overlay") {
+      const o = overlays.find((x) => x.id === h.id);
+      return { paths: o?.paths ?? [], label: o?.label ?? "Marker" };
+    }
+    return { paths: [], label: "" };
+  };
+  const xrLangs = useMemo(() => Object.entries(graph?.languages ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([l]) => l), [graph]);
+  const xrTops = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const f of graph?.files ?? []) count.set(f.top, (count.get(f.top) ?? 0) + 1);
+    return [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([id, n]) => ({ id, count: n }));
+  }, [graph]);
   const recenterRef = useRef(recenter);
   recenterRef.current = recenter;
   const xr = useXR({
@@ -1452,6 +1472,10 @@ export function App() {
       stories,
       tuning,
       settings: xrSettings,
+      mapFilter: filter,
+      savedFilters,
+      langs: xrLangs,
+      tops: xrTops,
     },
     actions: {
       openFile: (p, l, e) => openFile(p, l, e),
@@ -1512,6 +1536,31 @@ export function App() {
       isFile: (p) => onMap.has(p),
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),
       setXR: (patch) => setXRSettings((x) => ({ ...x, ...patch })),
+      setMapFilter: (f) => setFilter(f),
+      focusAround: (h, depth) => {
+        const { paths, label } = filesOfHit(h);
+        const shown = (p: string) => (visible ? visible.has(p) : onMap.has(p));
+        const lit = new Set(paths.filter(shown));
+        // Ring by ring out along the imports.
+        let ring = [...lit];
+        for (let d = 0; d < depth && ring.length; d++) {
+          const next: string[] = [];
+          for (const p of ring) for (const n of neighbours.get(p) ?? []) if (!lit.has(n) && shown(n)) lit.add(n), next.push(n);
+          ring = next;
+        }
+        const more = ring.some((p) => [...(neighbours.get(p) ?? [])].some((n) => !lit.has(n) && shown(n)));
+        const out = [...lit];
+        if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}` : label);
+        return { label, count: out.length, more, paths: out };
+      },
+      hideHit: (h) => {
+        const { paths, label, module } = filesOfHit(h);
+        if (module) {
+          const item: Isolated = { kind: "module", ...module };
+          toggleIsolate(item, true);
+          setToast({ text: `Hid ${item.label}`, undo: () => toggleIsolate(item, true) });
+        } else if (paths.length) hide(paths, label);
+      },
     },
     handlers: {
       onPick: (h) => {

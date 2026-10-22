@@ -3,6 +3,7 @@ import type { LibraryRepo } from "../../shared/types";
 import { fetchFile, type FileData } from "../lib/api";
 import type { Mode } from "./engine";
 import type { MapHit, MapInput, MapStyle } from "./map";
+import { splitList } from "../../shared/filter";
 import type { Actions, AppActions, AppModel, Model } from "./model";
 import type { Room, StorySource } from "./room";
 import { suggest } from "./suggest";
@@ -44,6 +45,11 @@ export function useXR(feed: XRFeed) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [tuneOpen, setTuneOpen] = useState(false);
   const [hintsOpen, setHintsOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
+  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[] } | null>(null);
+  const focusRef = useRef(focusAt);
+  focusRef.current = focusAt;
   const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
   const [fileData, setFileData] = useState<FileData | null>(null);
   const [repos, setRepos] = useState<LibraryRepo[]>([]);
@@ -85,16 +91,20 @@ export function useXR(feed: XRFeed) {
   const own = useRef<Partial<Actions>>({});
   own.current = {
     toggleMenu: () => setMenuOpen((o) => !o),
-    openKeyboard: (m, target) => {
+    openKeyboard: (m, target, initial) => {
       setMenuOpen(false);
-      setKeyboard({ mode: m, target });
+      setKeyboard({ mode: m, target, initial });
     },
     closeKeyboard: () => setKeyboard(null),
     submitKeyboard: (text) => {
       const kb = keyboardRef.current;
       const a = feedRef.current.actions;
       setKeyboard(null);
-      if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
+      if (kb?.mode === "include" || kb?.mode === "exclude") {
+        // Hand-edited, the navigator's name and file set no longer describe what's shown (as on the desktop).
+        const f = feedRef.current.model.mapFilter;
+        a.setMapFilter({ ...f, label: undefined, paths: undefined, [kb.mode]: splitList(text) });
+      } else if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
       else if (kb?.mode === "repo") a.openPath(text);
       else if (text.startsWith("story:")) a.writeStory(text.slice(6));
       else a.ask(text);
@@ -123,6 +133,18 @@ export function useXR(feed: XRFeed) {
       if (!feedRef.current.model.settings.hintsSeen) feedRef.current.actions.setXR({ hintsSeen: true });
     },
     relayout: () => roomRef.current?.engine.map.reheat(),
+    toggleFilter: () => {
+      setMenuOpen(false);
+      setFilterOpen((o) => !o);
+    },
+    focusWider: () => {
+      const f = focusRef.current;
+      if (f?.more) focusOn(f.hit, f.depth + 1);
+    },
+    focusNarrower: () => {
+      const f = focusRef.current;
+      if (f && f.depth > 0) focusOn(f.hit, f.depth - 1);
+    },
     // Going somewhere from the menu closes it, so you can see where you went.
     showFrame: (id) => {
       setMenuOpen(false);
@@ -137,6 +159,17 @@ export function useXR(feed: XRFeed) {
       feedRef.current.actions.startTour();
     },
   };
+  /** Focus on a body with `depth` rings of its connections. */
+  const focusOn = (hit: MapHit, depth: number) => {
+    const r = feedRef.current.actions.focusAround(hit, depth);
+    setFocusAt(r.count ? { hit, depth, ...r } : null);
+  };
+  // Focused some other way since (a pick, the menu, back): the bar goes.
+  const emphasis = feed.style.emphasis;
+  useEffect(() => {
+    if (focusAt && emphasis !== focusAt.paths) setFocusAt(null);
+  }, [emphasis, focusAt]);
+
   /** Every action, current: the headset's own first, then the desktop's. */
   const actions = useMemo(
     () =>
@@ -175,11 +208,20 @@ export function useXR(feed: XRFeed) {
                   setMenuOpen(false);
                   setTuneOpen(false);
                   setHintsOpen(false);
+                  setFilterOpen(false);
                   setKeyboard(null);
                   setPlacing(false);
                 } else if (!feedRef.current.model.settings.hintsSeen) setHintsOpen(true);
               },
               onPlaced: () => setPlacing(false),
+              // The right stick on a body: focus on it; again on the same one, a ring wider.
+              onFocus: (h) => {
+                const f = focusRef.current;
+                const same = f && f.hit.kind === h.kind && f.hit.id === h.id;
+                if (same && !f.more) return;
+                focusOn(h, same ? f.depth + 1 : 0);
+              },
+              onFlick: (h) => feedRef.current.actions.hideHit(h),
               // In you go: to what you were looking at on the desktop, or the whole map.
               onEntered: () => feedRef.current.actions.frameSelection(),
             },
@@ -233,7 +275,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen });
+    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

@@ -225,6 +225,7 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
     rows: [
       ["Trigger", "Pick a file, module or button"],
       ["Trigger + move on a body", "Drag it; the map gives way"],
+      ["Throw a held body and let go", "Hide it (undo on the dock)"],
       ["Trigger on open sky", "Move the map"],
       ["Grip", "Move the map, wherever you point"],
       ["Both grips", "Stretch to scale, twist to turn"],
@@ -249,7 +250,8 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
       ["Stick up / down", "Zoom toward what you point at (or push / pull a held body)"],
       ["A", "Menu"],
       ["B", "Back"],
-      ["Stick click", "Frame the selection"],
+      ["Stick click on a body", "Focus on it; again for a ring more of its connections"],
+      ["Stick click on open sky", "Frame the selection"],
     ],
   },
   {

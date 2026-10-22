@@ -1,8 +1,9 @@
 import type { Frame, Layer, Story } from "../../shared/types";
 import { clock, liveDiagrams, storyMs, absMs, wordAt } from "../lib/story";
-import type { Actions, Model } from "./model";
+import type { Actions, KeyboardMode, Model } from "./model";
 import { CodeView, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
 import type { Engine } from "./engine";
+import { FilterPanel, FocusBar } from "./filter";
 import { HintsPanel, TunePanel } from "./tune";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
 
@@ -251,6 +252,7 @@ export class MenuPanel extends Panel {
     x = this.button(ctx, "tests", x, y, "Hide tests", () => a.setFilter({ hideTests: !m.filter.hideTests }), { size: 24, active: m.filter.hideTests }) + 10;
     x = this.button(ctx, "docs", x, y, "Hide docs & config", () => a.setFilter({ hideDocs: !m.filter.hideDocs }), { size: 24, active: m.filter.hideDocs }) + 10;
     x = this.button(ctx, "clear", x, y, "Show everything", a.clearFilter, { size: 24, disabled: !m.filter.active }) + 10;
+    x = this.button(ctx, "morefilter", x, y, "More…", a.toggleFilter, { size: 24, accent: C.static }) + 10;
     if (m.filter.label) {
       ctx.font = sans(20);
       ctx.fillStyle = C.muted;
@@ -680,13 +682,14 @@ const SHIFTED: Record<string, string> = { "1": "!", "2": "@", "3": "#", "4": "$"
 export class KeyboardPanel extends Panel {
   text = "";
   private shift = false;
-  private mode: "ask" | "note" | "repo" = "ask";
+  private mode: KeyboardMode = "ask";
   private target?: string;
   constructor(private a: Actions) {
     super("keyboard", 0.82, 0.44);
   }
-  open_(mode: "ask" | "note" | "repo", target?: string) {
+  open_(mode: KeyboardMode, target?: string, initial?: string) {
     if (mode !== this.mode || target !== this.target) this.text = "";
+    if (initial !== undefined) this.text = initial;
     this.mode = mode;
     this.target = target;
     this.invalidate();
@@ -701,7 +704,8 @@ export class KeyboardPanel extends Panel {
   }
   submit() {
     const t = this.text.trim();
-    if (!t) return;
+    // An empty pattern list clears it.
+    if (!t && this.mode !== "include" && this.mode !== "exclude") return;
     this.a.submitKeyboard(this.target === "story" ? `story:${t}` : t);
     this.text = "";
     this.invalidate();
@@ -709,7 +713,18 @@ export class KeyboardPanel extends Panel {
   protected draw(ctx: CanvasRenderingContext2D) {
     this.frame(ctx, this.mode === "note" ? C.note : C.course);
     const W = this.W;
-    const prompt = this.mode === "note" ? `Note on ${this.target?.split("/").pop()}` : this.mode === "repo" ? "Open a repository" : this.target === "story" ? "Write a story about…" : "Ask the navigator, or jump to a file";
+    const prompt =
+      this.mode === "note"
+        ? `Note on ${this.target?.split("/").pop()}`
+        : this.mode === "repo"
+          ? "Open a repository"
+          : this.mode === "include"
+            ? "Only paths matching (comma-separated: internal/**, *.go, auth)"
+            : this.mode === "exclude"
+              ? "Hide paths matching (comma-separated)"
+              : this.target === "story"
+                ? "Write a story about…"
+                : "Ask the navigator, or jump to a file";
     ctx.font = cond(22, 600);
     ctx.fillStyle = C.muted;
     ctx.fillText(prompt.toUpperCase(), PAD, 44);
@@ -756,7 +771,7 @@ export class KeyboardPanel extends Panel {
     bx = this.button(ctx, "shift", bx, y, "⇧", () => ((this.shift = !this.shift), this.invalidate()), { w: keyW * 1.3, h: keyH, active: this.shift, size: 26 }) + 10;
     bx = this.button(ctx, "space", bx, y, "space", () => this.press(" "), { w: keyW * 5, h: keyH, size: 24 }) + 10;
     bx = this.button(ctx, "back", bx, y, "⌫", () => this.backspace(), { w: keyW * 1.3, h: keyH, size: 26 }) + 10;
-    const go = this.mode === "note" ? "Save" : this.mode === "repo" ? "Open" : "Ask";
+    const go = this.mode === "note" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
     this.button(ctx, "enter", bx, y, go, () => this.submit(), { w: W - PAD - bx, h: keyH, size: 26, accent: C.course, active: !!this.text.trim() });
   }
   private press(s: string) {
@@ -784,6 +799,8 @@ export class Panels {
   readonly keyboard: KeyboardPanel;
   readonly tune: TunePanel;
   readonly hints: HintsPanel;
+  readonly filter: FilterPanel;
+  readonly focusBar: FocusBar;
   private lastKeyboard: Model["keyboard"] = null;
 
   constructor(
@@ -799,12 +816,14 @@ export class Panels {
     this.keyboard = new KeyboardPanel(a);
     this.tune = new TunePanel(a);
     this.hints = new HintsPanel(a);
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints]) engine.addPanel(p);
+    this.filter = new FilterPanel(a);
+    this.focusBar = new FocusBar(a);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar]) engine.addPanel(p);
   }
 
   update(m: Model) {
     const e = this.engine;
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune]) p.update(m);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.filter, this.focusBar]) p.update(m);
     e.show(this.dock, "dock");
     if (m.menuOpen) e.show(this.menu, "center");
     else e.hide(this.menu);
@@ -812,6 +831,10 @@ export class Panels {
     else e.hide(this.tune);
     if (m.hintsOpen) e.show(this.hints, "hints");
     else e.hide(this.hints);
+    if (m.filterOpen) e.show(this.filter, "filter");
+    else e.hide(this.filter);
+    if (m.focus) e.show(this.focusBar, "focusbar");
+    else e.hide(this.focusBar);
     if (m.file) e.show(this.file, "right");
     else e.hide(this.file);
     // Answers and stories share the left: a story takes the stage while it plays.
@@ -826,7 +849,7 @@ export class Panels {
     }
     const kb = m.keyboard;
     if (kb) {
-      if (!this.lastKeyboard || kb.mode !== this.lastKeyboard.mode || kb.target !== this.lastKeyboard.target) this.keyboard.open_(kb.mode, kb.target);
+      if (!this.lastKeyboard || kb.mode !== this.lastKeyboard.mode || kb.target !== this.lastKeyboard.target) this.keyboard.open_(kb.mode, kb.target, kb.initial);
       e.show(this.keyboard, "low");
     } else e.hide(this.keyboard);
     this.lastKeyboard = kb;

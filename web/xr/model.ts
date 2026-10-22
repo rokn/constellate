@@ -1,10 +1,13 @@
-import type { Activity, Frame, Layer, LibraryRepo, Overview, Story } from "../../shared/types";
+import type { Activity, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story } from "../../shared/types";
 import type { FileData } from "../lib/api";
 import type { Tuning } from "../lib/tuning";
 import type { XRSettings } from "../lib/xrSettings";
 import type { Stage } from "../lib/story";
 import type { VoiceState } from "../lib/useVoice";
 import type { Mode } from "./engine";
+import type { MapHit } from "./map";
+
+export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude";
 
 /**
  * What the headset's panels show, in one object. The desktop app (App.tsx)
@@ -42,6 +45,12 @@ export type Model = {
   visibleCount: number;
   totalCount: number;
   filter: { active: boolean; label?: string; hideTests: boolean; hideDocs: boolean };
+  /** The whole filter, as the desktop's Filter panel edits it. */
+  mapFilter: MapFilter;
+  savedFilters: SavedFilter[];
+  /** The repo's languages and top-level folders, most files first: the filter's chips. */
+  langs: string[];
+  tops: { id: string; count: number }[];
   stories: Story[];
   story: { story: Story; beat: number; ms: number; playing: boolean; stage: Stage } | null;
   repos: LibraryRepo[];
@@ -50,12 +59,15 @@ export type Model = {
   canAR: boolean;
   placing: boolean;
   menuOpen: boolean;
-  keyboard: { mode: "ask" | "note" | "repo"; target?: string } | null;
+  keyboard: { mode: KeyboardMode; target?: string; initial?: string } | null;
   /** The desktop's map knobs, the same object its Tune panel edits. */
   tuning: Tuning;
   settings: XRSettings;
   tuneOpen: boolean;
   hintsOpen: boolean;
+  filterOpen: boolean;
+  /** A focus made from the headset: a body, and how many rings of its connections are lit. */
+  focus: { label: string; depth: number; count: number; more: boolean } | null;
 };
 
 export type Jump = { kind: "file" | "module" | "symbol"; label: string; detail?: string; path?: string; id?: string; line?: number };
@@ -86,7 +98,7 @@ export type Actions = {
   storySeek: (beat: number) => void;
   closeStory: () => void;
   writeStory: (request: string) => void;
-  openKeyboard: (mode: "ask" | "note" | "repo", target?: string) => void;
+  openKeyboard: (mode: KeyboardMode, target?: string, initial?: string) => void;
   closeKeyboard: () => void;
   submitKeyboard: (text: string) => void;
   suggest: (q: string) => Jump[];
@@ -102,13 +114,26 @@ export type Actions = {
   setTuning: (patch: Partial<Tuning>) => void;
   setXR: (patch: Partial<XRSettings>) => void;
   relayout: () => void;
+  toggleFilter: () => void;
+  /** Replace the whole filter. */
+  setMapFilter: (f: MapFilter) => void;
+  /**
+   * Light a body (a file, a module's files, a folder's) and `depth` rings of
+   * its import neighbours; fly there. Says what it lit, and whether there's a
+   * further ring.
+   */
+  focusAround: (hit: MapHit, depth: number) => { label: string; count: number; more: boolean; paths: string[] };
+  focusWider: () => void;
+  focusNarrower: () => void;
+  /** Throw something off the map (a fling): it's hidden, with an undo. */
+  hideHit: (hit: MapHit) => void;
   openRepo: (id: string) => void;
   reanalyze: () => void;
   isFile: (p: string) => boolean;
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "focus">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
@@ -126,6 +151,9 @@ export type AppActions = Omit<
   | "toggleTune"
   | "toggleHints"
   | "relayout"
+  | "toggleFilter"
+  | "focusWider"
+  | "focusNarrower"
 > & {
   addNote: (path: string, text: string) => void;
   /** A local path, or on a server that keeps GitHub repos, owner/name. */

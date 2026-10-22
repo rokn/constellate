@@ -45,6 +45,9 @@ export function matcher(pattern: string): (path: string) => boolean {
   return (path) => rx.test(path);
 }
 
+/** Patterns as typed in a filter's box: comma-separated. */
+export const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
 export function isActive(f: MapFilter): boolean {
   return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length || f.isolate?.length);
 }
