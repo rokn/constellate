@@ -476,6 +476,19 @@ export type SessionState = {
   remote?: RemoteStatus;
   /** The server is pinned to this repo; opening another is turned off. */
   locked?: boolean;
+  /** The server clones GitHub repos on request and switches between them (see /api/repos). */
+  library?: boolean;
+};
+
+/** A GitHub repo cloned on a server that keeps several (CODEFLIGHT_REPOS_DIR). */
+export type LibraryRepo = {
+  /** "owner/name". */
+  id: string;
+  url: string;
+  /** The map's headline, once the navigator has charted it. */
+  headline?: string;
+  openedAt?: number;
+  current: boolean;
 };
 
 export type RemoteStatus = {

@@ -29,6 +29,8 @@ docker run -p 4317:4317 -v constellate:/data \
   ghcr.io/rokn/constellate
 ```
 
+Or one container for any GitHub repo: set `CODEFLIGHT_REPOS_DIR=/data/repos` instead of `REPO_URL`. You give it a link or `owner/name` (on the start page, or "Switch repo" by the repo's name), and it clones it there and opens it. Repos you opened before stay cloned, and going back to one brings back its map, groupings, notes, answers and stories as you left them. After a restart it reopens the last one. `GIT_TOKEN` decides which private repos it can read.
+
 It has no login of its own, so put it behind an authenticating proxy before exposing it.
 
 ## Shortcuts

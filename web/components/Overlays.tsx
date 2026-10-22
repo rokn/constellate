@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Activity, LogicalModule, Overview, RepoGraph, SessionState, Story, Topic } from "../../shared/types";
 import type { Turn, VoiceState } from "../lib/useVoice";
+import { Shelf } from "./Shelf";
 
 /* -------------------------------- landing -------------------------------- */
 
@@ -22,9 +23,26 @@ export function rememberRepo(root: string) {
   }
 }
 
-export function Landing({ onOpen, error }: { onOpen: (path: string) => void; error?: string }) {
+export function Landing({ onOpen, error, library }: { onOpen: (path: string) => void; error?: string; library?: boolean }) {
   const [path, setPath] = useState("");
   const recent = loadRecent();
+  if (library) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center px-4">
+        <div className="rise w-full max-w-[560px]">
+          <h1 className="font-cond text-[64px] font-semibold leading-none tracking-tight">Constellate</h1>
+          <p className="mt-3 max-w-[46ch] text-[16px] leading-relaxed text-muted">
+            Open a GitHub repository. It becomes a map you fly through, with a navigator who reads the code and shows you how it
+            works. The ones you opened before are kept below, as you left them.
+          </p>
+          <div className="mt-7">
+            <Shelf autoFocus />
+          </div>
+          {error && <p className="mt-3 text-[13.5px] text-bad">{error}</p>}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="absolute inset-0 flex items-center justify-center px-4">
       <form
@@ -108,7 +126,10 @@ export function Intro({
       {/* A scrim, so the type reads against the brightest part of the map. */}
       <div className="absolute inset-y-0 left-0 w-[min(860px,100%)] bg-gradient-to-r from-night via-night/80 to-transparent" aria-hidden />
       <div className="relative max-w-[640px]">
-        <p className="rise font-mono text-[12.5px] text-muted">{state.repo?.root}</p>
+        <p className="rise font-mono text-[12.5px] text-muted">
+          {/* A cloned GitHub repo goes by its GitHub name, not where the server keeps it. */}
+          {state.library && state.repo ? `github.com/${state.repo.root.split("/").slice(-2).join("/")}` : state.repo?.root}
+        </p>
         <h1 className="rise mt-1 font-cond text-[clamp(56px,9vw,112px)] font-semibold leading-[0.9] tracking-tight" style={{ animationDelay: "80ms" }}>
           {state.repo?.name}
         </h1>

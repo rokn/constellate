@@ -20,6 +20,7 @@ import { FilePanel } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 import { StoryPlayer, type StoryControl } from "./components/StoryPlayer";
+import { Shelf } from "./components/Shelf";
 import { StoriesPanel } from "./components/StoriesPanel";
 import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
 
@@ -79,6 +80,17 @@ export function App() {
   const [focusLabel, setFocusLabel] = useState<string | undefined>();
   const [pointer, setPointer] = useState<Pointer>(null);
   const [introDone, setIntroDone] = useState(false);
+  const [shelfOpen, setShelfOpen] = useState(false);
+  // Another repo opened, from this page or another device: start the page
+  // over on it rather than carry this one's panels, history and camera across.
+  const openRoot = useRef<string | undefined>(undefined);
+  const repoRoot = state?.repo?.root;
+  const connected = !!state;
+  useEffect(() => {
+    if (!connected) return;
+    if (openRoot.current !== undefined && repoRoot !== openRoot.current) window.location.reload();
+    openRoot.current = repoRoot;
+  }, [connected, repoRoot]);
   const [tour, setTour] = useState<number | null>(null);
   const [selection, setSelection] = useState("");
   /** A short-lived note with an undo — after hiding something. */
@@ -1281,7 +1293,7 @@ export function App() {
   if (status === "idle" || (!graph && status === "error")) {
     return (
       <div className="relative h-full bg-night">
-        <Landing onOpen={(p) => void post("/api/open", { path: p })} error={state.error} />
+        <Landing onOpen={(p) => void post("/api/open", { path: p })} error={state.error} library={state.library} />
       </div>
     );
   }
@@ -1423,14 +1435,36 @@ export function App() {
         />
       )}
 
+      {shelfOpen && (
+        <div className="absolute inset-0 z-30 flex items-start justify-center bg-night/60 px-4 pt-[12vh]" onPointerDown={(e) => e.target === e.currentTarget && setShelfOpen(false)}>
+          <div className="glass w-full max-w-[520px] rounded-2xl p-4" onKeyDown={(e) => e.key === "Escape" && setShelfOpen(false)}>
+            <p className="mb-3 font-cond text-[20px] font-semibold">Open a GitHub repo</p>
+            <Shelf autoFocus onOpened={() => setShelfOpen(false)} />
+          </div>
+        </div>
+      )}
+
       {/* Instruments */}
       <div className={`${minimal ? "hidden " : ""}pointer-events-none absolute left-4 top-4 z-10 flex flex-col gap-2`}>
+        {/* The intro shows the name large; switching away stays possible while it charts. */}
+        {showIntro && state.library && (
+          <div className="pointer-events-auto">
+            <button onClick={() => setShelfOpen((v) => !v)} className="text-[12px] text-muted hover:text-course" title="Open another GitHub repo">
+              Switch repo
+            </button>
+          </div>
+        )}
         {!showIntro && (
           <div className="pointer-events-auto">
             <button onClick={toOverview} className="text-left" title="Back to the whole map (o)">
               <span className="font-cond text-[24px] font-semibold leading-none">{state.repo?.name}</span>
               {state.repo?.branch && <span className="ml-2 font-mono text-[11.5px] text-muted">{state.repo.branch}</span>}
             </button>
+            {state.library && (
+              <button onClick={() => setShelfOpen((v) => !v)} className="ml-2 align-[3px] text-[12px] text-muted hover:text-course" title="Open another GitHub repo">
+                Switch repo
+              </button>
+            )}
           </div>
         )}
         <div className="pointer-events-auto flex flex-wrap gap-1.5">

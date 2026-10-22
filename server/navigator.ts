@@ -1091,13 +1091,18 @@ async function run(opts: {
 let intro: Promise<void> | null = null;
 let current: { controller: AbortController; frameId: string } | null = null;
 
+let introCtl: AbortController | null = null;
+
 export function runIntro(rechart?: Rechart): Promise<void> {
   intro = (async () => {
     session.state.busy = true;
     emit();
     const controller = new AbortController();
+    introCtl = controller;
     try {
       const res = await run({ prompt: await introPrompt(rechart), frameId: null, mode: "intro", effort: INTRO_EFFORT, signal: controller });
+      // Stopped for another repo: what it would write belongs to the one it left.
+      if (controller.signal.aborted) return;
       if (!session.state.overview) {
         throw new Error(res.error ?? "The navigator finished without charting the map.");
       }
@@ -1107,12 +1112,16 @@ export function runIntro(rechart?: Rechart): Promise<void> {
       markCharted();
       session.state.status = "ready";
     } catch (err) {
+      if (controller.signal.aborted) return;
       session.state.status = "error";
       session.state.error = err instanceof Error ? err.message : String(err);
       pushActivity({ kind: "error", detail: session.state.error });
     } finally {
-      session.state.busy = false;
-      emit();
+      if (introCtl === controller) introCtl = null;
+      if (!controller.signal.aborted) {
+        session.state.busy = false;
+        emit();
+      }
     }
   })();
   return intro;
@@ -1134,6 +1143,7 @@ const PLACE_MAX = 300;
 const pending = new Set<string>();
 let placeTimer: ReturnType<typeof setTimeout> | undefined;
 let placing: Promise<void> | null = null;
+let placeCtl: AbortController | null = null;
 
 afterRescan.push((added) => {
   if (PLACE_AFTER_MS <= 0) return;
@@ -1185,17 +1195,22 @@ async function placeNewFiles(): Promise<void> {
     "End with one short sentence on what you placed and any group you added.",
   ].join("\n");
 
+  const controller = new AbortController();
+  placeCtl = controller;
   placing = (async () => {
     const n = new Set(groupings.flatMap((g) => g.loose)).size;
     pushActivity({ kind: "tool", detail: `Placing ${n} new file${n === 1 ? "" : "s"} on the map` });
     try {
-      const res = await run({ prompt, frameId: null, mode: "place", effort: PLACE_EFFORT, signal: new AbortController() });
+      const res = await run({ prompt, frameId: null, mode: "place", effort: PLACE_EFFORT, signal: controller });
+      if (controller.signal.aborted) return;
       pushActivity(res.error ? { kind: "error", detail: `Placing new files: ${res.error}` } : { kind: "tool", detail: res.answer.trim().slice(0, 200) || "Placed the new files" });
     } catch (err) {
+      if (controller.signal.aborted) return;
       pushActivity({ kind: "error", detail: `Placing new files: ${err instanceof Error ? err.message : String(err)}` });
     }
   })().finally(() => {
     placing = null;
+    if (placeCtl === controller) placeCtl = null;
   });
   return placing;
 }
@@ -1261,6 +1276,19 @@ export async function ask(
       emit();
     }
   }
+}
+
+/** Stop everything the navigator is doing, without a trace: another repo is about to open. */
+export function stopNavigator() {
+  introCtl?.abort();
+  introCtl = null;
+  intro = null;
+  current?.controller.abort();
+  current = null;
+  placeCtl?.abort();
+  clearTimeout(placeTimer);
+  pending.clear();
+  session.state.busy = false;
 }
 
 export function interrupt() {

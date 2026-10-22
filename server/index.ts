@@ -4,7 +4,8 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GroupOverlay, Lens, Note, NoteTarget, ScreenContext, StorySettings, ViewSettings } from "../shared/types";
-import { ask, interrupt, runIntro } from "./navigator";
+import { ask, interrupt, runIntro, stopNavigator } from "./navigator";
+import { REPOS_DIR, ensureClone, lastOpened, listRepos, markOpened, parseGitHub, removeClone, rootOf } from "./library";
 import { loadFile } from "./repo";
 import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } from "./lsp";
 import { changesSince, commitMessage, diffFile, graphAt, loadHistory } from "./history";
@@ -15,6 +16,10 @@ import {
   restoreOverlays,
   dropOverview,
   openRepo,
+  resetSession,
+  savedHeadline,
+  forgetSaved,
+  pushActivity,
   pullRemote,
   checkRemote,
   putLens,
@@ -97,15 +102,18 @@ async function body<T>(req: IncomingMessage): Promise<T> {
 /**
  * CODEFLIGHT_LOCK_REPO=1 pins the server to the repo it started with: in a
  * shared deployment, nobody gets to point it at another path on the box.
+ * (CODEFLIGHT_REPOS_DIR opens GitHub repos only, never paths, so it isn't pinned.)
  */
-const LOCKED = /^(1|true|yes)$/i.test(process.env.CODEFLIGHT_LOCK_REPO ?? "");
+const LOCKED = !REPOS_DIR && /^(1|true|yes)$/i.test(process.env.CODEFLIGHT_LOCK_REPO ?? "");
 const resolveRepo = (p: string) => path.resolve(p.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
 
 async function open(root: string) {
   if (LOCKED && session.state.repo && resolveRepo(root) !== session.state.repo.root) {
     throw new Error("This server is pinned to one repository.");
   }
-  // The language server belongs to the repo it was started on.
+  // The language server belongs to the repo it was started on, and so does
+  // anything the navigator was in the middle of.
+  stopNavigator();
   stopGo();
   cancelStories();
   try {
@@ -113,7 +121,10 @@ async function open(root: string) {
     // A freshly charted repo gets its intro stories written right after.
     // (A repo charted before stories existed can ask for them in Stories.)
     if (session.state.status === "analyzing") {
+      const charting = session.state.repo?.root;
       void runIntro().then(() => {
+        // Another repo opened mid-chart: the stories would be about the wrong one.
+        if (session.state.repo?.root !== charting) return;
         if (session.state.overview && !session.state.stories.some((s) => s.intro)) writeIntroStories();
       });
     }
@@ -122,6 +133,26 @@ async function open(root: string) {
     session.state.error = err instanceof Error ? err.message : String(err);
     console.error("[open]", session.state.error);
   }
+}
+
+/** Open a GitHub repo ("owner/name"), cloning it first if it's new here. */
+async function openGitHub(id: string) {
+  stopNavigator();
+  stopGo();
+  cancelStories();
+  const root = rootOf(id);
+  resetSession(root, id.split("/")[1]);
+  try {
+    await ensureClone(id, (line) => pushActivity({ kind: "tool", detail: line }));
+  } catch (err) {
+    session.state.status = "error";
+    session.state.error = err instanceof Error ? err.message : String(err);
+    session.state.repo = undefined;
+    console.error("[open]", session.state.error);
+    return;
+  }
+  await markOpened(id).catch((err) => console.error("[shelf]", err));
+  await open(root);
 }
 
 /* -------------------------------- routes -------------------------------- */
@@ -527,11 +558,33 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       json(res, 200, { ok: interrupt() });
       return true;
     case "POST /api/open": {
-      const b = await body<{ path?: string }>(req);
+      const b = await body<{ path?: string; github?: string }>(req);
+      if (REPOS_DIR) {
+        const id = parseGitHub(b.github ?? "");
+        if (!id) return json(res, 400, { error: "Give a GitHub repo: a link, or owner/name." }), true;
+        void openGitHub(id);
+        json(res, 202, { ok: true, id });
+        return true;
+      }
       if (!b.path?.trim()) return json(res, 400, { error: "Give a local path." }), true;
       if (LOCKED) return json(res, 403, { error: "This server is pinned to one repository." }), true;
       void open(b.path.trim());
       json(res, 202, { ok: true });
+      return true;
+    }
+    case "GET /api/repos":
+      if (!REPOS_DIR) return json(res, 404, { error: "This server opens local paths." }), true;
+      json(res, 200, await listRepos(session.state.repo?.root, savedHeadline));
+      return true;
+    case "POST /api/repos": {
+      // Forget a repo: its clone and everything saved for it.
+      const b = await body<{ action?: string; id?: string }>(req);
+      const id = parseGitHub(b.id ?? "");
+      if (!REPOS_DIR || b.action !== "remove" || !id) return json(res, 400, { error: "Nothing to do." }), true;
+      if (session.state.repo?.root === rootOf(id)) return json(res, 409, { error: "That's the repo that's open." }), true;
+      await removeClone(id);
+      await forgetSaved(rootOf(id));
+      json(res, 200, { ok: true });
       return true;
     }
     case "POST /api/reanalyze":
@@ -645,8 +698,16 @@ async function main() {
     });
   }
 
-  const repo = process.argv[2] ?? process.env.CODEFLIGHT_REPO;
   session.state.locked = LOCKED;
+  if (REPOS_DIR) {
+    // A shelf of GitHub repos: pick up where the last visit left off.
+    session.state.library = true;
+    console.log(`     (repos are cloned into ${REPOS_DIR})\n`);
+    const last = await lastOpened();
+    if (last) void openGitHub(last);
+    return;
+  }
+  const repo = process.argv[2] ?? process.env.CODEFLIGHT_REPO;
   if (LOCKED && !repo) console.log("     (CODEFLIGHT_LOCK_REPO is set but no repo was given — nothing to open)\n");
   if (repo) void open(repo);
 }

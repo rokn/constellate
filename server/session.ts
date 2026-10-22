@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -348,11 +348,11 @@ export function dropOverview() {
   emit();
 }
 
-export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
-  const abs = path.resolve(root.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
+/** A clean slate for the repo at `abs`, shown as being opened. */
+export function resetSession(abs: string, name: string) {
   session.state = {
     status: "scanning",
-    repo: { name: await repoName(abs).catch(() => path.basename(abs)), root: abs },
+    repo: { name, root: abs },
     graphVersion: session.state.graphVersion + 1,
     lenses: [],
     overlays: [],
@@ -365,11 +365,17 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     busy: false,
     fromCache: false,
     locked: session.state.locked,
+    library: session.state.library,
   };
   session.idx = undefined;
   session.agentSessionId = undefined;
   session.chartedHead = undefined;
   emit();
+}
+
+export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
+  const abs = path.resolve(root.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
+  resetSession(abs, await repoName(abs).catch(() => path.basename(abs)));
 
   const graph = await scanRepo(abs, (done, total) =>
     pushActivity({ kind: "tool", detail: `Scanned ${done} of ${total} files` }),
@@ -649,6 +655,16 @@ async function loadCache(root: string): Promise<Cached | null> {
   } catch {
     return null;
   }
+}
+
+/** A saved repo's headline, if the navigator has charted it. */
+export async function savedHeadline(root: string) {
+  return (await loadCache(root))?.overview?.headline;
+}
+
+/** Drop everything saved for a repo. */
+export async function forgetSaved(root: string) {
+  await rm(cacheFile(root), { force: true });
 }
 
 async function persist() {
