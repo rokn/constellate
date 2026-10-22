@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { EMPTY_FILTER, describe, isActive } from "../../shared/filter";
+import { EMPTY_FILTER, describe, isActive, splitList } from "../../shared/filter";
 import type { Frame, GroupOverlay, Lens, LogicalModule, MapFilter, RepoGraph, SavedFilter } from "../../shared/types";
 import { territoryColors } from "../lib/colors";
 
@@ -211,7 +211,6 @@ export function Legend({
 
 /* -------------------------------- filter -------------------------------- */
 
-const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 export function FilterPanel({
   graph,

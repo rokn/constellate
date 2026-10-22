@@ -992,7 +992,13 @@ export class MapView {
     return { center: c, radius: Math.max(idx.length === 1 ? this.base[idx[0]] * 4 : 12, this.radiusIdx(idx, c)) };
   }
 
-  /** What a ray (in world space) points at: the nearest body within reach of it. */
+  /** Centre and radius of what's focused (the lit files and the open one), if anything is. */
+  focusBounds() {
+    const ids = [...this.emph, ...(this.style.active ? [this.style.active] : [])];
+    return ids.length ? this.bounds(ids) : null;
+  }
+
+    /** What a ray (in world space) points at: the nearest body within reach of it. */
   pick(origin: THREE.Vector3, dir: THREE.Vector3): MapHit | null {
     if (!this.input) return null;
     this.root.updateWorldMatrix(true, false);

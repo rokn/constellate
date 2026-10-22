@@ -27,7 +27,7 @@ import { C, Panel, Tag, roundRect } from "./ui";
 
 export type Mode = "flat" | "vr" | "ar";
 export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
-export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints";
+export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar";
 
 export type EngineHandlers = {
   onPick: (hit: MapHit) => void;
@@ -41,6 +41,10 @@ export type EngineHandlers = {
   onFrame?: () => void;
   /** A session just started. */
   onEntered?: () => void;
+  /** The right stick clicked while pointing at something on the map: focus on it (again: wider). */
+  onFocus?: (hit: MapHit) => void;
+  /** A held body thrown away: hide it. */
+  onFlick?: (hit: MapHit) => void;
 };
 
 type Grab = { p: Pointer; at0: THREE.Vector3 };
@@ -49,7 +53,7 @@ type Press =
   | { kind: "map"; hit: MapHit; from: THREE.Vector3 }
   | { kind: "grab"; from: THREE.Vector3; moved: boolean }
   /** A body held on the end of the ray, `dist` metres out. */
-  | { kind: "body"; id: string; dist: number }
+  | { kind: "body"; id: string; dist: number; hit: MapHit; trail: { t: number; at: THREE.Vector3 }[] }
   /** A panel picked up by its handle with the trigger. */
   | { kind: "handle" };
 
@@ -74,6 +78,8 @@ type Pointer = {
   buttons: boolean[];
   /** Thumbstick turned past the snap threshold, waiting for it to come back. */
   snapped: boolean;
+  /** What a smooth turn turns about, fixed while the stick is held. */
+  turnPivot: THREE.Vector3 | null;
   lastHapticId: string | null;
 };
 
@@ -331,7 +337,7 @@ export class Engine {
     const was = p.open;
     p.mesh.visible = true;
     p.invalidate();
-    if (!was && (!this.placed.has(p) || !this.inView(p))) this.place(p, slot);
+    if (!was && (!this.placed.has(p) || !this.inView(p) || slot === "focusbar")) this.place(p, slot);
     this.slots.set(p, slot);
   }
 
@@ -359,6 +365,15 @@ export class Engine {
   }
 
   private place(p: Panel, slot: Slot) {
+    // The focus bar sits on top of the dock, wherever you've put that.
+    const dock = [...this.slots].find(([, s]) => s === "dock")?.[0];
+    if (slot === "focusbar" && dock?.open) {
+      p.mesh.position.copy(dock.mesh.position);
+      p.mesh.quaternion.copy(dock.mesh.quaternion);
+      p.mesh.translateY(dock.heightM / 2 + p.heightM / 2 + 0.05);
+      this.placed.add(p);
+      return;
+    }
     const { pos, yaw } = this.head();
     const spec = {
       left: { yaw: 0.6, dist: 0.95, dy: -0.06, tilt: 0 },
@@ -368,6 +383,8 @@ export class Engine {
       dock: { yaw: 0, dist: 0.95, dy: -0.48, tilt: 0.55 },
       tune: { yaw: 0.25, dist: 0.9, dy: -0.1, tilt: 0.1 },
       hints: { yaw: 0, dist: 1.0, dy: 0.02, tilt: 0 },
+      filter: { yaw: -0.25, dist: 0.9, dy: -0.1, tilt: 0.1 },
+      focusbar: { yaw: 0, dist: 0.95, dy: -0.36, tilt: 0.4 },
     }[slot];
     // A desktop window sees a much narrower cone than a headset: the preview
     // sets the same panels further out and closer to the middle.
@@ -409,7 +426,9 @@ export class Engine {
     const s = THREE.MathUtils.clamp(o.radiusM / Math.max(1e-3, radius), MIN_SCALE, MAX_SCALE);
     // The preview's window is a narrower cone than a headset's view.
     const dist = o.dist * (this.mode === "flat" ? 1.6 : 1);
-    const target = o.at?.clone() ?? new THREE.Vector3(pos.x - Math.sin(yaw) * dist, pos.y + (o.dy ?? 0), pos.z - Math.cos(yaw) * dist);
+    // On a table (passthrough, placed, "Stay on the surface"): what you focus on comes to the table's middle, not to you.
+    const onSurface = !o.at && this.mode === "ar" && this.anchor && this.settings.keepOnSurface ? this.anchor.clone().add(new THREE.Vector3(0, o.radiusM + 0.04, 0)) : null;
+    const target = o.at?.clone() ?? onSurface ?? new THREE.Vector3(pos.x - Math.sin(yaw) * dist, pos.y + (o.dy ?? 0), pos.z - Math.cos(yaw) * dist);
     const q = this.world.quaternion.clone();
     const p = target.sub(c.clone().multiplyScalar(s).applyQuaternion(q));
     this.drift = false;
@@ -525,6 +544,7 @@ export class Engine {
           carry: null,
           buttons: [],
           snapped: false,
+          turnPivot: null,
           lastHapticId: null,
         });
         line.visible = true;
@@ -566,6 +586,7 @@ export class Engine {
       carry: null,
       buttons: [],
       snapped: false,
+      turnPivot: null,
       lastHapticId: null,
     };
     this.pointers.set("mouse", p);
@@ -673,7 +694,15 @@ export class Engine {
       if (!p.squeezing) p.carry = null;
     } else if (press.kind === "body") {
       this.map.release(press.id);
-      this.haptic(p, 0.3, 20);
+      // Thrown, not set down: hide it.
+      const tr = press.trail;
+      const first = tr.find((x) => performance.now() - x.t < 120) ?? tr[0];
+      const last = tr.at(-1);
+      const speed = first && last && last.t > first.t ? last.at.distanceTo(first.at) / ((last.t - first.t) / 1000) : 0;
+      if (this.settings.flick && speed > this.settings.flickSpeed && this.h.onFlick) {
+        this.haptic(p, 0.8, 60);
+        this.h.onFlick(press.hit);
+      } else this.haptic(p, 0.3, 20);
     } else if (press.kind === "panel") {
       const hp = p.hoverPanel?.panel === press.panel ? p.hoverPanel : null;
       press.panel.pointer("up", hp?.x ?? -1, hp?.y ?? -1, p.id);
@@ -930,7 +959,7 @@ export class Engine {
       if (id && at) {
         // Hold it where it is along the ray; from here on it rides the ray.
         const w = this.map.toWorld(at);
-        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)) };
+        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)), hit: press.hit, trail: [] };
         this.haptic(p, 0.35, 20);
       } else {
         p.press = { kind: "grab", from: press.from, moved: true };
@@ -938,6 +967,11 @@ export class Engine {
       }
     }
     if (p.press?.kind === "body") {
+      // Where the end of a metre of ray has been lately, to tell a throw from a drop.
+      const now = performance.now();
+      const tr = p.press.trail;
+      tr.push({ t: now, at: p.origin.clone().add(p.dir) });
+      while (tr.length > 2 && now - tr[0].t > 200) tr.shift();
       this.world.updateMatrixWorld();
       const w = p.origin.clone().addScaledVector(p.dir, p.press.dist);
       this.map.drag(p.press.id, this.map.root.worldToLocal(w));
@@ -1035,7 +1069,11 @@ export class Engine {
       if (p.handedness === "right") {
         if (edge(4)) this.h.onButton("menu");
         if (edge(5)) this.h.onButton("back");
-        if (edge(3)) this.h.onButton("frame");
+        // On a body: focus on it, and again for its connections. On open sky: frame what's selected.
+        if (edge(3)) {
+          if (p.hoverMap && this.h.onFocus) this.h.onFocus(p.hoverMap);
+          else this.h.onButton("frame");
+        }
       } else {
         if (edge(4)) this.h.onButton("voice");
         if (edge(5)) this.h.onButton("overview");
@@ -1062,22 +1100,27 @@ export class Engine {
         if (Math.abs(ax) > dead || Math.abs(ay) > dead) {
           this.touched();
           const speed = 1.4 * s.flySpeed * (gp.buttons[1]?.pressed ? 3 : 1);
-          const fwd = p.dir.clone();
+          // Where the controller points, or (a setting) where you look.
+          const fwd = s.flyWhereLooking ? this.head().forward : p.dir.clone();
           const right = new THREE.Vector3().crossVectors(fwd, Y).normalize();
           const move = fwd.multiplyScalar(-ay).add(right.multiplyScalar(ax)).multiplyScalar(speed * dt);
-          this.world.position.sub(move);
+          // You fly through the map, or (a setting) you push the map along.
+          if (s.stickMovesMap) this.world.position.add(move);
+          else this.world.position.sub(move);
         }
       } else if (p.handedness === "right") {
         // Turn on X (in steps, or smoothly), scale on Y (toward what you're pointing at).
+        // About the middle of what you're looking at, or (a setting) about you.
         if (s.smoothTurn) {
           if (Math.abs(ax) > dead) {
             this.touched();
-            this.rotateWorldAbout(this.head().pos, -ax * dt * 1.6 * s.turnSpeed);
-          }
+            p.turnPivot ??= this.turnPivot();
+            this.rotateWorldAbout(p.turnPivot, -ax * dt * 1.6 * s.turnSpeed);
+          } else p.turnPivot = null;
         } else if (Math.abs(ax) > 0.7 && !p.snapped) {
           p.snapped = true;
           this.touched();
-          this.rotateWorldAbout(this.head().pos, THREE.MathUtils.degToRad(s.snapTurn) * (ax > 0 ? -1 : 1));
+          this.rotateWorldAbout(this.turnPivot(), THREE.MathUtils.degToRad(s.snapTurn) * (ax > 0 ? -1 : 1));
         } else if (Math.abs(ax) < 0.3) p.snapped = false;
         if (Math.abs(ay) > dead && Math.abs(ax) < 0.5) {
           const pivot = p.hoverMap ? p.origin.clone().addScaledVector(p.dir, this.hitDistanceM(p, p.hoverMap)) : p.origin.clone().addScaledVector(p.dir, 0.8);
@@ -1085,6 +1128,32 @@ export class Engine {
         }
       }
     }
+  }
+
+  /**
+   * What a turn turns about: the focus if you can see it, else the body
+   * you're looking at, else the map's middle if it's in front of you, else
+   * you.
+   */
+  private turnPivot(): THREE.Vector3 {
+    const head = this.head();
+    if (this.settings.turnAroundMe) return head.pos;
+    const seen = (w: THREE.Vector3) => w.clone().sub(head.pos).normalize().dot(head.forward) > Math.cos(THREE.MathUtils.degToRad(50));
+    const f = this.map.focusBounds();
+    if (f) {
+      const w = this.map.toWorld(f.center);
+      if (seen(w)) return w;
+    }
+    const hit = this.map.pick(head.pos, head.forward);
+    const id = hit ? this.map.bodyOf(hit) : null;
+    const at = id ? this.map.positionOf(id) : null;
+    if (at) return this.map.toWorld(at);
+    const b = this.map.bounds();
+    if (b) {
+      const w = this.map.toWorld(b.center);
+      if (seen(w)) return w;
+    }
+    return head.pos;
   }
 
   /** Flat preview: the arrow keys fly (Shift for faster), Page Up/Down rise and sink. */
