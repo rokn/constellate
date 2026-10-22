@@ -43,8 +43,11 @@ a marker as it goes, and when it finishes the voice tells you what it did. **Sho
 (or "show me what it did") puts its branch on the map against where it started; you can
 send it follow-ups, stop it, or discard it with its branch.
 
-What it changed is committed to its branch when it stops; it never pushes, and landing
-the branch is yours. An agent can read and edit files only inside its worktree, and has no
+What it changed is committed to its branch when it stops; it never pushes on its own.
+**Open PR** (or "open a PR for it") pushes the branch and opens a pull request into the
+branch it started from, using `GIT_TOKEN` (a fine-grained token needs Contents and Pull
+requests read and write). After that, follow-ups you send it are pushed to the same PR.
+In the headset, the menu's **Agents** tab lists them, starts new ones, and opens PRs. An agent can read and edit files only inside its worktree, and has no
 shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
 
 ## In a headset

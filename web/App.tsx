@@ -1446,6 +1446,12 @@ export function App() {
     for (const f of graph?.files ?? []) count.set(f.top, (count.get(f.top) ?? 0) + 1);
     return [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([id, n]) => ({ id, count: n }));
   }, [graph]);
+  /** An agent request from the headset; it answers in a toast, as there's no panel to show an error in. */
+  const agentCall = async (body: Record<string, unknown>, ok: string) => {
+    const r = await post("/api/agents", body);
+    const j = (await r.json().catch(() => ({}))) as { error?: string };
+    setToast({ text: r.ok ? ok : j.error ?? "That didn't work." });
+  };
   const recenterRef = useRef(recenter);
   recenterRef.current = recenter;
   const xr = useXR({
@@ -1475,6 +1481,8 @@ export function App() {
       totalCount: mapGraph?.files.length ?? 0,
       filter: xrFilter,
       stories,
+      agents: state?.agents ?? NO_ACTIVITY,
+      agentsOn: !!state?.agentsOn,
       tuning,
       settings: xrSettings,
       mapFilter: filter,
@@ -1537,6 +1545,15 @@ export function App() {
       openRepo: (id) => void post("/api/open", { github: id }),
       openPath: (t) => void post("/api/open", state?.library ? { github: t } : { path: t }),
       reanalyze: () => void post("/api/reanalyze"),
+      startAgent: (task) =>
+        void agentCall({ action: "start", task }, "The agent is on it. Its files light up as it works."),
+      focusAgent: (id) => {
+        const a = state?.agents.find((x) => x.id === id);
+        const paths = a?.files.filter((p) => onMap.has(p)) ?? [];
+        if (a && paths.length) focus(paths, a.title);
+        else setToast({ text: "It hasn't changed anything on the map yet." });
+      },
+      agentAction: (id, action) => void agentCall({ action, id }, action === "pr" ? "Pull request opened." : "Stopped."),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
       isFile: (p) => onMap.has(p),
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),

@@ -111,6 +111,7 @@ export function useXR(feed: XRFeed) {
         a.setMapFilter({ ...f, label: undefined, paths: undefined, [kb.mode]: splitList(text) });
       } else if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
       else if (kb?.mode === "repo") a.openPath(text);
+      else if (kb?.mode === "agent") a.startAgent(text);
       else if (text.startsWith("story:")) a.writeStory(text.slice(6));
       else a.ask(text);
     },

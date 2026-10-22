@@ -167,7 +167,7 @@ export class DockPanel extends Panel {
 
 /* --------------------------------- menu --------------------------------- */
 
-type Tab = "map" | "modules" | "answers" | "stories" | "repo";
+type Tab = "map" | "modules" | "answers" | "stories" | "agents" | "repo";
 
 export class MenuPanel extends Panel {
   m: Model | null = null;
@@ -178,7 +178,7 @@ export class MenuPanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story"] as const).some((k) => p[k] !== m[k])) this.invalidate();
+    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story"] as const).some((k) => p[k] !== m[k])) this.invalidate();
   }
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
@@ -189,6 +189,7 @@ export class MenuPanel extends Panel {
       ["modules", m.legend.kind === "dir" ? "Folders" : "Modules"],
       ["answers", `Answers${m.frames.length ? ` ${m.frames.length}` : ""}`],
       ["stories", `Stories${m.stories.length ? ` ${m.stories.length}` : ""}`],
+      ...(m.agentsOn ? ([["agents", `Agents${m.agents.length ? ` ${m.agents.length}` : ""}`]] as [Tab, string][]) : []),
       ["repo", "Repo"],
     ];
     let x = PAD;
@@ -309,6 +310,24 @@ export class MenuPanel extends Panel {
         onClick: () => s.state === "ready" && a.playStory(s.id),
       }));
       rows.push({ id: "new", label: "Write a story…", detail: "Ask for a narrated walkthrough of anything in the code.", onClick: () => a.openKeyboard("ask", "story") });
+    } else if (this.tab === "agents") {
+      const dot = { starting: C.runtime, working: C.runtime, done: C.good, failed: C.bad, stopped: C.muted } as const;
+      rows = [...m.agents].reverse().map((ag) => {
+        const running = ag.status === "working" || ag.status === "starting";
+        const extra: Row["extra"] = [];
+        if (running) extra.push({ label: "Stop", onClick: () => a.agentAction(ag.id, "stop") });
+        else if (ag.commits > 0 && ag.pr?.state !== "open") extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
+        const what = running ? ag.activity ?? "working…" : ag.error ?? ag.summary ?? ag.status;
+        return {
+          id: ag.id,
+          label: ag.title,
+          detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}` : ""} · ${what}`,
+          color: dot[ag.status],
+          onClick: () => a.focusAgent(ag.id),
+          extra,
+        };
+      });
+      rows.push({ id: "new", label: "Start an agent…", detail: "It changes the code on a branch of its own. Or just ask the voice.", onClick: () => a.openKeyboard("agent") });
     } else {
       rows = [];
       if (m.library) {
@@ -721,6 +740,8 @@ export class KeyboardPanel extends Panel {
         ? `Note on ${this.target?.split("/").pop()}`
         : this.mode === "repo"
           ? "Open a repository"
+          : this.mode === "agent"
+          ? "What should an agent change? It works on a branch of its own."
           : this.mode === "include"
             ? "Only paths matching (comma-separated: internal/**, *.go, auth)"
             : this.mode === "exclude"
@@ -774,7 +795,7 @@ export class KeyboardPanel extends Panel {
     bx = this.button(ctx, "shift", bx, y, "⇧", () => ((this.shift = !this.shift), this.invalidate()), { w: keyW * 1.3, h: keyH, active: this.shift, size: 26 }) + 10;
     bx = this.button(ctx, "space", bx, y, "space", () => this.press(" "), { w: keyW * 5, h: keyH, size: 24 }) + 10;
     bx = this.button(ctx, "back", bx, y, "⌫", () => this.backspace(), { w: keyW * 1.3, h: keyH, size: 26 }) + 10;
-    const go = this.mode === "note" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
+    const go = this.mode === "note" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
     this.button(ctx, "enter", bx, y, go, () => this.submit(), { w: W - PAD - bx, h: keyH, size: 26, accent: C.course, active: !!this.text.trim() });
   }
   private press(s: string) {

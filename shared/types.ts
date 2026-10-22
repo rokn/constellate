@@ -518,6 +518,8 @@ export type AgentRun = {
   /** The Agent SDK session, resumed for follow-ups. */
   sessionId?: string;
   turns: { role: "you" | "agent"; text: string; at: number }[];
+  /** Its pull request on GitHub, once you've opened one; later turns push to it. */
+  pr?: { number: number; url: string; state: "open" | "closed" | "merged"; base: string; pushedSha: string };
   createdAt: number;
   updatedAt: number;
 };

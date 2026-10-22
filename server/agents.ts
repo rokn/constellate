@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { AgentRun } from "../shared/types";
 import { CACHE_DIR, addOverlay, emit, removeOverlay, session } from "./session";
+import { parseGitHub } from "./library";
 
 /**
  * Coding agents: Claude Code, via the Agent SDK, each in its own git worktree
@@ -278,6 +279,9 @@ async function turn(id: string, prompt: string) {
   const next = stopped ? undefined : entry.queue.shift();
   if (next) return turn(id, next);
   live.delete(id);
+  // Its pull request follows its branch: a follow-up's commits go up too.
+  const after = getAgent(id);
+  if (after?.pr && !stopped) await openPullRequest(id).catch((err) => patch(id, { error: `Could not update the PR: ${err instanceof Error ? err.message : String(err)}` }));
   const done = getAgent(id);
   if (done) for (const fn of finished) fn(done);
 }
@@ -359,4 +363,92 @@ export async function discardAgent(id: string) {
     await git(root, ["branch", "-D", a.branch]).catch(() => {});
   }
   emit();
+}
+
+/* ---------------------------- pull requests ---------------------------- */
+
+const TOKEN = () => process.env.GIT_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+
+async function github<T>(method: string, url: string, body?: unknown): Promise<{ status: number; data: T }> {
+  const token = TOKEN();
+  if (!token) throw new Error("No GitHub token on the server (GIT_TOKEN), so it can't open pull requests.");
+  const res = await fetch(`https://api.github.com${url}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "constellate",
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: res.status, data: (await res.json().catch(() => ({}))) as T };
+}
+
+function prBody(a: AgentRun) {
+  return [
+    a.task,
+    "",
+    a.summary ? `**What the agent said:** ${a.summary}` : "",
+    a.files.length ? `\n**Files:** ${a.files.map((f) => `\`${f}\``).join(", ")}` : "",
+    "",
+    "---",
+    "_Opened from Constellate by a coding agent._",
+  ]
+    .filter((l, i, all) => l || all[i - 1])
+    .join("\n");
+}
+
+/**
+ * Push an agent's branch to origin and open a pull request for it on GitHub,
+ * or, when it has one, push the new commits to it. The only way an agent's
+ * work leaves the box, and only when you ask.
+ */
+export async function openPullRequest(id: string): Promise<NonNullable<AgentRun["pr"]>> {
+  const a = getAgent(id);
+  if (!a) throw new Error("No such agent.");
+  if (live.has(id)) throw new Error("It's still working; wait for it to finish.");
+  if (!a.commits) throw new Error("It hasn't committed anything to open a PR for.");
+  const root = session.state.repo?.root;
+  if (!root) throw new Error("No repository is open.");
+  if (!TOKEN()) throw new Error("No GitHub token on the server (GIT_TOKEN), so it can't open pull requests.");
+  const repo = parseGitHub(await git(root, ["remote", "get-url", "origin"]).catch(() => ""));
+  if (!repo) throw new Error("Its origin isn't a GitHub repository.");
+
+  const head = await git(root, ["rev-parse", `refs/heads/${a.branch}`]);
+  if (a.pr?.pushedSha !== head) {
+    patch(id, { activity: "Pushing its branch" });
+    // The token through a credential helper read from the environment, as the
+    // container's entrypoint does: never on the command line or on disk.
+    const auth = TOKEN() ? ["-c", "credential.helper=", "-c", "credential.helper=!f() { echo username=x-access-token; echo \"password=${GIT_TOKEN:-${GITHUB_TOKEN:-$GH_TOKEN}}\"; }; f"] : [];
+    try {
+      await git(root, [...auth, "push", "--force-with-lease", "origin", `refs/heads/${a.branch}:refs/heads/${a.branch}`]);
+    } finally {
+      patch(id, { activity: undefined });
+    }
+  }
+
+  let pr = a.pr;
+  if (!pr || pr.state !== "open") {
+    const info = await github<{ default_branch?: string; message?: string }>("GET", `/repos/${repo}`);
+    if (info.status !== 200) throw new Error(`GitHub: ${info.data.message ?? info.status}`);
+    // Into the branch it started from, if GitHub has it; else the default.
+    const onRemote = a.base !== "HEAD" && (await git(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${a.base}`]).then(() => true, () => false));
+    const base = onRemote ? a.base : info.data.default_branch ?? "main";
+    type Pull = { number: number; html_url: string; state: string; message?: string; errors?: { message?: string }[] };
+    const made = await github<Pull>("POST", `/repos/${repo}/pulls`, { title: a.title, head: a.branch, base, body: prBody(a) });
+    let found: Pull | undefined = made.status === 201 ? made.data : undefined;
+    if (!found && made.status === 422) {
+      // One already exists for the branch: adopt it.
+      const [owner] = repo.split("/");
+      const list = await github<Pull[]>("GET", `/repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${a.branch}`)}&state=open`);
+      found = Array.isArray(list.data) ? list.data[0] : undefined;
+    }
+    if (!found) throw new Error(`GitHub: ${made.data.errors?.[0]?.message ?? made.data.message ?? made.status}`);
+    pr = { number: found.number, url: found.html_url, state: "open", base, pushedSha: head };
+  }
+  pr = { ...pr, pushedSha: head };
+  patch(id, { pr, error: undefined });
+  return pr;
 }
