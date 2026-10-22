@@ -1,4 +1,4 @@
-import type { Activity, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story } from "../../shared/types";
+import type { Activity, AgentRun, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story } from "../../shared/types";
 import type { FileData } from "../lib/api";
 import type { Tuning } from "../lib/tuning";
 import type { XRSettings } from "../lib/xrSettings";
@@ -7,7 +7,7 @@ import type { VoiceState } from "../lib/useVoice";
 import type { Mode } from "./engine";
 import type { MapHit } from "./map";
 
-export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude";
+export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent";
 
 /**
  * What the headset's panels show, in one object. The desktop app (App.tsx)
@@ -52,6 +52,9 @@ export type Model = {
   langs: string[];
   tops: { id: string; count: number }[];
   stories: Story[];
+  /** Coding agents, and whether this server lets you start them. */
+  agents: AgentRun[];
+  agentsOn: boolean;
   story: { story: Story; beat: number; ms: number; playing: boolean; stage: Stage } | null;
   repos: LibraryRepo[];
   mode: Mode;
@@ -131,6 +134,10 @@ export type Actions = {
   hideHit: (hit: MapHit) => void;
   openRepo: (id: string) => void;
   reanalyze: () => void;
+  startAgent: (task: string) => void;
+  /** Light up an agent's files and fly there. */
+  focusAgent: (id: string) => void;
+  agentAction: (id: string, action: "stop" | "pr") => void;
   isFile: (p: string) => boolean;
 };
 

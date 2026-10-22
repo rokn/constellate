@@ -29,7 +29,12 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
   const [error, setError] = useState("");
   const running = a.status === "working" || a.status === "starting";
   const s = STATUS[a.status];
-  const run = async (body: Record<string, unknown>) => setError((await act({ id: a.id, ...body })) ?? "");
+  const [busy, setBusy] = useState(false);
+  const run = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    setError((await act({ id: a.id, ...body })) ?? "");
+    setBusy(false);
+  };
 
   return (
     <li className="rounded-lg border border-line/60 p-2.5">
@@ -43,6 +48,11 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
       <p className="mt-1 truncate text-[12px] text-muted">
         {running ? a.activity ?? s.label : a.error ?? s.label}
         <span className="ml-1.5 font-mono text-[11px] opacity-70">{a.branch}</span>
+        {a.pr && (
+          <a href={a.pr.url} target="_blank" rel="noreferrer" className="ml-1.5 text-course hover:underline">
+            PR #{a.pr.number}
+          </a>
+        )}
       </p>
       {open && (
         <div className="mt-2 space-y-2 text-[12.5px]">
@@ -86,9 +96,19 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
                 Stop
               </button>
             )}
+            {!running && a.commits > 0 && (!a.pr || a.pr.state !== "open") && (
+              <button
+                onClick={() => void run({ action: "pr" })}
+                disabled={busy}
+                className="glass rounded-md px-2 py-0.5 text-course hover:text-text disabled:opacity-40"
+                title="Push its branch and open a pull request on GitHub"
+              >
+                {busy ? "Opening…" : "Open PR"}
+              </button>
+            )}
             <button
               onClick={() => {
-                if (confirm(`Discard "${a.title}"? Its branch ${a.branch} and everything it changed are deleted.`)) void run({ action: "discard" });
+                if (confirm(`Discard "${a.title}"? Its branch ${a.branch} and everything it changed are deleted here${a.pr ? ` (PR #${a.pr.number} stays on GitHub)` : ""}.`)) void run({ action: "discard" });
               }}
               className="glass rounded-md px-2 py-0.5 text-muted hover:text-bad"
             >
