@@ -424,6 +424,13 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
     const auth = TOKEN() ? ["-c", "credential.helper=", "-c", "credential.helper=!f() { echo username=x-access-token; echo \"password=${GIT_TOKEN:-${GITHUB_TOKEN:-$GH_TOKEN}}\"; }; f"] : [];
     try {
       await git(root, [...auth, "push", "--force-with-lease", "origin", `refs/heads/${a.branch}:refs/heads/${a.branch}`]);
+    } catch (err) {
+      // git's own words, not "Command failed: <the whole command line>".
+      const said = String((err as { stderr?: string }).stderr ?? (err instanceof Error ? err.message : err));
+      if (/\b403\b|denied/i.test(said)) {
+        throw new Error(`GitHub refused the push: the server's GIT_TOKEN can't write to ${repo}. Give it Contents and Pull requests read and write on that repo.`);
+      }
+      throw new Error(`The push failed: ${said.split("\n").map((l) => l.trim()).filter(Boolean).at(-1) ?? "unknown error"}`);
     } finally {
       patch(id, { activity: undefined });
     }
