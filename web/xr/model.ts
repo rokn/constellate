@@ -67,7 +67,7 @@ export type Model = {
   hintsOpen: boolean;
   filterOpen: boolean;
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
-  focus: { label: string; depth: number; count: number; more: boolean } | null;
+  focus: { label: string; depth: number; count: number; more: boolean; only: boolean } | null;
 };
 
 export type Jump = { kind: "file" | "module" | "symbol"; label: string; detail?: string; path?: string; id?: string; line?: number };
@@ -122,9 +122,11 @@ export type Actions = {
    * its import neighbours; fly there. Says what it lit, and whether there's a
    * further ring.
    */
-  focusAround: (hit: MapHit, depth: number) => { label: string; count: number; more: boolean; paths: string[] };
+  focusAround: (hit: MapHit, depth: number) => { label: string; count: number; more: boolean; paths: string[]; core: string[] };
   focusWider: () => void;
   focusNarrower: () => void;
+  /** Show only what the focus lights, or, when that's on, the map as it was. */
+  focusOnly: () => void;
   /** Throw something off the map (a fling): it's hidden, with an undo. */
   hideHit: (hit: MapHit) => void;
   openRepo: (id: string) => void;
@@ -154,6 +156,7 @@ export type AppActions = Omit<
   | "toggleFilter"
   | "focusWider"
   | "focusNarrower"
+  | "focusOnly"
 > & {
   addNote: (path: string, text: string) => void;
   /** A local path, or on a server that keeps GitHub repos, owner/name. */

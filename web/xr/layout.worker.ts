@@ -32,13 +32,15 @@ export type LayoutParams = {
 };
 
 export type ToWorker =
-  | { type: "graph"; nodes: LayoutNode[]; links: LayoutLink[]; params: LayoutParams; version: number }
+  /** `gentle`: only bodies went away (a hide, a filter): the rest settle in place instead of being stirred up. */
+  | { type: "graph"; nodes: LayoutNode[]; links: LayoutLink[]; params: LayoutParams; version: number; gentle?: boolean }
   | { type: "reheat" }
   /** New knobs, same graph: the forces change and the layout warms up to show it. */
   | { type: "params"; params: LayoutParams }
   /** A body held by a hand: pinned where the hand is while the rest give way. */
   | { type: "drag"; index: number; x: number; y: number; z: number }
-  | { type: "release"; index: number };
+  /** `pin`: it stays where it was let go. */
+  | { type: "release"; index: number; pin?: boolean };
 export type FromWorker = { type: "tick"; version: number; positions: Float32Array; settled: boolean };
 
 type SimNode = { id: string; type: LayoutNode["type"]; index?: number; x: number; y: number; z: number; vx?: number; vy?: number; vz?: number; fx?: number; fy?: number; fz?: number };
@@ -131,7 +133,7 @@ ctx.onmessage = (e: MessageEvent<ToWorker>) => {
         run();
       }
     } else if (held.delete(n)) {
-      delete n.fx, delete n.fy, delete n.fz;
+      if (!msg.pin) delete n.fx, delete n.fy, delete n.fz;
       if (!held.size) sim.alphaTarget(0);
       run();
     }
@@ -169,7 +171,7 @@ ctx.onmessage = (e: MessageEvent<ToWorker>) => {
   sim.nodes(order).alphaTarget(0);
   setForces(p, links);
   sim.force("center", forceCenter()).stop();
-  sim.alpha(fresh ? 1 : 0.7);
+  sim.alpha(fresh ? 1 : msg.gentle ? 0.08 : 0.7);
   // The desktop map warms up 40 ticks before it shows anything.
   if (fresh) for (let i = 0; i < 40; i++) sim.tick();
   post(false);

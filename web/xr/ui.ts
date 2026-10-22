@@ -58,23 +58,25 @@ export abstract class Panel {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
-  readonly texture: THREE.CanvasTexture;
-  readonly W: number;
-  readonly H: number;
+  texture: THREE.CanvasTexture;
+  W: number;
+  H: number;
   regions: Region[] = [];
   hover: string | null = null;
   dirty = true;
   /** Body scroll, in canvas px. */
   scrollY = 0;
   maxScroll = 0;
+  /** Whether both hands can stretch it (panels whose painting follows their size). */
+  resizable = false;
   /** Presses in progress, per pointer: two hands can be on one panel, and one mustn't move the other's. */
   private presses = new Map<string, { y: number; x: number; scroll: number; region: Region | null; moved: boolean; drag?: boolean }>();
 
   constructor(
     readonly name: string,
-    readonly widthM: number,
-    readonly heightM: number,
-    pxPerM = 1650,
+    public widthM: number,
+    public heightM: number,
+    private pxPerM = 1650,
   ) {
     this.W = Math.round(widthM * pxPerM);
     this.H = Math.round(heightM * pxPerM);
@@ -82,11 +84,7 @@ export abstract class Panel {
     this.canvas.width = this.W;
     this.canvas.height = this.H;
     this.ctx = this.canvas.getContext("2d")!;
-    this.texture = new THREE.CanvasTexture(this.canvas);
-    this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.anisotropy = 4;
-    this.texture.generateMipmaps = true;
-    this.texture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.texture = this.makeTexture();
     this.mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(widthM, heightM),
       // Panels are read, not flown through: they draw over the map even where
@@ -97,6 +95,33 @@ export abstract class Panel {
     this.mesh.userData.panel = this;
     this.mesh.visible = false;
     this.mesh.renderOrder = 10;
+  }
+
+  private makeTexture() {
+    const t = new THREE.CanvasTexture(this.canvas);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    t.generateMipmaps = true;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    return t;
+  }
+
+  /** A new size in metres: a bigger canvas, so more of the code or the answer fits, not bigger letters. */
+  resize(widthM: number, heightM: number) {
+    this.widthM = widthM;
+    this.heightM = heightM;
+    this.W = Math.round(widthM * this.pxPerM);
+    this.H = Math.round(heightM * this.pxPerM);
+    this.canvas.width = this.W;
+    this.canvas.height = this.H;
+    // A texture's size is fixed once it's on the GPU: a new one for the new canvas.
+    this.texture.dispose();
+    this.texture = this.makeTexture();
+    this.mesh.material.map = this.texture;
+    this.mesh.material.needsUpdate = true;
+    this.mesh.geometry.dispose();
+    this.mesh.geometry = new THREE.PlaneGeometry(widthM, heightM);
+    this.invalidate();
   }
 
   get open() {

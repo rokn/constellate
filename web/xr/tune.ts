@@ -224,12 +224,16 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
     color: C.static,
     rows: [
       ["Trigger", "Pick a file, module or button"],
+      ["Trigger on a module", "Its files and their links; again, with what they talk to"],
       ["Trigger + move on a body", "Drag it; the map gives way"],
+      ["Grip while dragging a body", "Pin it where you let go (drag it again to free it)"],
       ["Throw a held body and let go", "Hide it (undo on the dock)"],
       ["Trigger on open sky", "Move the map"],
       ["Grip", "Move the map, wherever you point"],
       ["Both grips", "Stretch to scale, twist to turn"],
       ["Grip on a panel, or trigger on its handle", "Carry the panel"],
+      ["Stick while carrying a panel", "Push it away, pull it closer"],
+      ["Other grip on a carried code, answers or story panel", "Pull apart or together to resize it"],
     ],
   },
   {
@@ -267,7 +271,7 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
 /** What every button does: opened from the dock's "?" (and on your first visit). */
 export class HintsPanel extends Panel {
   constructor(private a: Actions) {
-    super("hints", 1.0, 0.5);
+    super("hints", 1.0, 0.68);
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
@@ -286,8 +290,8 @@ export class HintsPanel extends Panel {
     const ys = [130, 130];
     const LH = 36;
     HINTS.forEach((g, i) => {
-      // Either hand and hands on the left, the two controllers on the right.
-      const c = i === 1 || i === 2 ? 1 : 0;
+      // Either hand on the left; the two controllers and hands on the right.
+      const c = i === 0 ? 0 : 1;
       const x = col(c);
       let y = ys[c];
       ctx.font = cond(32, 600);

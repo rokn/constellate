@@ -37,6 +37,11 @@ export type XRFeed = {
 
 export type XR = ReturnType<typeof useXR>;
 
+/** The map's look, with the focus's inner rings marked so only links reaching in from it light. */
+function styled(style: MapStyle, f: { paths: string[]; core: string[] } | null): MapStyle {
+  return f && style.emphasis === f.paths ? { ...style, core: f.core } : style;
+}
+
 export function useXR(feed: XRFeed) {
   const [support, setSupport] = useState({ vr: false, ar: false });
   const [room, setRoom] = useState<Room | null>(null);
@@ -47,7 +52,7 @@ export function useXR(feed: XRFeed) {
   const [hintsOpen, setHintsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
-  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[] } | null>(null);
+  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
   const focusRef = useRef(focusAt);
   focusRef.current = focusAt;
   const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
@@ -145,6 +150,18 @@ export function useXR(feed: XRFeed) {
       const f = focusRef.current;
       if (f && f.depth > 0) focusOn(f.hit, f.depth - 1);
     },
+    focusOnly: () => {
+      const f = focusRef.current;
+      const { mapFilter } = feedRef.current.model;
+      const { setMapFilter } = feedRef.current.actions;
+      if (f && mapFilter.paths === f.paths) {
+        const was = beforeOnly.current;
+        setMapFilter({ ...mapFilter, paths: was?.paths, label: was?.label });
+      } else if (f) {
+        beforeOnly.current = mapFilter;
+        setMapFilter({ ...mapFilter, paths: f.paths, label: f.label });
+      }
+    },
     // Going somewhere from the menu closes it, so you can see where you went.
     showFrame: (id) => {
       setMenuOpen(false);
@@ -159,6 +176,8 @@ export function useXR(feed: XRFeed) {
       feedRef.current.actions.startTour();
     },
   };
+  /** The filter from before "Show only these", to go back to. */
+  const beforeOnly = useRef<AppModel["mapFilter"] | null>(null);
   /** Focus on a body with `depth` rings of its connections. */
   const focusOn = (hit: MapHit, depth: number) => {
     const r = feedRef.current.actions.focusAround(hit, depth);
@@ -194,7 +213,14 @@ export function useXR(feed: XRFeed) {
           const { Room } = await import("./room");
           r = new Room(
             {
-              onPick: (h) => feedRef.current.handlers.onPick(h),
+              // A module: first its own files and the links between them;
+              // pressed again, the files it talks to as well.
+              onPick: (h) => {
+                if (h.kind !== "module") return feedRef.current.handlers.onPick(h);
+                const f = focusRef.current;
+                const same = f && f.hit.kind === h.kind && f.hit.id === h.id;
+                focusOn(h, same && f.depth === 0 && f.more ? 1 : 0);
+              },
               describe: (h) => feedRef.current.handlers.describe(h),
               onBackground: () => (menuRef.current ? setMenuOpen(false) : feedRef.current.handlers.onBackground()),
               onButton: (b) => {
@@ -235,7 +261,7 @@ export function useXR(feed: XRFeed) {
         }
         const f = feedRef.current;
         r.engine.setSettings(f.model.settings);
-        r.setStyle(f.style);
+        r.setStyle(styled(f.style, focusRef.current));
         if (f.map) r.setMap(f.map);
         await r.engine.enter(m);
       } catch (err) {
@@ -254,8 +280,8 @@ export function useXR(feed: XRFeed) {
     if (room && presenting && feed.map) room.setMap(feed.map);
   }, [room, presenting, feed.map]);
   useEffect(() => {
-    if (room && presenting) room.setStyle(feed.style);
-  }, [room, presenting, feed.style]);
+    if (room && presenting) room.setStyle(styled(feed.style, focusAt));
+  }, [room, presenting, feed.style, focusAt]);
   useEffect(() => {
     room?.engine.setSettings(feed.model.settings);
   }, [room, feed.model.settings]);
@@ -275,7 +301,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more } });
+    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */
