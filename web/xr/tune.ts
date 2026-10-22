@@ -230,7 +230,7 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
       ["Throw a held body and let go", "Hide it (undo on the dock)"],
       ["Trigger on open sky", "Move the map"],
       ["Grip", "Move the map, wherever you point"],
-      ["Both grips", "Stretch to scale, twist to turn"],
+      ["Both grips", "Stretch to scale; turn, tilt or twist to rotate any way"],
       ["Grip on a panel, or trigger on its handle", "Carry the panel"],
       ["Stick while carrying a panel", "Push it away, pull it closer"],
       ["Other grip on a carried code, answers or story panel", "Pull apart or together to resize it"],
@@ -263,7 +263,7 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
     color: C.good,
     rows: [
       ["Pinch", "Same as the trigger"],
-      ["Pinch both hands on open sky", "Scale and turn the map"],
+      ["Pinch both hands on open sky", "Scale the map and rotate it any way"],
     ],
   },
 ];

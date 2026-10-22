@@ -47,7 +47,7 @@ export type EngineHandlers = {
   onFlick?: (hit: MapHit) => void;
 };
 
-type Grab = { p: Pointer; at0: THREE.Vector3 };
+type Grab = { p: Pointer; at0: THREE.Vector3; up0: THREE.Vector3 };
 type Press =
   | { kind: "panel"; panel: Panel }
   | { kind: "map"; hit: MapHit; from: THREE.Vector3 }
@@ -803,10 +803,16 @@ export class Engine {
     return new THREE.Vector3().setFromMatrixPosition(p.ray.matrixWorld);
   }
 
+  /** Which way is up for the hand: twisting it turns this about the ray. */
+  private grabUp(p: Pointer) {
+    p.ray.updateMatrixWorld();
+    return new THREE.Vector3(0, 1, 0).transformDirection(p.ray.matrixWorld);
+  }
+
   private beginGrab(p: Pointer) {
     if (this.grabs.some((g) => g.p === p)) return;
     this.touched();
-    this.grabs.push({ p, at0: this.grabPoint(p) });
+    this.grabs.push({ p, at0: this.grabPoint(p), up0: this.grabUp(p) });
     this.resetGrab();
     this.haptic(p, 0.25, 15);
   }
@@ -820,7 +826,10 @@ export class Engine {
   /** Grabs restart from where the world is now whenever a hand joins or leaves. */
   private resetGrab() {
     if (!this.grabs.length) return void (this.grabStart = null);
-    for (const g of this.grabs) g.at0 = this.grabPoint(g.p);
+    for (const g of this.grabs) {
+      g.at0 = this.grabPoint(g.p);
+      g.up0 = this.grabUp(g.p);
+    }
     this.grabStart = {
       pos: this.world.position.clone(),
       quat: this.world.quaternion.clone(),
@@ -842,14 +851,24 @@ export class Engine {
       for (const g of this.grabs) if (g.p.press?.kind === "grab" && g.at0.distanceTo(this.grabPoint(g.p)) > 0.03) g.p.press.moved = true;
       return;
     }
-    // Two hands: stretch to scale, turn to rotate, both about the midpoint.
+    // Two hands: stretch to scale, turn to rotate (any way: round, over, or
+    // rolled by twisting both wrists), all about the midpoint.
     const a = this.grabPoint(this.grabs[0].p);
     const b = this.grabPoint(this.grabs[1].p);
     const d0 = s0.b.distanceTo(s0.a);
     const k = THREE.MathUtils.clamp(s0.scale * (a.distanceTo(b) / Math.max(0.01, d0)), MIN_SCALE, MAX_SCALE) / s0.scale;
-    const yaw0 = Math.atan2(s0.b.x - s0.a.x, s0.b.z - s0.a.z);
-    const yaw1 = Math.atan2(b.x - a.x, b.z - a.z);
-    const q = new THREE.Quaternion().setFromAxisAngle(Y, yaw1 - yaw0);
+    const axis0 = s0.b.clone().sub(s0.a).normalize();
+    const axis = b.clone().sub(a).normalize();
+    const swing = new THREE.Quaternion().setFromUnitVectors(axis0, axis);
+    // The line between the hands can't say how far it rolled; the wrists can.
+    let roll = 0;
+    for (const g of this.grabs.slice(0, 2)) {
+      const u0 = g.up0.clone().applyQuaternion(swing).projectOnPlane(axis);
+      const u1 = this.grabUp(g.p).projectOnPlane(axis);
+      if (u0.lengthSq() < 1e-4 || u1.lengthSq() < 1e-4) continue;
+      roll += Math.atan2(new THREE.Vector3().crossVectors(u0, u1).dot(axis), u0.dot(u1)) / 2;
+    }
+    const q = new THREE.Quaternion().setFromAxisAngle(axis, roll).multiply(swing);
     const mid0 = s0.a.clone().add(s0.b).multiplyScalar(0.5);
     const mid1 = a.clone().add(b).multiplyScalar(0.5);
     this.world.scale.setScalar(s0.scale * k);
