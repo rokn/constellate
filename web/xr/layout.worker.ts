@@ -28,11 +28,17 @@ export type LayoutParams = {
   runtimeDistance: number;
   friction: number;
   settleSeconds: number;
+  freeze: boolean;
 };
 
 export type ToWorker =
   | { type: "graph"; nodes: LayoutNode[]; links: LayoutLink[]; params: LayoutParams; version: number }
-  | { type: "reheat" };
+  | { type: "reheat" }
+  /** New knobs, same graph: the forces change and the layout warms up to show it. */
+  | { type: "params"; params: LayoutParams }
+  /** A body held by a hand: pinned where the hand is while the rest give way. */
+  | { type: "drag"; index: number; x: number; y: number; z: number }
+  | { type: "release"; index: number };
 export type FromWorker = { type: "tick"; version: number; positions: Float32Array; settled: boolean };
 
 type SimNode = { id: string; type: LayoutNode["type"]; index?: number; x: number; y: number; z: number; vx?: number; vy?: number; vz?: number; fx?: number; fy?: number; fz?: number };
@@ -45,6 +51,9 @@ let version = 0;
 let startedAt = 0;
 let settleMs = 14000;
 let timer: ReturnType<typeof setInterval> | undefined;
+let params: LayoutParams | null = null;
+/** Bodies being dragged right now: the simulation keeps running while any are. */
+const held = new Set<SimNode>();
 
 function post(settled: boolean) {
   const positions = new Float32Array(order.length * 3);
@@ -56,16 +65,39 @@ function post(settled: boolean) {
   ctx.postMessage({ type: "tick", version, positions, settled } satisfies FromWorker, [positions.buffer]);
 }
 
-function run() {
+function run(evenFrozen = false) {
   clearInterval(timer);
+  // Frozen: bodies stay where they are, unless one is being dragged. (A new
+  // graph still settles: the headset's layout starts from nothing.)
+  if (params?.freeze && !held.size && !evenFrozen) return;
   startedAt = performance.now();
   timer = setInterval(() => {
     if (!sim) return;
     sim.tick();
-    const done = performance.now() - startedAt > settleMs || sim.alpha() < 0.002;
+    const done = !held.size && (performance.now() - startedAt > settleMs || sim.alpha() < 0.002);
     post(done);
     if (done) clearInterval(timer);
   }, 16);
+}
+
+/** The desktop's forces (Space.tsx, setForces), from the knobs. */
+function setForces(p: LayoutParams, links: { source: SimNode; target: SimNode; type: LayoutLink["type"] }[] | null) {
+  if (!sim) return;
+  type SL = { type: LayoutLink["type"] };
+  sim
+    .velocityDecay(p.friction)
+    .force(
+      "charge",
+      forceManyBody().strength((n: SimNode) => (n.type === "module" && p.grouped ? -p.clusterSeparation : -p.repulsion)),
+    );
+  const link = links ? forceLink(links) : sim.force("link");
+  if (!link) return;
+  link
+    .distance((l: SL) =>
+      l.type === "member" && p.grouped ? p.clusterDistance : { contains: p.folderDistance, import: p.importDistance, member: 26, logical: p.runtimeDistance }[l.type],
+    )
+    .strength((l: SL) => (l.type === "member" && p.grouped ? p.clusterTightness : { contains: p.folderPull, import: p.importPull, member: 0.12, logical: p.runtimePull }[l.type]));
+  if (links) sim.force("link", link);
 }
 
 ctx.onmessage = (e: MessageEvent<ToWorker>) => {
@@ -75,8 +107,40 @@ ctx.onmessage = (e: MessageEvent<ToWorker>) => {
     run();
     return;
   }
+  if (msg.type === "params") {
+    const was = params;
+    params = msg.params;
+    settleMs = params.settleSeconds * 1000;
+    setForces(params, null);
+    // As on the desktop: new forces (or unfreezing) warm the layout up to show them.
+    if (!params.freeze && (!was || was.freeze || JSON.stringify({ ...was, friction: 0, settleSeconds: 0 }) !== JSON.stringify({ ...params, friction: 0, settleSeconds: 0 }))) {
+      sim?.alpha(0.6);
+      run();
+    } else if (params.freeze) clearInterval(timer);
+    return;
+  }
+  if (msg.type === "drag" || msg.type === "release") {
+    const n = order[msg.index];
+    if (!n || !sim) return;
+    if (msg.type === "drag") {
+      Object.assign(n, { x: msg.x, y: msg.y, z: msg.z, fx: msg.x, fy: msg.y, fz: msg.z });
+      if (!held.has(n)) {
+        held.add(n);
+        // Keep the engine running at a low heat while the body is held, as the desktop's drag does.
+        sim.alphaTarget(0.3);
+        run();
+      }
+    } else if (held.delete(n)) {
+      delete n.fx, delete n.fy, delete n.fz;
+      if (!held.size) sim.alphaTarget(0);
+      run();
+    }
+    return;
+  }
   version = msg.version;
   const p = msg.params;
+  params = p;
+  held.clear();
   settleMs = p.settleSeconds * 1000;
   // Bodies already on the map keep their place and velocity, so a regroup or a
   // filter moves the map into its new shape instead of exploding it.
@@ -100,35 +164,14 @@ ctx.onmessage = (e: MessageEvent<ToWorker>) => {
   for (const [k, v] of next) byId.set(k, v);
 
   const links = msg.links.map((l) => ({ source: order[l.s], target: order[l.t], type: l.type }));
-  type SL = (typeof links)[number];
   const fresh = !sim;
   sim ??= forceSimulation([], 3).alphaDecay(0.0228);
-  sim
-    .nodes(order)
-    .velocityDecay(p.friction)
-    .force(
-      "charge",
-      forceManyBody().strength((n: SimNode) => (n.type === "module" && p.grouped ? -p.clusterSeparation : -p.repulsion)),
-    )
-    .force(
-      "link",
-      forceLink(links)
-        .distance((l: SL) =>
-          l.type === "member" && p.grouped
-            ? p.clusterDistance
-            : { contains: p.folderDistance, import: p.importDistance, member: 26, logical: p.runtimeDistance }[l.type],
-        )
-        .strength((l: SL) =>
-          l.type === "member" && p.grouped
-            ? p.clusterTightness
-            : { contains: p.folderPull, import: p.importPull, member: 0.12, logical: p.runtimePull }[l.type],
-        ),
-    )
-    .force("center", forceCenter())
-    .stop();
+  sim.nodes(order).alphaTarget(0);
+  setForces(p, links);
+  sim.force("center", forceCenter()).stop();
   sim.alpha(fresh ? 1 : 0.7);
   // The desktop map warms up 40 ticks before it shows anything.
   if (fresh) for (let i = 0; i < 40; i++) sim.tick();
   post(false);
-  run();
+  run(true);
 };

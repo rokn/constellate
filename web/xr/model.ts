@@ -1,5 +1,7 @@
 import type { Activity, Frame, Layer, LibraryRepo, Overview, Story } from "../../shared/types";
 import type { FileData } from "../lib/api";
+import type { Tuning } from "../lib/tuning";
+import type { XRSettings } from "../lib/xrSettings";
 import type { Stage } from "../lib/story";
 import type { VoiceState } from "../lib/useVoice";
 import type { Mode } from "./engine";
@@ -49,6 +51,11 @@ export type Model = {
   placing: boolean;
   menuOpen: boolean;
   keyboard: { mode: "ask" | "note" | "repo"; target?: string } | null;
+  /** The desktop's map knobs, the same object its Tune panel edits. */
+  tuning: Tuning;
+  settings: XRSettings;
+  tuneOpen: boolean;
+  hintsOpen: boolean;
 };
 
 export type Jump = { kind: "file" | "module" | "symbol"; label: string; detail?: string; path?: string; id?: string; line?: number };
@@ -89,18 +96,36 @@ export type Actions = {
   exitXR: () => void;
   placeMap: () => void;
   recenterPanels: () => void;
+  toggleTune: () => void;
+  toggleHints: () => void;
+  /** Merged into the desktop's tuning (a whole Tuning replaces it: presets, reset). */
+  setTuning: (patch: Partial<Tuning>) => void;
+  setXR: (patch: Partial<XRSettings>) => void;
+  relayout: () => void;
   openRepo: (id: string) => void;
   reanalyze: () => void;
   isFile: (p: string) => boolean;
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
   Actions,
-  "toggleMenu" | "openKeyboard" | "closeKeyboard" | "submitKeyboard" | "suggest" | "jump" | "enter" | "exitXR" | "placeMap" | "recenterPanels"
+  | "toggleMenu"
+  | "openKeyboard"
+  | "closeKeyboard"
+  | "submitKeyboard"
+  | "suggest"
+  | "jump"
+  | "enter"
+  | "exitXR"
+  | "placeMap"
+  | "recenterPanels"
+  | "toggleTune"
+  | "toggleHints"
+  | "relayout"
 > & {
   addNote: (path: string, text: string) => void;
   /** A local path, or on a server that keeps GitHub repos, owner/name. */

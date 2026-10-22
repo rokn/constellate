@@ -35,7 +35,19 @@ export const cond = (px: number, weight = 600) => `${weight} ${px}px ${FONT_COND
 export const sans = (px: number, weight = 400) => `${weight} ${px}px ${FONT_SANS}`;
 export const mono = (px: number, weight = 400) => `${weight} ${px}px ${FONT_MONO}`;
 
-export type Region = { id: string; x: number; y: number; w: number; h: number; onClick?: () => void; onHold?: () => void };
+export type Region = {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  onClick?: () => void;
+  onHold?: () => void;
+  /** A slider: called with the pointer's canvas px while it's held down on (or dragged from) the region. */
+  onDrag?: (x: number, y: number) => void;
+  /** The end of a drag. */
+  onRelease?: () => void;
+};
 
 export type PointerKind = "move" | "down" | "up" | "leave";
 
@@ -56,7 +68,7 @@ export abstract class Panel {
   scrollY = 0;
   maxScroll = 0;
   /** Presses in progress, per pointer: two hands can be on one panel, and one mustn't move the other's. */
-  private presses = new Map<string, { y: number; x: number; scroll: number; region: Region | null; moved: boolean }>();
+  private presses = new Map<string, { y: number; x: number; scroll: number; region: Region | null; moved: boolean; drag?: boolean }>();
 
   constructor(
     readonly name: string,
@@ -130,11 +142,17 @@ export abstract class Panel {
       return this.setHover(null), false;
     }
     if (kind === "down") {
-      this.presses.set(who, { x, y, scroll: this.scrollY, region: r, moved: false });
+      this.presses.set(who, { x, y, scroll: this.scrollY, region: r, moved: false, drag: !!r?.onDrag });
+      r?.onDrag?.(x, y);
       return !!r;
     }
     if (kind === "move") {
       const p = this.presses.get(who);
+      // A slider follows the pointer anywhere on the panel until it's let go.
+      if (p?.drag) {
+        p.region!.onDrag!(x, y);
+        return true;
+      }
       if (p) {
         // Dragging the body scrolls it, the way a finger does on a page.
         if (Math.abs(y - p.y) > CLICK_SLOP || Math.abs(x - p.x) > CLICK_SLOP) p.moved = true;
@@ -146,6 +164,10 @@ export abstract class Panel {
     // up
     const p = this.presses.get(who);
     this.presses.delete(who);
+    if (p?.drag) {
+      p.region!.onRelease?.();
+      return true;
+    }
     if (p && !p.moved && r && p.region?.id === r.id) r.onClick?.();
     return !!r;
   }
@@ -211,6 +233,65 @@ export abstract class Panel {
     ctx.textAlign = "left";
     if (!o.disabled) this.region({ id, x, y, w, h, onClick });
     return x + w;
+  }
+
+  /**
+   * A slider from `min` to `max` across `w` px, with its value shown at the
+   * right. `onChange` fires as it's dragged, `onCommit` when it's let go.
+   */
+  slider(
+    ctx: CanvasRenderingContext2D,
+    id: string,
+    x: number,
+    y: number,
+    w: number,
+    o: { value: number; min: number; max: number; step: number; changed?: boolean; onChange: (v: number) => void; onCommit: () => void },
+  ) {
+    const h = 44;
+    const hot = this.hover === id;
+    const u = (o.value - o.min) / (o.max - o.min || 1);
+    const ty = y + h / 2;
+    roundRect(ctx, x, ty - 5, w, 10, 5);
+    ctx.fillStyle = C.panel2;
+    ctx.fill();
+    ctx.strokeStyle = C.line;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    roundRect(ctx, x, ty - 5, Math.max(10, w * u), 10, 5);
+    ctx.fillStyle = withAlpha(o.changed ? C.course : C.static, 0.75);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + w * u, ty, hot ? 17 : 14, 0, Math.PI * 2);
+    ctx.fillStyle = C.text;
+    ctx.fill();
+    const snap = (px: number) => {
+      const t = Math.max(0, Math.min(1, (px - x) / w));
+      const raw = o.min + t * (o.max - o.min);
+      const v = Math.round(raw / o.step) * o.step;
+      o.onChange(Math.max(o.min, Math.min(o.max, +v.toFixed(6))));
+    };
+    // The region is taller than the track, so it's easy to catch.
+    this.region({ id, x: x - 16, y, w: w + 32, h, onClick: () => {}, onDrag: (px) => snap(px), onRelease: o.onCommit });
+  }
+
+  /** An on/off switch. */
+  toggle(ctx: CanvasRenderingContext2D, id: string, x: number, y: number, on: boolean, onClick: () => void) {
+    const w = 76;
+    const h = 40;
+    const hot = this.hover === id;
+    roundRect(ctx, x, y, w, h, h / 2);
+    ctx.fillStyle = on ? withAlpha(C.course, 0.7) : C.line;
+    ctx.fill();
+    if (hot) {
+      ctx.strokeStyle = withAlpha(C.static, 0.8);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(on ? x + w - h / 2 : x + h / 2, y + h / 2, h / 2 - 5, 0, Math.PI * 2);
+    ctx.fillStyle = C.text;
+    ctx.fill();
+    this.region({ id, x: x - 10, y: y - 6, w: w + 20, h: h + 12, onClick });
   }
 
   /** A clickable row of text: lights when pointed at. */

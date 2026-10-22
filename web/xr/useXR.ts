@@ -42,6 +42,8 @@ export function useXR(feed: XRFeed) {
   const [mode, setMode] = useState<Mode>("flat");
   const [placing, setPlacing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [tuneOpen, setTuneOpen] = useState(false);
+  const [hintsOpen, setHintsOpen] = useState(false);
   const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
   const [fileData, setFileData] = useState<FileData | null>(null);
   const [repos, setRepos] = useState<LibraryRepo[]>([]);
@@ -112,6 +114,15 @@ export function useXR(feed: XRFeed) {
       roomRef.current?.engine.startPlacing();
     },
     recenterPanels: () => roomRef.current?.engine.recenterPanels(),
+    toggleTune: () => {
+      setMenuOpen(false);
+      setTuneOpen((o) => !o);
+    },
+    toggleHints: () => {
+      setHintsOpen((o) => !o);
+      if (!feedRef.current.model.settings.hintsSeen) feedRef.current.actions.setXR({ hintsSeen: true });
+    },
+    relayout: () => roomRef.current?.engine.map.reheat(),
     // Going somewhere from the menu closes it, so you can see where you went.
     showFrame: (id) => {
       setMenuOpen(false);
@@ -162,9 +173,11 @@ export function useXR(feed: XRFeed) {
                 setMode(md);
                 if (md === "flat") {
                   setMenuOpen(false);
+                  setTuneOpen(false);
+                  setHintsOpen(false);
                   setKeyboard(null);
                   setPlacing(false);
-                }
+                } else if (!feedRef.current.model.settings.hintsSeen) setHintsOpen(true);
               },
               onPlaced: () => setPlacing(false),
               // In you go: to what you were looking at on the desktop, or the whole map.
@@ -179,6 +192,7 @@ export function useXR(feed: XRFeed) {
           if (import.meta.env.DEV || location.search.includes("debug")) (window as unknown as { __xr: unknown }).__xr = r.engine;
         }
         const f = feedRef.current;
+        r.engine.setSettings(f.model.settings);
         r.setStyle(f.style);
         if (f.map) r.setMap(f.map);
         await r.engine.enter(m);
@@ -200,6 +214,9 @@ export function useXR(feed: XRFeed) {
   useEffect(() => {
     if (room && presenting) room.setStyle(feed.style);
   }, [room, presenting, feed.style]);
+  useEffect(() => {
+    room?.engine.setSettings(feed.model.settings);
+  }, [room, feed.model.settings]);
 
   const path = feed.model.file?.path;
   useEffect(() => {
@@ -216,7 +233,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard });
+    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

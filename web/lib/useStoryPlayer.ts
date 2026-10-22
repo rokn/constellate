@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Story } from "../../shared/types";
 import { beatMs, speechMs } from "./story";
+import { sound } from "./xrSettings";
 
 /**
  * Plays a story: one beat at a time, each its own clip. While a beat is being
@@ -42,6 +43,7 @@ export function useStoryPlayer(story: Story | null, opts: { speed: number; stopE
   const load = useCallback((i: number, ms: number) => {
     const el = (audio.current ??= new Audio());
     el.playbackRate = optsRef.current.speed;
+    el.volume = Math.min(1, Math.max(0, sound.volume));
     const a = voiced(i);
     const b = beatOf(i);
     if (!a || !b || ms >= speechMs(b)) {

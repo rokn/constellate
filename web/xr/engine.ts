@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerModelFactory.js";
 import { XRHandModelFactory } from "three/examples/jsm/webxr/XRHandModelFactory.js";
+import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
+import { Bloom } from "./bloom";
 import { MapView, type MapHit } from "./map";
-import { C, Panel, Tag } from "./ui";
+import { C, Panel, Tag, roundRect } from "./ui";
 
 /**
  * The room you stand in. One renderer serves three ways of looking:
@@ -17,11 +19,15 @@ import { C, Panel, Tag } from "./ui";
  * scaling, thumbstick flight and every camera flight the navigator asks for
  * move the world group, which keeps the real room (in AR) and your own body
  * (in VR) where they are, and is the comfortable way to fly in a headset.
+ *
+ * Two scenes are drawn each frame: the map (with the stars, the floor and the
+ * passthrough dimmer), which gets the desktop's bloom (see bloom.ts), and the
+ * overlay over it (panels, hands, rays and tags), which stays crisp.
  */
 
 export type Mode = "flat" | "vr" | "ar";
 export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
-export type Slot = "left" | "right" | "center" | "low" | "dock";
+export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints";
 
 export type EngineHandlers = {
   onPick: (hit: MapHit) => void;
@@ -41,7 +47,11 @@ type Grab = { p: Pointer; at0: THREE.Vector3 };
 type Press =
   | { kind: "panel"; panel: Panel }
   | { kind: "map"; hit: MapHit; from: THREE.Vector3 }
-  | { kind: "grab"; from: THREE.Vector3; moved: boolean };
+  | { kind: "grab"; from: THREE.Vector3; moved: boolean }
+  /** A body held on the end of the ray, `dist` metres out. */
+  | { kind: "body"; id: string; dist: number }
+  /** A panel picked up by its handle with the trigger. */
+  | { kind: "handle" };
 
 type Pointer = {
   id: string;
@@ -54,6 +64,8 @@ type Pointer = {
   origin: THREE.Vector3;
   dir: THREE.Vector3;
   hoverPanel: { panel: Panel; x: number; y: number } | null;
+  /** A panel's grab handle under the ray. */
+  hoverHandle: Panel | null;
   hoverMap: MapHit | null;
   press: Press | null;
   squeezing: boolean;
@@ -65,7 +77,6 @@ type Pointer = {
   lastHapticId: string | null;
 };
 
-const SNAP = THREE.MathUtils.degToRad(30);
 const MIN_SCALE = 0.00015;
 const MAX_SCALE = 0.25;
 const tmpM = new THREE.Matrix4();
@@ -80,9 +91,21 @@ export class Engine {
   readonly world = new THREE.Group();
   readonly map = new MapView();
   readonly hud = new THREE.Group();
+  /** Drawn over the (bloomed) map: panels, hands, rays, tags. */
+  readonly overlay = new THREE.Scene();
   mode: Mode = "flat";
+  settings: XRSettings = DEFAULT_XR;
 
   private stars: THREE.Points;
+  private floor: THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial>;
+  /** In passthrough, the night drawn over your room as much as you ask for. */
+  private backdrop: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+  private bloom: Bloom | null = null;
+  /** Panels that have a place in the room; they open there again until recentered. */
+  private placed = new Set<Panel>();
+  private handles = new Map<Panel, THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>>();
+  /** The overview's slow turn (the desktop's "Drift in overview"), until you touch the map. */
+  private drift = false;
   private panels: Panel[] = [];
   private slots = new Map<Panel, Slot>();
   private pointers = new Map<string, Pointer>();
@@ -117,7 +140,8 @@ export class Engine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.xr.enabled = true;
     this.renderer.xr.setReferenceSpaceType("local-floor");
-    this.renderer.xr.setFoveation(0.4);
+    this.renderer.xr.setFoveation(this.settings.foveation);
+    this.renderer.xr.setFramebufferScaleFactor(this.settings.renderScale);
     host.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(70, host.clientWidth / host.clientHeight, 0.02, 400);
@@ -128,14 +152,25 @@ export class Engine {
     this.world.add(this.map.root);
     this.world.scale.setScalar(0.004);
     this.world.position.set(0, 1.5, -2);
-    this.scene.add(this.world, this.hud);
+    this.scene.add(this.world);
+    this.overlay.add(this.hud);
     // Only the controller and hand models are lit; the map and panels glow on their own.
-    this.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2238, 2.2));
+    this.overlay.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2238, 2.2));
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(0.5, 2, 1);
-    this.scene.add(sun);
+    this.overlay.add(sun);
     this.tag.sprite.visible = false;
-    this.scene.add(this.tag.sprite);
+    this.overlay.add(this.tag.sprite);
+
+    this.backdrop = new THREE.Mesh(
+      new THREE.SphereGeometry(180, 32, 16),
+      new THREE.MeshBasicMaterial({ color: C.night, side: THREE.BackSide, transparent: true, depthWrite: false, toneMapped: false }),
+    );
+    this.backdrop.renderOrder = -10;
+    this.backdrop.visible = false;
+    this.scene.add(this.backdrop);
+    this.floor = makeFloor();
+    this.scene.add(this.floor);
 
     // A far starfield, so there is something to fly past. It belongs to the
     // room, not the map: it holds still while the map moves, which keeps the
@@ -148,12 +183,13 @@ export class Engine {
       pts.set([r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), r * Math.cos(p)], i * 3);
     }
     const starGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(pts, 3));
-    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x8fa3c8, size: 2, sizeAttenuation: false, transparent: true, opacity: 0.55 }));
+    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x8fa3c8, size: 2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false }));
+    this.stars.renderOrder = -5;
     this.scene.add(this.stars);
 
     this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: C.course, toneMapped: false }));
     this.reticle.visible = false;
-    this.scene.add(this.reticle);
+    this.overlay.add(this.reticle);
 
     this.setupXRInput();
     this.setupMouse();
@@ -165,7 +201,35 @@ export class Engine {
     this.renderer.setAnimationLoop(null);
     window.removeEventListener("resize", this.onResize);
     this.map.dispose();
+    this.bloom?.dispose();
     this.renderer.dispose();
+  }
+
+  /** The headset's own knobs (lib/xrSettings). Resolution waits for the next session; the rest is live. */
+  setSettings(s: XRSettings) {
+    const was = this.settings;
+    this.settings = s;
+    if (s.foveation !== was.foveation) this.renderer.xr.setFoveation(s.foveation);
+    if (s.renderScale !== was.renderScale && !this.renderer.xr.isPresenting) this.renderer.xr.setFramebufferScaleFactor(s.renderScale);
+    if (s.panelDistance !== was.panelDistance) this.recenterPanels();
+    this.applyRoom();
+  }
+
+  /** The floor, the passthrough dimmer and the stars, for this mode and these settings. */
+  private applyRoom() {
+    const s = this.settings;
+    const ar = this.mode === "ar";
+    const tu = this.map.tuning;
+    const night = ar ? 1 - s.passthrough : 1;
+    this.backdrop.visible = ar && night > 0.001;
+    this.backdrop.material.opacity = night;
+    const stars = this.stars.material as THREE.PointsMaterial;
+    stars.opacity = (tu?.starOpacity ?? 0.55) * (ar ? (s.arStars ? night : 0) : 1);
+    stars.size = (tu?.starSize ?? 2.2) * 0.9;
+    this.stars.visible = stars.opacity > 0.001;
+    this.floor.visible = (ar ? s.floorInAR : s.floor && this.mode === "vr") && s.floorOpacity > 0;
+    this.floor.scale.setScalar(s.floorSize / 2);
+    this.floor.material.uniforms.uOpacity.value = s.floorOpacity;
   }
 
   private onResize = () => {
@@ -194,6 +258,7 @@ export class Engine {
       this.session = null;
       await old.end().catch(() => {});
     }
+    this.renderer.xr.setFramebufferScaleFactor(this.settings.renderScale);
     const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
       requiredFeatures: ["local-floor"],
       optionalFeatures: mode === "ar" ? ["hand-tracking", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "bounded-floor"],
@@ -207,6 +272,8 @@ export class Engine {
       this.setMode("flat");
     });
     await this.renderer.xr.setSession(session);
+    // A new session is a new room: panels open in front of you again.
+    this.placed.clear();
     this.setMode(mode);
     // Once the first poses are in, frame what you were looking at (or the whole map).
     setTimeout(() => (this.h.onEntered ? this.h.onEntered() : this.overview(900)), 400);
@@ -221,11 +288,11 @@ export class Engine {
     const ar = mode === "ar";
     this.scene.background = ar ? null : new THREE.Color(C.night);
     this.renderer.setClearColor(0x000000, ar ? 0 : 1);
-    this.stars.visible = !ar;
     this.placing = false;
     this.reticle.visible = false;
     if (!ar) this.anchor = null;
-    for (const [p, slot] of this.slots) if (p.open) this.place(p, slot);
+    this.applyRoom();
+    this.recenterPanels();
     this.h.onMode(mode);
   }
 
@@ -247,27 +314,47 @@ export class Engine {
   addPanel(p: Panel) {
     this.panels.push(p);
     this.hud.add(p.mesh);
+    // A handle under every panel: point at it and hold the trigger (or the grip) to carry the panel.
+    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthTest: false, depthWrite: false, toneMapped: false, opacity: 0.6 }));
+    h.position.set(0, -p.heightM / 2 - 0.028, 0);
+    h.renderOrder = 11;
+    h.userData.handleOf = p;
+    p.mesh.add(h);
+    this.handles.set(p, h);
   }
 
+  /**
+   * Open a panel. It goes where it was last (you put it there), unless it
+   * has never been placed this session or is now out of sight behind you.
+   */
   show(p: Panel, slot: Slot) {
     const was = p.open;
     p.mesh.visible = true;
     p.invalidate();
-    if (!was || this.slots.get(p) !== slot) this.place(p, slot);
+    if (!was && (!this.placed.has(p) || !this.inView(p))) this.place(p, slot);
     this.slots.set(p, slot);
+  }
+
+  /** Whether a panel is roughly where you're looking (within ~70° of your gaze). */
+  private inView(p: Panel) {
+    const { pos, forward } = this.head();
+    const to = p.mesh.position.clone().sub(pos);
+    return to.lengthSq() < 25 && to.normalize().dot(forward) > Math.cos(THREE.MathUtils.degToRad(70));
   }
 
   hide(p: Panel) {
     p.mesh.visible = false;
     for (const ptr of this.pointers.values()) {
       if (ptr.hoverPanel?.panel === p) ptr.hoverPanel = null;
+      if (ptr.hoverHandle === p) ptr.hoverHandle = null;
       if (ptr.carry?.panel === p) ptr.carry = null;
       if (ptr.press?.kind === "panel" && ptr.press.panel === p) ptr.press = null;
     }
   }
 
-  /** Put every open panel back around where you're looking. */
+  /** Put every open panel back around where you're looking; closed ones open there next time. */
   recenterPanels() {
+    this.placed.clear();
     for (const [p, slot] of this.slots) if (p.open) this.place(p, slot);
   }
 
@@ -279,18 +366,21 @@ export class Engine {
       center: { yaw: 0, dist: 0.85, dy: -0.18, tilt: 0.15 },
       low: { yaw: 0, dist: 0.62, dy: -0.38, tilt: 0.6 },
       dock: { yaw: 0, dist: 0.95, dy: -0.48, tilt: 0.55 },
+      tune: { yaw: 0.25, dist: 0.9, dy: -0.1, tilt: 0.1 },
+      hints: { yaw: 0, dist: 1.0, dy: 0.02, tilt: 0 },
     }[slot];
     // A desktop window sees a much narrower cone than a headset: the preview
     // sets the same panels further out and closer to the middle.
     const flat = this.mode === "flat";
     const a = yaw + spec.yaw * (flat ? 0.62 : 1);
-    const dist = spec.dist * (flat ? 1.4 : 1);
+    const dist = spec.dist * (flat ? 1.4 : 1) * this.settings.panelDistance;
     const dy = spec.dy * (flat ? 1.25 : 1);
     if (slot === "dock") this.dockYaw = yaw;
     p.mesh.position.set(pos.x - Math.sin(a) * dist, pos.y + dy, pos.z - Math.cos(a) * dist);
     // Face the head, then tilt back so a low panel reads like a lectern.
     p.mesh.lookAt(pos.x, p.mesh.position.y, pos.z);
     p.mesh.rotateX(-spec.tilt);
+    this.placed.add(p);
   }
 
   /* --------------------------------- head --------------------------------- */
@@ -322,7 +412,20 @@ export class Engine {
     const target = o.at?.clone() ?? new THREE.Vector3(pos.x - Math.sin(yaw) * dist, pos.y + (o.dy ?? 0), pos.z - Math.cos(yaw) * dist);
     const q = this.world.quaternion.clone();
     const p = target.sub(c.clone().multiplyScalar(s).applyQuaternion(q));
-    this.flyWorld(p, q, s, o.ms ?? 1300);
+    this.drift = false;
+    this.flyWorld(p, q, s, o.ms ?? this.flyMs());
+  }
+
+  /** The desktop's "Flight time", a little brisker at arm's length. */
+  private flyMs() {
+    return (this.map.tuning?.flySeconds ?? 1.6) * 800;
+  }
+
+  /** You moved the map yourself: automatic refits made before now are dropped, and the drift stops. */
+  private touched() {
+    this.userMovedAt = performance.now();
+    this.drift = false;
+    this.flight = null;
   }
 
   private flyWorld(p: THREE.Vector3, q: THREE.Quaternion, s: number, ms: number) {
@@ -339,7 +442,7 @@ export class Engine {
   }
 
   /** Frame the whole map, the way the overview does: around you in VR, on the table in AR. */
-  overview(ms = 1400) {
+  overview(ms = this.flyMs() * 1.1) {
     const b = this.map.bounds();
     if (!b) return;
     if (this.mode === "ar") {
@@ -347,24 +450,31 @@ export class Engine {
       this.frameAt(b.center, b.radius, { radiusM: 0.38, dist: 0.95, dy: -0.4, ms, at });
     } else if (this.mode === "vr") this.frameAt(b.center, b.radius, { radiusM: 1.1, dist: 2.0, dy: -0.1, ms });
     else this.frameAt(b.center, b.radius, { radiusM: 0.85, dist: 1.65, dy: 0.05, ms });
+    // Then it drifts, as the desktop's overview does (on the table or in the preview; turning the whole sky around you in VR is no comfort).
+    this.drift = true;
+  }
+
+  /** "Focus distance": how close flights stop. Further away is the same framing, smaller. */
+  private near() {
+    return 1 / Math.max(0.3, this.map.tuning?.focusDistance ?? 1);
   }
 
   /** Fly to some files: the focus fills a comfortable cone in front of you. */
-  focus(ids: string[], ms = 1300) {
+  focus(ids: string[], ms = this.flyMs()) {
     const b = this.map.bounds(ids);
     if (!b) return;
     const ar = this.mode === "ar";
-    this.frameAt(b.center, b.radius, { radiusM: ar ? 0.3 : 0.42, dist: ar ? 0.8 : 1.0, dy: ar ? -0.25 : -0.08, ms });
+    this.frameAt(b.center, b.radius, { radiusM: (ar ? 0.3 : 0.42) * this.near(), dist: ar ? 0.8 : 1.0, dy: ar ? -0.25 : -0.08, ms });
   }
 
   /** Fly to a file: it in the middle, its neighbourhood around it within reach. */
-  flyTo(path: string, ms = 1300) {
+  flyTo(path: string, ms = this.flyMs()) {
     const at = this.map.positionOf(path);
     if (!at) return;
     const around = this.map.bounds([path, ...this.map.neighboursOf(path)]);
     const r = THREE.MathUtils.clamp(around ? around.center.distanceTo(at) + around.radius * 0.5 : 30, 30, 90);
     const ar = this.mode === "ar";
-    this.frameAt(at, r, { radiusM: ar ? 0.22 : 0.32, dist: ar ? 0.65 : 0.85, dy: ar ? -0.2 : -0.06, ms });
+    this.frameAt(at, r, { radiusM: (ar ? 0.22 : 0.32) * this.near(), dist: ar ? 0.65 : 0.85, dy: ar ? -0.2 : -0.06, ms });
   }
 
   /* --------------------------------- input --------------------------------- */
@@ -378,7 +488,7 @@ export class Engine {
     const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 10, 8), new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, depthTest: false }));
     dot.renderOrder = 30;
     dot.visible = false;
-    this.scene.add(dot);
+    this.overlay.add(dot);
     return { line, dot };
   }
 
@@ -391,7 +501,7 @@ export class Engine {
       const hand = this.renderer.xr.getHand(i);
       grip.add(controllerModels.createControllerModel(grip));
       hand.add(handModels.createHandModel(hand, "mesh"));
-      this.scene.add(ray, grip, hand);
+      this.overlay.add(ray, grip, hand);
       const { line, dot } = this.makeRayVisual();
       ray.add(line);
       const id = `xr${i}`;
@@ -408,6 +518,7 @@ export class Engine {
           origin: new THREE.Vector3(),
           dir: new THREE.Vector3(),
           hoverPanel: null,
+          hoverHandle: null,
           hoverMap: null,
           press: null,
           squeezing: false,
@@ -437,7 +548,7 @@ export class Engine {
     const { line, dot } = this.makeRayVisual();
     line.visible = false;
     const ray = new THREE.Object3D();
-    this.scene.add(ray);
+    this.overlay.add(ray);
     const p: Pointer = {
       id: "mouse",
       kind: "mouse",
@@ -448,6 +559,7 @@ export class Engine {
       origin: new THREE.Vector3(),
       dir: new THREE.Vector3(),
       hoverPanel: null,
+      hoverHandle: null,
       hoverMap: null,
       press: null,
       squeezing: false,
@@ -470,8 +582,7 @@ export class Engine {
       if (Math.abs(dx) + Math.abs(dy) > 0) this.mouse.moved = true;
       // Right drag turns the map about its middle; left drag on open sky moves it.
       if (this.mouse.down === 2) {
-        this.userMovedAt = performance.now();
-        this.flight = null;
+        this.touched();
         const b = this.map.bounds();
         const pivot = b ? this.map.toWorld(b.center) : this.world.position.clone();
         this.rotateWorldAbout(pivot, dx * 0.006);
@@ -480,8 +591,7 @@ export class Engine {
         this.world.position.sub(pivot).applyQuaternion(qx).add(pivot);
         this.world.quaternion.premultiply(qx);
       } else if (this.mouse.down === 0 && p.press?.kind === "grab") {
-        this.userMovedAt = performance.now();
-        this.flight = null;
+        this.touched();
         const d = pivotDistance(this.world, this.camera);
         const k = (d * 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) / r.height;
         this.world.position.add(new THREE.Vector3(dx * k, -dy * k, 0));
@@ -506,6 +616,8 @@ export class Engine {
         e.preventDefault();
         const ptr = this.pointers.get("mouse")!;
         if (ptr.hoverPanel) return ptr.hoverPanel.panel.scrollBy(e.deltaY * 1.2);
+        // A held body: the wheel pushes it away or pulls it in.
+        if (ptr.press?.kind === "body") return void (ptr.press.dist *= Math.exp(-e.deltaY * 0.0015));
         // Zoom toward what's under the pointer, as the desktop does.
         const pivot = ptr.origin.clone().add(ptr.dir.clone().multiplyScalar(ptr.hoverMap ? this.hitDistanceM(ptr, ptr.hoverMap) : 2));
         this.scaleWorldAbout(pivot, Math.exp(-e.deltaY * 0.0015));
@@ -531,6 +643,11 @@ export class Engine {
       this.placeAt(this.reticle.position.clone());
       return;
     }
+    if (p.hoverHandle) {
+      p.press = { kind: "handle" };
+      this.pickUp(p, p.hoverHandle);
+      return;
+    }
     if (p.hoverPanel) {
       p.press = { kind: "panel", panel: p.hoverPanel.panel };
       p.hoverPanel.panel.pointer("down", p.hoverPanel.x, p.hoverPanel.y, p.id);
@@ -552,7 +669,12 @@ export class Engine {
     const press = p.press;
     p.press = null;
     const moved = (from: THREE.Vector3) => from.distanceTo(p.origin.clone().add(p.dir)) > (p.kind === "mouse" ? 0.02 : 0.035);
-    if (press.kind === "panel") {
+    if (press.kind === "handle") {
+      if (!p.squeezing) p.carry = null;
+    } else if (press.kind === "body") {
+      this.map.release(press.id);
+      this.haptic(p, 0.3, 20);
+    } else if (press.kind === "panel") {
       const hp = p.hoverPanel?.panel === press.panel ? p.hoverPanel : null;
       press.panel.pointer("up", hp?.x ?? -1, hp?.y ?? -1, p.id);
     } else if (press.kind === "map") {
@@ -572,15 +694,19 @@ export class Engine {
     const p = this.pointers.get(id);
     if (!p) return;
     p.squeezing = true;
-    // The grip on a panel picks it up; anywhere else it grabs the map.
-    if (p.hoverPanel) {
-      const panel = p.hoverPanel.panel;
-      p.ray.updateMatrixWorld();
-      p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
-      this.haptic(p, 0.4, 25);
-      return;
-    }
+    // The grip on a panel (or its handle) picks it up; anywhere else it grabs the map.
+    const panel = p.hoverHandle ?? p.hoverPanel?.panel;
+    if (panel) return this.pickUp(p, panel);
     this.beginGrab(p);
+  }
+
+  /** A panel follows this pointer until it's let go. */
+  private pickUp(p: Pointer, panel: Panel) {
+    p.ray.updateMatrixWorld();
+    panel.mesh.updateMatrixWorld();
+    p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
+    this.placed.add(panel);
+    this.haptic(p, 0.4, 25);
   }
 
   private squeezeEnd(id: string) {
@@ -588,7 +714,7 @@ export class Engine {
     if (!p) return;
     p.squeezing = false;
     if (p.carry) {
-      p.carry = null;
+      if (p.press?.kind !== "handle") p.carry = null;
       return;
     }
     this.endGrab(p);
@@ -601,7 +727,7 @@ export class Engine {
 
   private beginGrab(p: Pointer) {
     if (this.grabs.some((g) => g.p === p)) return;
-    this.flight = null;
+    this.touched();
     this.grabs.push({ p, at0: this.grabPoint(p) });
     this.resetGrab();
     this.haptic(p, 0.25, 15);
@@ -630,6 +756,7 @@ export class Engine {
     const s0 = this.grabStart;
     if (!s0 || !this.grabs.length) return;
     this.userMovedAt = performance.now();
+    this.drift = false;
     if (this.grabs.length === 1 || !s0.b) {
       // One hand: drag the map through the room.
       const now = this.grabPoint(this.grabs[0].p);
@@ -660,8 +787,7 @@ export class Engine {
   }
 
   private scaleWorldAbout(pivot: THREE.Vector3, k: number) {
-    this.userMovedAt = performance.now();
-    this.flight = null;
+    this.touched();
     const s = THREE.MathUtils.clamp(this.world.scale.x * k, MIN_SCALE, MAX_SCALE);
     const kk = s / this.world.scale.x;
     this.world.position.sub(pivot).multiplyScalar(kk).add(pivot);
@@ -691,6 +817,8 @@ export class Engine {
 
   private frame = (_t: number, xrFrame?: XRFrame) => {
     if (!this.preview && !this.renderer.xr.isPresenting) return;
+    // In a session, three binds the headset's framebuffer before calling us.
+    const target = this.renderer.getRenderTarget();
     this.timer.update();
     const dt = Math.min(0.05, this.timer.getDelta());
     const now = performance.now();
@@ -709,8 +837,17 @@ export class Engine {
     this.readGamepads(dt);
     this.flatKeys(dt);
 
+    // The overview drifts round, slowly, until you touch it.
+    const tu = this.map.tuning;
+    if (this.drift && !this.flight && tu?.autoRotate && this.mode !== "vr" && !this.grabs.length) {
+      const b = this.map.bounds();
+      // OrbitControls' autoRotateSpeed: 1 is a turn a minute.
+      if (b) this.rotateWorldAbout(this.map.toWorld(b.center), ((2 * Math.PI) / 60) * tu.autoRotateSpeed * dt);
+    }
+
     // Pointers: what each ray lands on.
     for (const p of this.pointers.values()) this.updatePointer(p);
+    for (const p of this.pointers.values()) this.updatePress(p);
 
     // A panel being carried follows its hand, still facing you.
     const head = this.head();
@@ -722,9 +859,9 @@ export class Engine {
       p.carry.panel.mesh.lookAt(head.pos);
     }
 
-    // The dock follows lazily: it only turns with you once you've looked well away.
+    // The dock can follow lazily (a setting): it only turns with you once you've looked well away.
     for (const [panel, slot] of this.slots) {
-      if (slot !== "dock" || !panel.open || this.pointers.size === 0) continue;
+      if (!this.settings.dockFollows || slot !== "dock" || !panel.open || this.pointers.size === 0 || [...this.pointers.values()].some((p) => p.carry?.panel === panel)) continue;
       let d = head.yaw - this.dockYaw;
       d = Math.atan2(Math.sin(d), Math.cos(d));
       if (Math.abs(d) > 0.6) this.place(panel, "dock");
@@ -753,8 +890,59 @@ export class Engine {
 
     this.h.onFrame?.();
     for (const panel of this.panels) panel.render();
-    this.renderer.render(this.scene, this.camera);
+    for (const [panel, h] of this.handles) {
+      const hot = [...this.pointers.values()].some((p) => p.hoverHandle === panel || p.carry?.panel === panel);
+      h.material.opacity = hot ? 1 : 0.55;
+    }
+    this.applyRoom();
+    this.draw(target);
   };
+
+  /** The map (bloomed, if bloom is on) and the overlay over it. */
+  private draw(target: THREE.WebGLRenderTarget | null) {
+    const tu = this.map.tuning;
+    const bloom = this.settings.bloom && !!tu && tu.bloomStrength > 0;
+    this.map.setGlow(this.settings.bodyGlow, bloom);
+    if (bloom) {
+      this.bloom ??= new Bloom(this.renderer);
+      this.bloom.render(this.renderer, this.scene, this.overlay, this.camera, target, { strength: tu.bloomStrength, radius: tu.bloomRadius, threshold: tu.bloomThreshold });
+      return;
+    }
+    this.renderer.setRenderTarget(target);
+    this.renderer.render(this.scene, this.camera);
+    this.renderer.autoClear = false;
+    this.renderer.render(this.overlay, this.camera);
+    this.renderer.autoClear = true;
+  }
+
+  /**
+   * A trigger held on the map. Held still, it's a pick (on release). Moved,
+   * it drags the body it's on (the desktop's "Drag bodies"), or with that
+   * knob off, moves the whole map as on open sky.
+   */
+  private updatePress(p: Pointer) {
+    const press = p.press;
+    if (press?.kind === "map") {
+      const moved = p.kind === "mouse" ? this.mouse.moved : press.from.distanceTo(p.origin.clone().add(p.dir)) > 0.035;
+      if (!moved) return;
+      const id = this.map.tuning?.dragBodies ? this.map.bodyOf(press.hit) : null;
+      const at = id ? this.map.positionOf(id) : null;
+      if (id && at) {
+        // Hold it where it is along the ray; from here on it rides the ray.
+        const w = this.map.toWorld(at);
+        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)) };
+        this.haptic(p, 0.35, 20);
+      } else {
+        p.press = { kind: "grab", from: press.from, moved: true };
+        if (p.kind !== "mouse") this.beginGrab(p);
+      }
+    }
+    if (p.press?.kind === "body") {
+      this.world.updateMatrixWorld();
+      const w = p.origin.clone().addScaledVector(p.dir, p.press.dist);
+      this.map.drag(p.press.id, this.map.root.worldToLocal(w));
+    }
+  }
 
   private updatePointer(p: Pointer) {
     if (p.kind === "mouse") {
@@ -771,8 +959,12 @@ export class Engine {
 
     // Panels first: they're in front of the map whenever they're in the way.
     const rc = new THREE.Raycaster(p.origin, p.dir, 0.01, 20);
-    const open = this.panels.filter((x) => x.open && x !== p.carry?.panel).map((x) => x.mesh);
+    const openPanels = this.panels.filter((x) => x.open && x !== p.carry?.panel);
+    const open = openPanels.map((x) => x.mesh);
     const hit = rc.intersectObjects(open, false)[0];
+    // Their handles, just under them.
+    const handleHit = rc.intersectObjects(openPanels.map((x) => this.handles.get(x)!), false)[0];
+    p.hoverHandle = handleHit && (!hit || handleHit.distance <= hit.distance + 0.01) ? (handleHit.object.userData.handleOf as Panel) : null;
     let panelHit: Pointer["hoverPanel"] = null;
     if (hit?.uv) {
       const panel = hit.object.userData.panel as Panel;
@@ -793,7 +985,7 @@ export class Engine {
     p.hoverPanel = panelHit;
 
     let mapHit: MapHit | null = null;
-    if (!panelHit && !p.carry && !(p.press?.kind === "grab" && this.grabs.length)) mapHit = this.map.pick(p.origin, p.dir);
+    if (!panelHit && !p.hoverHandle && !p.carry && !(p.press?.kind === "grab" && this.grabs.length) && p.press?.kind !== "body") mapHit = this.map.pick(p.origin, p.dir);
     const hoverKey = (h: MapHit | null) => (h ? `${h.kind}:${h.id}` : null);
     if (hoverKey(mapHit) !== hoverKey(p.hoverMap) && mapHit) {
       if (p.lastHapticId !== hoverKey(mapHit)) this.haptic(p, 0.12, 8);
@@ -801,11 +993,12 @@ export class Engine {
     }
     p.hoverMap = mapHit;
 
-    // The ray stops at what it hits.
-    const len = panelHit ? hit!.distance : mapHit ? this.hitDistanceM(p, mapHit) : 3;
+    // The ray stops at what it hits (or what it holds).
+    const len = p.hoverHandle ? handleHit!.distance : panelHit ? hit!.distance : p.press?.kind === "body" ? p.press.dist : mapHit ? this.hitDistanceM(p, mapHit) : 3;
     p.line.scale.z = len;
-    (p.line.material as THREE.LineBasicMaterial).color.set(mapHit || panelHit ? "#ffffff" : C.static);
-    p.dot.visible = !!(panelHit || mapHit) && (p.kind !== "mouse" || this.renderer.xr.isPresenting);
+    const aimed = !!(mapHit || panelHit || p.hoverHandle || p.press?.kind === "body");
+    (p.line.material as THREE.LineBasicMaterial).color.set(p.press?.kind === "body" ? C.course : aimed ? "#ffffff" : C.static);
+    p.dot.visible = aimed && (p.kind !== "mouse" || this.renderer.xr.isPresenting);
     p.dot.position.copy(p.origin).addScaledVector(p.dir, len);
     p.dot.scale.setScalar(Math.max(0.6, len * 0.8));
 
@@ -853,6 +1046,12 @@ export class Engine {
       const ax = gp.axes[2] ?? 0;
       const ay = gp.axes[3] ?? 0;
       const dead = 0.18;
+      const s = this.settings;
+      // Holding a body, the stick pushes it away or reels it in.
+      if (p.press?.kind === "body" && Math.abs(ay) > dead) {
+        p.press.dist = THREE.MathUtils.clamp(p.press.dist * Math.exp(-ay * dt * 1.5), 0.05, 15);
+        continue;
+      }
       // Pointing at a panel, either stick scrolls it.
       if (p.hoverPanel && Math.abs(ay) > dead) {
         p.hoverPanel.panel.scrollBy(ay * dt * 1400);
@@ -861,24 +1060,28 @@ export class Engine {
       if (p.handedness === "left") {
         // Fly: push the stick and the map streams past, the way the controller points.
         if (Math.abs(ax) > dead || Math.abs(ay) > dead) {
-          this.flight = null;
-          this.userMovedAt = performance.now();
-          const speed = 1.4 * (gp.buttons[1]?.pressed ? 3 : 1);
+          this.touched();
+          const speed = 1.4 * s.flySpeed * (gp.buttons[1]?.pressed ? 3 : 1);
           const fwd = p.dir.clone();
           const right = new THREE.Vector3().crossVectors(fwd, Y).normalize();
           const move = fwd.multiplyScalar(-ay).add(right.multiplyScalar(ax)).multiplyScalar(speed * dt);
           this.world.position.sub(move);
         }
       } else if (p.handedness === "right") {
-        // Snap turn on X, scale on Y (toward what you're pointing at).
-        if (Math.abs(ax) > 0.7 && !p.snapped) {
+        // Turn on X (in steps, or smoothly), scale on Y (toward what you're pointing at).
+        if (s.smoothTurn) {
+          if (Math.abs(ax) > dead) {
+            this.touched();
+            this.rotateWorldAbout(this.head().pos, -ax * dt * 1.6 * s.turnSpeed);
+          }
+        } else if (Math.abs(ax) > 0.7 && !p.snapped) {
           p.snapped = true;
-          this.flight = null;
-          this.rotateWorldAbout(this.head().pos, ax > 0 ? -SNAP : SNAP);
+          this.touched();
+          this.rotateWorldAbout(this.head().pos, THREE.MathUtils.degToRad(s.snapTurn) * (ax > 0 ? -1 : 1));
         } else if (Math.abs(ax) < 0.3) p.snapped = false;
         if (Math.abs(ay) > dead && Math.abs(ax) < 0.5) {
           const pivot = p.hoverMap ? p.origin.clone().addScaledVector(p.dir, this.hitDistanceM(p, p.hoverMap)) : p.origin.clone().addScaledVector(p.dir, 0.8);
-          this.scaleWorldAbout(pivot, Math.exp(-ay * dt * 1.6));
+          this.scaleWorldAbout(pivot, Math.exp(-ay * dt * 1.6 * s.scaleSpeed));
         }
       }
     }
@@ -895,8 +1098,7 @@ export class Engine {
       (k.has("arrowdown") ? 1 : 0) - (k.has("arrowup") ? 1 : 0),
     );
     if (!v.lengthSq()) return;
-    this.flight = null;
-    this.userMovedAt = performance.now();
+    this.touched();
     this.world.position.sub(v.multiplyScalar(1.2 * dt * (k.has("shift") ? 3 : 1)).applyQuaternion(this.camera.quaternion));
   }
 }
@@ -904,4 +1106,71 @@ export class Engine {
 /** How far the map's middle is from the camera, for turning mouse pixels into metres. */
 function pivotDistance(world: THREE.Group, camera: THREE.Camera) {
   return Math.max(0.3, world.position.distanceTo(tmpV.setFromMatrixPosition(camera.matrixWorld)));
+}
+
+/** A grid where your real floor is, fading out at its edge: somewhere to stand in the night sky. */
+function makeFloor() {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uOpacity: { value: 0.5 }, uColor: { value: new THREE.Color(C.static).multiplyScalar(0.55) } },
+    vertexShader: /* glsl */ `
+      varying vec2 vP;
+      varying vec2 vR;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vP = w.xz;
+        vR = position.xz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uOpacity;
+      uniform vec3 uColor;
+      varying vec2 vP;
+      varying vec2 vR;
+      float grid(vec2 p, float step) {
+        vec2 g = abs(fract(p / step - 0.5) - 0.5) * step;
+        vec2 l = 1.0 - smoothstep(vec2(0.0), fwidth(p) * 1.5, g);
+        return max(l.x, l.y);
+      }
+      void main() {
+        float fade = 1.0 - smoothstep(0.55, 1.0, length(vR));
+        float a = grid(vP, 0.5) * 0.55 + grid(vP, 2.0) * 0.45;
+        // A faint disc under the grid, so the floor reads as a surface and not just lines.
+        float alpha = (a * 0.85 + 0.1) * fade * uOpacity;
+        gl_FragColor = vec4(uColor * (0.4 + a), alpha);
+        #include <colorspace_fragment>
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+  });
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(1, 72).rotateX(-Math.PI / 2), mat);
+  floor.renderOrder = -4;
+  floor.visible = false;
+  return floor;
+}
+
+/** The pill under each panel that carries it. */
+let handleTex: THREE.CanvasTexture | null = null;
+function handleTexture() {
+  if (handleTex) return handleTex;
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 42;
+  const ctx = c.getContext("2d")!;
+  roundRect(ctx, 4, 4, 248, 34, 17);
+  ctx.fillStyle = "rgba(12, 20, 38, 0.92)";
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = C.static;
+  ctx.stroke();
+  ctx.fillStyle = C.static;
+  for (let i = -2; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.arc(128 + i * 22, 21, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  handleTex = new THREE.CanvasTexture(c);
+  handleTex.colorSpace = THREE.SRGBColorSpace;
+  return handleTex;
 }

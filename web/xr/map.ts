@@ -17,8 +17,9 @@ import { C, FONT_COND, FONT_MONO, cond, fit, roundRect } from "./ui";
  * What changes is the plumbing. A headset can't afford one draw call per
  * file, so bodies, glows, lit routes and particles are instanced; the layout
  * runs in a worker; and labels keep a minimum angular size so they stay
- * readable however small you've made the map. The bloom pass the desktop
- * uses doesn't exist in WebXR, so each body carries an additive glow instead.
+ * readable however small you've made the map. The desktop's bloom is redone
+ * for stereo in bloom.ts; each lit body can also carry a soft additive halo,
+ * which is all the glow there is with bloom off.
  */
 
 export type Grouping = { key: string; groups: LogicalModule[]; edges: LogicalEdge[] };
@@ -193,6 +194,10 @@ export class MapView {
   private settled = false;
   private hovered: string | null = null;
   private pulses = new Map<string, number>();
+  /** Bodies held by a hand, by index, at their held position. */
+  private dragging = new Map<number, [number, number, number]>();
+  /** The halo drawn around each lit body (XR settings), and whether the real bloom pass is on. */
+  private glow = { amount: 0.35, bloom: true };
 
   private lit = new Spheres(4096, false);
   private dim = new Spheres(4096, true);
@@ -264,6 +269,8 @@ export class MapView {
       const m = e.data;
       if (m.version !== this.version || m.positions.length !== this.nodes.length * 3) return;
       this.pos = m.positions;
+      // A held body sits where the hand is, not where the last tick (a frame behind) left it.
+      for (const [i, at] of this.dragging) this.pos.set(at, i * 3);
       this.moved = true;
       if (m.settled && !this.settled) {
         this.settled = true;
@@ -401,33 +408,45 @@ export class MapView {
     this.pos = pos;
     this.sizes(tuning);
     this.buildObjects();
+    const params: LayoutParams = {
+      grouped,
+      repulsion: tuning.repulsion,
+      clusterSeparation: tuning.clusterSeparation,
+      folderPull: tuning.folderPull,
+      folderDistance: tuning.folderDistance,
+      importPull: tuning.importPull,
+      importDistance: tuning.importDistance,
+      clusterTightness: tuning.clusterTightness,
+      clusterDistance: tuning.clusterDistance,
+      runtimePull: tuning.runtimePull,
+      runtimeDistance: tuning.runtimeDistance,
+      friction: tuning.friction,
+      settleSeconds: tuning.settleSeconds,
+      freeze: tuning.freeze,
+    };
+    const paramsKey = JSON.stringify(params);
     if (!sameShape) {
       this.version++;
       this.settled = false;
-      const params: LayoutParams = {
-        grouped,
-        repulsion: tuning.repulsion,
-        clusterSeparation: tuning.clusterSeparation,
-        folderPull: tuning.folderPull,
-        folderDistance: tuning.folderDistance,
-        importPull: tuning.importPull,
-        importDistance: tuning.importDistance,
-        clusterTightness: tuning.clusterTightness,
-        clusterDistance: tuning.clusterDistance,
-        runtimePull: tuning.runtimePull,
-        runtimeDistance: tuning.runtimeDistance,
-        friction: tuning.friction,
-        settleSeconds: tuning.settleSeconds,
-      };
+      this.dragging.clear();
       const llinks: LayoutLink[] = links.map((l) => ({ s: l.s, t: l.t, type: l.type }));
       this.worker.postMessage({ type: "graph", nodes: lnodes, links: llinks, params, version: this.version } satisfies ToWorker);
+    } else if (paramsKey !== this.paramsKey) {
+      // Same map, new forces: the layout warms up to show them, as on the desktop.
+      this.worker.postMessage({ type: "params", params } satisfies ToWorker);
     }
+    this.paramsKey = paramsKey;
     this.setNotes(input.notes);
     this.setOverlays(input.overlays);
     this.restyle = true;
     this.moved = true;
   }
   private shapeKey = "";
+  private paramsKey = "";
+
+  get tuning(): Tuning | null {
+    return this.input?.tuning ?? null;
+  }
 
   /** Bodies' radii, from the same knobs as the desktop. */
   private sizes(tu: Tuning) {
@@ -536,9 +555,12 @@ export class MapView {
         this.glowIdx.push(i);
       } else this.dimIdx.push(i);
     });
+    // "File brightness": the desktop's default (0.88) is how they're drawn here at 1.
+    const bright = tu.bodyOpacity / 0.88;
+    const tmpC = new THREE.Color();
     const setColors = (s: Spheres, idx: number[], alphaOf: (i: number) => number) => {
       idx.forEach((i, k) => {
-        s.mesh.setColorAt(k, this.colors[i]);
+        s.mesh.setColorAt(k, this.nodes[i].type === "file" ? tmpC.copy(this.colors[i]).multiplyScalar(bright) : this.colors[i]);
         s.alpha.array[k] = alphaOf(i);
       });
       s.mesh.count = idx.length;
@@ -551,9 +573,10 @@ export class MapView {
     setColors(this.dim, this.dimIdx, (i) => (this.nodes[i].type === "dir" ? dirAlpha(i) : Math.max(0.1, tu.dimOpacity)));
     this.glowIdx.forEach((i, k) => {
       this.glows.mesh.setColorAt(k, this.colors[i]);
-      this.glows.alpha.array[k] = (emphOn ? 0.55 : 0.32) * (0.4 + tu.bloomStrength);
+      // With the bloom pass on it does the glowing; the halo is a softer extra.
+      this.glows.alpha.array[k] = (emphOn ? 0.55 : 0.32) * (this.glow.amount / 0.35) * (this.glow.bloom ? 0.5 : 0.4 + tu.bloomStrength);
     });
-    this.glows.mesh.count = this.glowIdx.length;
+    this.glows.mesh.count = this.glow.amount > 0 ? this.glowIdx.length : 0;
     if (this.glows.mesh.instanceColor) this.glows.mesh.instanceColor.needsUpdate = true;
     this.glows.alpha.needsUpdate = true;
 
@@ -566,6 +589,14 @@ export class MapView {
       b.label.sprite.material.opacity = emphOn ? 0.22 : 1;
     }
     for (const l of this.dirLabels.values()) l.sprite.visible = lay.folders !== false && lay.labels && !emphOn;
+
+    // Line opacity scales every kind of line; 0.55 is the desktop's default.
+    const lineK = tu.linkOpacity / 0.55;
+    (this.folderLines.material as THREE.LineBasicMaterial).opacity = Math.min(1, 0.5 * lineK);
+    (this.importLines.material as THREE.LineBasicMaterial).opacity = Math.min(1, 0.7 * lineK);
+    (this.arcs.material as THREE.LineBasicMaterial).opacity = Math.min(1, 0.9 * lineK);
+    (this.tubes.material as THREE.MeshBasicMaterial).opacity = Math.min(1, 0.85 * lineK);
+    (this.route.material as THREE.LineDashedMaterial).opacity = tu.courseOpacity;
 
     // Folder scaffolding.
     const folder = this.links.filter((l) => l.type === "contains");
@@ -706,7 +737,8 @@ export class MapView {
     // Names for what's near you, refreshed a few times a second.
     if (now - this.nearAt > 350) {
       this.nearAt = now;
-      const reach = 0.5 * unitsPerMeter;
+      // "Name nearby files": the desktop's 240 map units is half a metre from your eyes here.
+      const reach = 0.5 * (this.input.tuning.nearLabels / 240) * unitsPerMeter;
       const cands: { i: number; d: number }[] = [];
       for (let i = 0; i < this.nodes.length; i++) {
         if (this.nodes[i].type !== "file") continue;
@@ -819,7 +851,7 @@ export class MapView {
         bez(A, M, B, 0.92, P);
         bez(A, M, B, 0.95, Q);
         tmpQ.setFromUnitVectors(UP, tmpV.subVectors(Q, P).normalize());
-        tmpS.setScalar(2.2);
+        tmpS.setScalar(2.2 * (this.input!.tuning.runtimeWidth / 1.2));
         tmpM.compose(P, tmpQ, tmpS);
         this.arrows.setMatrixAt(k, tmpM);
       }
@@ -1021,6 +1053,34 @@ export class MapView {
 
   reheat() {
     this.worker.postMessage({ type: "reheat" } satisfies ToWorker);
+  }
+
+  setGlow(amount: number, bloom: boolean) {
+    if (amount === this.glow.amount && bloom === this.glow.bloom) return;
+    this.glow = { amount, bloom };
+    this.restyle = true;
+  }
+
+  /** The body a hit is on, if it's one that can be dragged (files, beacons, folder points). */
+  bodyOf(hit: MapHit): string | null {
+    const id = hit.kind === "file" ? hit.id : hit.kind === "dir" ? `dir:${hit.id}` : hit.kind === "module" ? (this.index.has(`mod:${hit.id}`) ? `mod:${hit.id}` : `grp:${hit.id}`) : null;
+    return id && this.index.has(id) ? id : null;
+  }
+
+  /** Hold a body at `at` (map units); the rest of the map gives way, as when dragging on the desktop. */
+  drag(id: string, at: THREE.Vector3) {
+    const i = this.index.get(id);
+    if (i === undefined) return;
+    this.dragging.set(i, [at.x, at.y, at.z]);
+    this.pos.set([at.x, at.y, at.z], i * 3);
+    this.moved = true;
+    this.worker.postMessage({ type: "drag", index: i, x: at.x, y: at.y, z: at.z } satisfies ToWorker);
+  }
+
+  release(id: string) {
+    const i = this.index.get(id);
+    if (i === undefined || !this.dragging.delete(i)) return;
+    this.worker.postMessage({ type: "release", index: i } satisfies ToWorker);
   }
 
   get count() {
