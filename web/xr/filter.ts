@@ -177,13 +177,15 @@ export class FocusBar extends Panel {
   m: Model | null = null;
 
   constructor(private a: Actions) {
-    super("focusbar", 0.62, 0.09);
+    super("focusbar", 0.82, 0.09);
   }
 
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || p.focus !== m.focus) this.invalidate();
+    const a = p?.focus;
+    const b = m.focus;
+    if (!p || a?.label !== b?.label || a?.depth !== b?.depth || a?.count !== b?.count || a?.more !== b?.more || a?.only !== b?.only) this.invalidate();
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
@@ -198,10 +200,15 @@ export class FocusBar extends Panel {
     ctx.font = sans(20);
     ctx.fillStyle = C.muted;
     ctx.fillText(fit(ctx, `${ring} · ${f.count} files`, 330), PAD, H / 2 + 28);
-    let x = this.W - PAD - 420;
+    // Showing only these, the rest of the map is off, so there's no ring to widen to.
+    let x = this.W - PAD - 630;
     const y = (H - 60) / 2;
-    x = this.button(ctx, "less", x, y, "− Fewer", this.a.focusNarrower, { w: 130, h: 60, size: 24, disabled: f.depth === 0 }) + 10;
-    x = this.button(ctx, "more", x, y, "More +", this.a.focusWider, { w: 130, h: 60, size: 24, disabled: !f.more, accent: C.course }) + 10;
-    this.button(ctx, "done", x, y, "Whole map", this.a.overview, { w: 140, h: 60, size: 22 });
+    x = this.button(ctx, "less", x, y, "− Fewer", this.a.focusNarrower, { w: 130, h: 60, size: 24, disabled: f.depth === 0 || f.only }) + 10;
+    x = this.button(ctx, "more", x, y, "More +", this.a.focusWider, { w: 130, h: 60, size: 24, disabled: !f.more || f.only, accent: C.course }) + 10;
+    x = this.button(ctx, "only", x, y, f.only ? "Show the rest" : "Only these", this.a.focusOnly, { w: 200, h: 60, size: 22, active: f.only, accent: C.course }) + 10;
+    this.button(ctx, "done", x, y, "Whole map", () => {
+      if (f.only) this.a.focusOnly();
+      this.a.overview();
+    }, { w: 140, h: 60, size: 22 });
   }
 }

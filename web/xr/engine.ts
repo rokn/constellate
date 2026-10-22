@@ -53,7 +53,8 @@ type Press =
   | { kind: "map"; hit: MapHit; from: THREE.Vector3 }
   | { kind: "grab"; from: THREE.Vector3; moved: boolean }
   /** A body held on the end of the ray, `dist` metres out. */
-  | { kind: "body"; id: string; dist: number; hit: MapHit; trail: { t: number; at: THREE.Vector3 }[] }
+  /** `pin`: the grip was pressed while holding it, so it stays where it's let go. */
+  | { kind: "body"; id: string; dist: number; hit: MapHit; trail: { t: number; at: THREE.Vector3 }[]; pin: boolean }
   /** A panel picked up by its handle with the trigger. */
   | { kind: "handle" };
 
@@ -80,6 +81,8 @@ type Pointer = {
   snapped: boolean;
   /** What a smooth turn turns about, fixed while the stick is held. */
   turnPivot: THREE.Vector3 | null;
+  /** This hand stretching a panel the other hand is carrying. */
+  resize: { panel: Panel; holder: Pointer; w0: number; h0: number; dx0: number; dy0: number; at: number } | null;
   lastHapticId: string | null;
 };
 
@@ -545,6 +548,7 @@ export class Engine {
           buttons: [],
           snapped: false,
           turnPivot: null,
+          resize: null,
           lastHapticId: null,
         });
         line.visible = true;
@@ -587,6 +591,7 @@ export class Engine {
       buttons: [],
       snapped: false,
       turnPivot: null,
+      resize: null,
       lastHapticId: null,
     };
     this.pointers.set("mouse", p);
@@ -691,18 +696,19 @@ export class Engine {
     p.press = null;
     const moved = (from: THREE.Vector3) => from.distanceTo(p.origin.clone().add(p.dir)) > (p.kind === "mouse" ? 0.02 : 0.035);
     if (press.kind === "handle") {
-      if (!p.squeezing) p.carry = null;
+      if (!p.squeezing) (p.carry = null), (p.resize = null);
     } else if (press.kind === "body") {
-      this.map.release(press.id);
       // Thrown, not set down: hide it.
       const tr = press.trail;
       const first = tr.find((x) => performance.now() - x.t < 120) ?? tr[0];
       const last = tr.at(-1);
       const speed = first && last && last.t > first.t ? last.at.distanceTo(first.at) / ((last.t - first.t) / 1000) : 0;
-      if (this.settings.flick && speed > this.settings.flickSpeed && this.h.onFlick) {
+      const thrown = this.settings.flick && speed > this.settings.flickSpeed && !!this.h.onFlick;
+      this.map.release(press.id, press.pin && !thrown);
+      if (thrown) {
         this.haptic(p, 0.8, 60);
-        this.h.onFlick(press.hit);
-      } else this.haptic(p, 0.3, 20);
+        this.h.onFlick!(press.hit);
+      } else this.haptic(p, press.pin ? 0.6 : 0.3, press.pin ? 40 : 20);
     } else if (press.kind === "panel") {
       const hp = p.hoverPanel?.panel === press.panel ? p.hoverPanel : null;
       press.panel.pointer("up", hp?.x ?? -1, hp?.y ?? -1, p.id);
@@ -723,6 +729,12 @@ export class Engine {
     const p = this.pointers.get(id);
     if (!p) return;
     p.squeezing = true;
+    // Holding a body: the grip pins it (or unpins it) where you'll let it go.
+    if (p.press?.kind === "body") {
+      p.press.pin = !p.press.pin;
+      this.haptic(p, 0.5, p.press.pin ? 40 : 15);
+      return;
+    }
     // The grip on a panel (or its handle) picks it up; anywhere else it grabs the map.
     const panel = p.hoverHandle ?? p.hoverPanel?.panel;
     if (panel) return this.pickUp(p, panel);
@@ -731,6 +743,14 @@ export class Engine {
 
   /** A panel follows this pointer until it's let go. */
   private pickUp(p: Pointer, panel: Panel) {
+    // The other hand already has it: this one stretches it.
+    const holder = [...this.pointers.values()].find((o) => o !== p && o.carry?.panel === panel);
+    if (holder && panel.resizable) {
+      const { dx, dy } = this.handsApart(holder, p, panel);
+      p.resize = { panel, holder, w0: panel.widthM, h0: panel.heightM, dx0: Math.max(0.15, dx), dy0: Math.max(0.15, dy), at: 0 };
+      this.haptic(p, 0.4, 25);
+      return;
+    }
     p.ray.updateMatrixWorld();
     panel.mesh.updateMatrixWorld();
     p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
@@ -738,10 +758,39 @@ export class Engine {
     this.haptic(p, 0.4, 25);
   }
 
+  /** How far apart two hands are across a panel and up it. */
+  private handsApart(a: Pointer, b: Pointer, panel: Panel) {
+    const v = this.grabPoint(b).sub(this.grabPoint(a));
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(panel.mesh.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(panel.mesh.quaternion);
+    return { dx: Math.abs(v.dot(right)), dy: Math.abs(v.dot(up)) };
+  }
+
+  /** Two hands on a panel: its width follows how far apart they are across it, its height how far up. */
+  private applyResize(p: Pointer) {
+    const r = p.resize;
+    if (!r) return;
+    if (r.holder.carry?.panel !== r.panel || !r.panel.open) return void (p.resize = null);
+    const now = performance.now();
+    // A new canvas each step: a few a second is smooth enough.
+    if (now - r.at < 90) return;
+    const { dx, dy } = this.handsApart(r.holder, p, r.panel);
+    const w = THREE.MathUtils.clamp((r.w0 * dx) / r.dx0, 0.4, 1.8);
+    const h = THREE.MathUtils.clamp((r.h0 * dy) / r.dy0, 0.3, 1.5);
+    if (Math.abs(w - r.panel.widthM) < 0.01 && Math.abs(h - r.panel.heightM) < 0.01) return;
+    r.at = now;
+    r.panel.resize(w, h);
+    this.handles.get(r.panel)?.position.set(0, -h / 2 - 0.028, 0);
+  }
+
   private squeezeEnd(id: string) {
     const p = this.pointers.get(id);
     if (!p) return;
     p.squeezing = false;
+    if (p.resize) {
+      if (p.press?.kind !== "handle") p.resize = null;
+      return;
+    }
     if (p.carry) {
       if (p.press?.kind !== "handle") p.carry = null;
       return;
@@ -878,7 +927,8 @@ export class Engine {
     for (const p of this.pointers.values()) this.updatePointer(p);
     for (const p of this.pointers.values()) this.updatePress(p);
 
-    // A panel being carried follows its hand, still facing you.
+    // A panel being carried follows its hand, still facing you (and a second hand stretches it).
+    for (const p of this.pointers.values()) this.applyResize(p);
     const head = this.head();
     for (const p of this.pointers.values()) {
       if (!p.carry) continue;
@@ -959,7 +1009,7 @@ export class Engine {
       if (id && at) {
         // Hold it where it is along the ray; from here on it rides the ray.
         const w = this.map.toWorld(at);
-        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)), hit: press.hit, trail: [] };
+        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)), hit: press.hit, trail: [], pin: false };
         this.haptic(p, 0.35, 20);
       } else {
         p.press = { kind: "grab", from: press.from, moved: true };
@@ -1031,7 +1081,7 @@ export class Engine {
     const len = p.hoverHandle ? handleHit!.distance : panelHit ? hit!.distance : p.press?.kind === "body" ? p.press.dist : mapHit ? this.hitDistanceM(p, mapHit) : 3;
     p.line.scale.z = len;
     const aimed = !!(mapHit || panelHit || p.hoverHandle || p.press?.kind === "body");
-    (p.line.material as THREE.LineBasicMaterial).color.set(p.press?.kind === "body" ? C.course : aimed ? "#ffffff" : C.static);
+    (p.line.material as THREE.LineBasicMaterial).color.set(p.press?.kind === "body" ? (p.press.pin ? C.runtime : C.course) : aimed ? "#ffffff" : C.static);
     p.dot.visible = aimed && (p.kind !== "mouse" || this.renderer.xr.isPresenting);
     p.dot.position.copy(p.origin).addScaledVector(p.dir, len);
     p.dot.scale.setScalar(Math.max(0.6, len * 0.8));
@@ -1085,6 +1135,13 @@ export class Engine {
       const ay = gp.axes[3] ?? 0;
       const dead = 0.18;
       const s = this.settings;
+      // Carrying a panel, this hand's stick pushes it away or brings it closer.
+      if (p.carry && Math.abs(ay) > dead) {
+        const z = p.carry.offset.elements[14];
+        const nz = THREE.MathUtils.clamp(z + ay * dt * 1.2, -4, -0.25);
+        p.carry.offset.premultiply(tmpM.makeTranslation(0, 0, nz - z));
+        continue;
+      }
       // Holding a body, the stick pushes it away or reels it in.
       if (p.press?.kind === "body" && Math.abs(ay) > dead) {
         p.press.dist = THREE.MathUtils.clamp(p.press.dist * Math.exp(-ay * dt * 1.5), 0.05, 15);

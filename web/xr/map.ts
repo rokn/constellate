@@ -34,7 +34,13 @@ export type MapInput = {
   overlays: Overlay[];
   tuning: Tuning;
 };
-export type MapStyle = { emphasis: string[]; active: string | null; layers: Record<Layer, boolean> };
+export type MapStyle = {
+  emphasis: string[];
+  active: string | null;
+  layers: Record<Layer, boolean>;
+  /** With a focus made of rings: only links touching these are lit (a module's insides, then its direct connections, not the links among those). */
+  core?: string[];
+};
 
 export type MapHit =
   | { kind: "file"; id: string; t: number }
@@ -189,6 +195,10 @@ export class MapView {
   private input: MapInput | null = null;
   private style: MapStyle = { emphasis: [], active: null, layers: { imports: false, logical: true, labels: true, folders: true, beacons: true, notes: true } };
   private emph = new Set<string>();
+  private core: Set<string> | null = null;
+  /** Bodies left pinned where they were dropped. */
+  private pinned = new Set<string>();
+  private pins: THREE.InstancedMesh;
   private moved = true;
   private restyle = true;
   private settled = false;
@@ -206,7 +216,7 @@ export class MapView {
   private dimIdx: number[] = [];
   private glowIdx: number[] = [];
 
-  private beacons = new Map<string, { mesh: THREE.Mesh; label: Label; i: number }>();
+  private beacons = new Map<string, { mesh: THREE.Mesh; label: Label; i: number; key: string }>();
   private dirLabels = new Map<number, Label>();
   private fileLabels = new Map<number, Label>();
   private near = new Set<number>();
@@ -258,6 +268,11 @@ export class MapView {
     this.halo = new THREE.Mesh(new THREE.TorusGeometry(1, 0.07, 8, 48), new THREE.MeshBasicMaterial({ color: COURSE, transparent: true, opacity: 0.95, toneMapped: false }));
     this.halo.visible = false;
     this.root.add(this.halo);
+    // A small ring on each pinned body.
+    this.pins = new THREE.InstancedMesh(new THREE.TorusGeometry(1, 0.08, 6, 32), new THREE.MeshBasicMaterial({ color: RUNTIME, transparent: true, opacity: 0.9, toneMapped: false }), 256);
+    this.pins.count = 0;
+    this.pins.frustumCulled = false;
+    this.root.add(this.pins);
     this.route = new THREE.Line(
       new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAX_ROUTE * 3), 3)),
       new THREE.LineDashedMaterial({ color: COURSE, dashSize: 7, gapSize: 5, transparent: true, opacity: 0.9 }),
@@ -403,7 +418,7 @@ export class MapView {
     const lnodes: LayoutNode[] = nodes.map((n, i) => {
       const b = birth(n);
       if (b) pos.set(b, i * 3);
-      return { id: n.id, type: n.type, ...(b ? { x: b[0], y: b[1], z: b[2] } : {}) };
+      return { id: n.id, type: n.type, pinned: this.pinned.has(n.id), ...(b ? { x: b[0], y: b[1], z: b[2] } : {}) };
     });
     this.pos = pos;
     this.sizes(tuning);
@@ -430,7 +445,9 @@ export class MapView {
       this.settled = false;
       this.dragging.clear();
       const llinks: LayoutLink[] = links.map((l) => ({ s: l.s, t: l.t, type: l.type }));
-      this.worker.postMessage({ type: "graph", nodes: lnodes, links: llinks, params, version: this.version } satisfies ToWorker);
+      // Only bodies taken away (a hide, a filter): the rest stay put rather than being stirred up.
+      const gentle = !!prevInput && !modeChanged && nodes.every((n) => prevPos.has(n.id));
+      this.worker.postMessage({ type: "graph", nodes: lnodes, links: llinks, params, version: this.version, gentle } satisfies ToWorker);
     } else if (paramsKey !== this.paramsKey) {
       // Same map, new forces: the layout warms up to show them, as on the desktop.
       this.worker.postMessage({ type: "params", params } satisfies ToWorker);
@@ -468,31 +485,50 @@ export class MapView {
   /** Beacons and folder names: the few objects that aren't instanced. */
   private buildObjects() {
     const tu = this.input!.tuning;
-    for (const b of this.beacons.values()) {
-      this.root.remove(b.mesh, b.label.sprite);
-      b.mesh.geometry.dispose();
-    }
-    this.beacons.clear();
-    for (const l of this.dirLabels.values()) this.root.remove(l.sprite);
-    this.dirLabels.clear();
+    // Beacons and folder names that haven't changed are kept: rebuilding
+    // every canvas label on each hide or filter is what stalled the headset.
+    const oldBeacons = this.beacons;
+    const oldDirs = new Map([...this.dirLabels.entries()].map(([, l]) => [l.sprite.userData.key as string, l]));
+    this.beacons = new Map();
+    this.dirLabels = new Map();
     for (const l of this.fileLabels.values()) this.root.remove(l.sprite);
     this.fileLabels.clear();
     this.nodes.forEach((n, i) => {
       if (n.type === "module") {
         const tint = `#${this.colors[i].getHexString()}`;
+        const key = `${n.label}|${this.base[i]}|${tint}|${tu.beaconLabelSize}`;
+        const old = oldBeacons.get(n.id);
+        if (old && old.key === key) {
+          oldBeacons.delete(n.id);
+          this.beacons.set(n.id, { ...old, i });
+          return;
+        }
         const mesh = new THREE.Mesh(
           new THREE.IcosahedronGeometry(this.base[i], 1),
           new THREE.MeshBasicMaterial({ color: tint, wireframe: true, transparent: true, opacity: tu.beaconOpacity, toneMapped: false }),
         );
         const lb = label(n.label, (n.id.startsWith("grp:") ? 7.5 : 6) * tu.beaconLabelSize, tint, FONT_COND, "600", 0.02);
         this.root.add(mesh, lb.sprite);
-        this.beacons.set(n.id, { mesh, label: lb, i });
+        this.beacons.set(n.id, { mesh, label: lb, i, key });
       } else if (n.type === "dir" && (n.depth ?? 9) <= tu.folderLabelDepth) {
+        const key = `${n.id}|${n.label}|${n.depth}|${tu.labelSize}`;
+        const old = oldDirs.get(key);
+        if (old) {
+          oldDirs.delete(key);
+          this.dirLabels.set(i, old);
+          return;
+        }
         const lb = label(n.label, ((n.depth ?? 0) <= 0 ? 6.5 : 4.2) * tu.labelSize, "#b9c4da", FONT_COND, "500", 0.016);
+        lb.sprite.userData.key = key;
         this.root.add(lb.sprite);
         this.dirLabels.set(i, lb);
       }
     });
+    for (const b of oldBeacons.values()) {
+      this.root.remove(b.mesh, b.label.sprite);
+      b.mesh.geometry.dispose();
+    }
+    for (const l of oldDirs.values()) this.root.remove(l.sprite);
   }
 
   /* -------------------------------- style -------------------------------- */
@@ -500,6 +536,7 @@ export class MapView {
   setStyle(style: MapStyle) {
     this.style = style;
     this.emph = new Set(style.emphasis);
+    this.core = style.core ? new Set(style.core) : null;
     this.restyle = true;
   }
 
@@ -528,7 +565,9 @@ export class MapView {
   }
 
   private both(l: L) {
-    return this.emph.has(this.nodes[l.s].id) && this.emph.has(this.nodes[l.t].id);
+    const a = this.nodes[l.s].id;
+    const b = this.nodes[l.t].id;
+    return this.emph.has(a) && this.emph.has(b) && (!this.core || this.core.has(a) || this.core.has(b));
   }
 
   private bumped(l: L) {
@@ -777,6 +816,19 @@ export class MapView {
       n.sprite.position.copy(n.at);
       n.sprite.scale.set(h * n.w, h, 1);
     }
+
+    // Pinned bodies wear a ring, facing you.
+    let pc = 0;
+    for (const id of this.pinned) {
+      const i = this.index.get(id);
+      if (i === undefined || pc >= 256) continue;
+      tmpV.fromArray(this.pos, i * 3);
+      tmpQ.setFromRotationMatrix(tmpM.lookAt(tmpV, eye, UP));
+      tmpS.setScalar(this.base[i] * 1.7);
+      this.pins.setMatrixAt(pc++, tmpM.compose(tmpV, tmpQ, tmpS));
+    }
+    this.pins.count = pc;
+    this.pins.instanceMatrix.needsUpdate = true;
 
     // The open file's halo faces you.
     const act = this.style.active ? this.index.get(this.style.active) : undefined;
@@ -1083,10 +1135,17 @@ export class MapView {
     this.worker.postMessage({ type: "drag", index: i, x: at.x, y: at.y, z: at.z } satisfies ToWorker);
   }
 
-  release(id: string) {
+  /** Let a held body go: back into the layout, or (`pin`) staying where it was dropped. */
+  release(id: string, pin = false) {
     const i = this.index.get(id);
     if (i === undefined || !this.dragging.delete(i)) return;
-    this.worker.postMessage({ type: "release", index: i } satisfies ToWorker);
+    if (pin) this.pinned.add(id);
+    else this.pinned.delete(id);
+    this.worker.postMessage({ type: "release", index: i, pin } satisfies ToWorker);
+  }
+
+  isPinned(id: string) {
+    return this.pinned.has(id);
   }
 
   get count() {

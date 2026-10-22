@@ -1550,15 +1550,26 @@ export function App() {
         }
         const more = ring.some((p) => [...(neighbours.get(p) ?? [])].some((n) => !lit.has(n) && shown(n)));
         const out = [...lit];
+        // The links worth lighting reach in from the last ring, not across it.
+        const outer = new Set(depth ? ring : []);
+        const core = out.filter((p) => !outer.has(p));
         if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}` : label);
-        return { label, count: out.length, more, paths: out };
+        return { label, count: out.length, more, paths: out, core };
       },
       hideHit: (h) => {
         const { paths, label, module } = filesOfHit(h);
         if (module) {
           const item: Isolated = { kind: "module", ...module };
+          // Flung away: the map stays framed where it is, not shrunk to what's left.
+          soloAt.current = performance.now();
           toggleIsolate(item, true);
-          setToast({ text: `Hid ${item.label}`, undo: () => toggleIsolate(item, true) });
+          setToast({
+            text: `Hid ${item.label}`,
+            undo: () => {
+              soloAt.current = performance.now();
+              toggleIsolate(item, true);
+            },
+          });
         } else if (paths.length) hide(paths, label);
       },
     },
@@ -1615,6 +1626,10 @@ export function App() {
     },
   });
   xrRef.current = xr;
+  // While you're in the headset the desktop map doesn't draw, so it needn't
+  // regroup either: a fling there would otherwise rebuild it underneath you.
+  const deskVisible = useRef(visible);
+  if (!xr.presenting) deskVisible.current = visible;
   // In the headset, the desktop map stops drawing. Coming back out, it frames
   // whatever you were on in there, so the desktop picks up where you were.
   const wasPresenting = useRef(false);
@@ -1763,7 +1778,7 @@ export function App() {
           insetBottom={historyOpen ? (Math.min(380, window.innerHeight * 0.46) + 90) / window.innerHeight : branchMap && !story ? 260 / window.innerHeight : 0}
           couplings={couplings}
           tuning={tuning}
-          visible={visible}
+          visible={deskVisible.current}
           layers={layers}
           emphasis={emphasis}
           active={file?.path ?? null}

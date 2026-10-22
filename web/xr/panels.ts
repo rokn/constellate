@@ -366,6 +366,7 @@ export class FilePanel extends ScrollPanel {
     private links: Links,
   ) {
     super("file", 0.68, 0.84);
+    this.resizable = true;
     this.accent = C.course;
   }
   update(m: Model) {
@@ -454,6 +455,7 @@ export class AnswerPanel extends ScrollPanel {
     private links: Links,
   ) {
     super("answer", 0.72, 0.84);
+    this.resizable = true;
     this.accent = C.static;
   }
   private frame_(m: Model): Frame | undefined {
@@ -575,6 +577,7 @@ export class StoryPanel extends ScrollPanel {
     private links: Links,
   ) {
     super("story", 0.72, 0.8);
+    this.resizable = true;
     this.accent = C.course;
   }
   update(m: Model) {

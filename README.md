@@ -47,10 +47,10 @@ and open `https://<your-LAN-address>:4443`.
 
 | Quest controller | |
 | --- | --- |
-| Trigger, or pinch | Point and select; held and moved on a body, drag it (throw it to hide it); on open sky, drag the map |
-| Grip | Grab the map; both grips to scale and turn it; on a panel or its handle, carry it |
+| Trigger, or pinch | Point and select (a module: its files and the links between them; again, with what they talk to); held and moved on a body, drag it (throw it to hide it, or grip before letting go to pin it there); on open sky, drag the map |
+| Grip | Grab the map; both grips to scale and turn it; on a panel or its handle, carry it (the stick pushes and pulls it; the other hand's grip on the code, answers or story panel resizes it) |
 | Left stick · right stick | Fly where you point · turn ← → about what you're looking at, zoom ↑ ↓ (or push and pull a held body) |
-| Right stick click | On a body, focus on it; again, a ring more of its connections (the bar over the dock widens and narrows it) |
+| Right stick click | On a body, focus on it; again, a ring more of its connections (the bar over the dock widens and narrows it, and **Only these** hides the rest of the map) |
 | A · B · X · Y | Menu · back · voice · the whole map |
 
 The dock's **?** shows these in the headset. **Tune** there holds every knob the desktop's
