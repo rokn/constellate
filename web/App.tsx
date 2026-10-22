@@ -402,25 +402,26 @@ export function App() {
 
   // The legend: each group with how many of the visible files it holds.
   // The legend counts without the isolation, so what you haven't isolated
-  // stays listed for adding.
-  const unisolated = useMemo(() => (graph ? applyFilter(graph.files, { ...filter, isolate: undefined }) : null), [graph, filter]);
+  // stays listed for adding. It's the map on screen: a branch's or a moment
+  // in history's files, when one is shown.
+  const unisolated = useMemo(() => (mapGraph ? applyFilter(mapGraph.files, { ...filter, isolate: undefined }) : null), [mapGraph, filter]);
   const legend = useMemo(() => {
-    if (!graph) return null;
+    if (!mapGraph) return null;
     if (!grouping) {
       // By folder: the top-level folders, in the map's own colours.
       const counts = new Map<string, number>();
-      for (const f of graph.files) if (!unisolated || unisolated.has(f.path)) counts.set(f.top, (counts.get(f.top) ?? 0) + 1);
+      for (const f of mapGraph.files) if (!unisolated || unisolated.has(f.path)) counts.set(f.top, (counts.get(f.top) ?? 0) + 1);
       const groups: LogicalModule[] = [...counts.keys()]
         .sort((a, b) => counts.get(b)! - counts.get(a)!)
         .map((t) => ({ id: t, label: t === "." ? "files at the root" : `${t}/`, summary: "", paths: [] }));
-      const memberOf = new Map(graph.files.map((f) => [f.path, f.top]));
-      return { kind: "dir" as const, groups, counts, memberOf, colors: territoryColors(graph.files.map((f) => f.top)) };
+      const memberOf = new Map(mapGraph.files.map((f) => [f.path, f.top]));
+      return { kind: "dir" as const, groups, counts, memberOf, colors: territoryColors(mapGraph.files.map((f) => f.top)) };
     }
     const groupOf = new Map<string, string>();
     for (const g of grouping.groups) for (const p of g.paths) if (!groupOf.has(p)) groupOf.set(p, g.id);
     const counts = new Map<string, number>();
     const others: string[] = [];
-    for (const f of graph.files) {
+    for (const f of mapGraph.files) {
       if (unisolated && !unisolated.has(f.path)) continue;
       const id = groupOf.get(f.path);
       if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
@@ -431,9 +432,9 @@ export function App() {
       counts.set(OTHER, others.length);
       groups.push({ id: OTHER, label: "Other", summary: "Not part of any group", paths: others });
     }
-    const memberOf = new Map(graph.files.map((f) => [f.path, groupOf.get(f.path) ?? OTHER]));
+    const memberOf = new Map(mapGraph.files.map((f) => [f.path, groupOf.get(f.path) ?? OTHER]));
     return { kind: "module" as const, groups, counts, memberOf, colors: undefined };
-  }, [grouping, graph, unisolated]);
+  }, [grouping, mapGraph, unisolated]);
 
   /** The legend row you last flew to by clicking it (or its beacon), while that's still the focus. */
   const [pickedRow, setPickedRow] = useState<{ id: string; label: string } | null>(null);
@@ -751,6 +752,7 @@ export function App() {
       touring: tour !== null,
       lens: lensTitle,
       lensId,
+      branch: branchMap ? { name: branchMap.branch, base: branchMap.base } : undefined,
       range: branchMap
         ? branchSum
           ? `the branch ${branchSum.branch} compared with ${branchSum.base} (since they forked): ${branchSum.commits.length} commits, ${branchSum.files.length} files changed`
@@ -768,7 +770,7 @@ export function App() {
             ? { id: lastStory.id, beat: lastStory.beat, playing: false, closed: true }
             : undefined,
     }),
-    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits],
+    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, story, storyAt, parked, lastStory],
   );
 
   /** Pause the open story and set it aside, so an answer can take the stage; Resume brings it back. */

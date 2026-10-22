@@ -9,6 +9,7 @@ import type { Lens, LogicalEdge, Overview, ScreenContext, View } from "../shared
 import { loadFile, slice } from "./repo";
 import { WORKTREE, diffFile, loadHistory } from "./history";
 import { digest, findPath, neighbourhood } from "./scan";
+import { branchDiff, fileAt } from "./branch";
 import {
   afterRescan,
   addLens,
@@ -64,6 +65,7 @@ const FLIGHT_TOOLS = [
   "add_markers",
   "edit_markers",
   "history",
+  "read_at",
   "show_diff",
   "set_time_range",
   "set_overview",
@@ -89,9 +91,16 @@ function lensById(id: string): Lens | null {
 const lensList = () =>
   `Groupings: ${[session.state.overview ? "modules (Modules)" : "", ...session.state.lenses.map((l) => `${l.id} (${l.title})`)].filter(Boolean).join(", ") || "none"}.`;
 
-/** Resolves a list of paths or directory prefixes to scanned files. */
+/**
+ * Files the branch on the reader's map adds, which the checked-out code
+ * doesn't have. While they're looking at it, groupings, markers and focus
+ * take these too; they show whenever that branch is on the map.
+ */
+let branchOnly: string[] = [];
+
+/** Resolves a list of paths or directory prefixes to scanned files (and the branch's own, when one is on screen). */
 export function expandPaths(paths: string[], cap = 300): string[] {
-  const files = idx().graph.files.map((f) => f.path);
+  const files = [...idx().graph.files.map((f) => f.path), ...branchOnly];
   const out = new Set<string>();
   for (const raw of paths) {
     const p = raw.trim().replace(/^\.?\//, "");
@@ -99,6 +108,7 @@ export function expandPaths(paths: string[], cap = 300): string[] {
     const asDir = p.endsWith("/") ? p : `${p}/`;
     const under = files.filter((f) => f.startsWith(asDir));
     if (under.length) under.forEach((f) => out.add(f));
+    else if (branchOnly.includes(p)) out.add(p);
     else {
       const hit = findPath(idx(), p);
       if (hit) out.add(hit);
@@ -616,6 +626,27 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
         },
       ),
       tool(
+        "read_at",
+        "Read a file as it is at a git revision — a commit sha or a branch — rather than as it's checked out. This is how you read a branch that isn't checked out. Lines are numbered.",
+        {
+          path: z.string(),
+          rev: z.string().describe("A commit sha or branch name"),
+          offset: z.number().int().min(1).optional().describe("First line (1-based)"),
+          limit: z.number().int().min(1).max(2000).default(600),
+        },
+        async (a) => {
+          // A revision, never an option: `git show --output=…` must stay out of reach.
+          if (!/^[A-Za-z0-9][\w./@^~-]*$/.test(a.rev) || a.rev.includes("..")) return fail(`Bad revision "${a.rev}".`);
+          const text = await fileAt(idx().graph.root, a.rev, a.path.replace(/^\.?\//, ""));
+          if (text === null) return fail(`${a.path} doesn't exist at ${a.rev}.`);
+          const lines = text.split("\n");
+          const from = (a.offset ?? 1) - 1;
+          const shown = lines.slice(from, from + a.limit).map((l, i) => `${from + i + 1}\t${l}`);
+          const more = from + a.limit < lines.length ? `\n… ${lines.length - from - a.limit} more lines (offset ${from + a.limit + 1})` : "";
+          return ok(shown.join("\n") + more);
+        },
+      ),
+      tool(
         "show_diff",
         "Put a real diff of one file on screen, across a span of history: from just before `from` (the older commit) to `to` (the newer commit, or 'worktree' for uncommitted changes). For a single commit, pass the same sha as both. The text comes straight from git.",
         {
@@ -935,6 +966,45 @@ function markersNote(): string {
   return `Markers on the map: ${ms.map((o) => `[${o.id}] ${o.label} (${o.paths.length} files, ${from(o.frameId)}${o.visible ? "" : ", hidden"})`).join("; ")}.`;
 }
 
+/**
+ * The branch on the reader's map, in full: its commits and the files it
+ * changes, and how to read it when it isn't checked out. Also lets groupings
+ * take the files only the branch has, for as long as this request runs.
+ */
+async function branchNote(b?: ScreenContext["branch"]): Promise<string> {
+  branchOnly = [];
+  if (!b) return "";
+  try {
+    const d = await branchDiff(idx().graph.root, b.name, b.base);
+    branchOnly = d.files.filter((f) => f.status !== "D" && !idx().byPath.has(f.path)).map((f) => f.path);
+    const tip = d.head.slice(0, 10);
+    const MAX_FILES = 250;
+    return [
+      "",
+      "",
+      "[The branch on their map]",
+      `They're looking at the branch ${d.branch} compared with ${d.base}, since they forked (merge base ${d.mergeBase.slice(0, 10)}, tip ${tip}). The map shows the code as it is at the branch tip, with what it changed lit.`,
+      d.checkedOut
+        ? "It's checked out, so Read, Grep, outline and deps see the branch."
+        : `It isn't checked out: Read, Grep, outline and deps see ${session.state.repo?.branch ?? "the checked-out branch"}, not this branch. Read the branch's version of a file with read_at (rev ${tip}); its diffs with show_diff.`,
+      `Commits (${d.commits.length}, newest first):`,
+      ...d.commits.slice(0, 40).map((c) => `- ${c.sha.slice(0, 10)} ${c.author}: ${c.subject}`),
+      d.commits.length > 40 ? `- … ${d.commits.length - 40} more` : "",
+      `Files it changes (${d.files.length}; A added, M modified, D deleted):`,
+      ...d.files.slice(0, MAX_FILES).map((f) => `- ${f.status} ${f.path} +${f.add}/-${f.del}`),
+      d.files.length > MAX_FILES ? `- … ${d.files.length - MAX_FILES} more` : "",
+      branchOnly.length
+        ? `${branchOnly.length} of these exist only on the branch. Groupings, markers and focus take them like any other file; they show whenever this branch is on the map.`
+        : "",
+      "Asked to reorganize, create or revise a grouping as usual: the branch's map is drawn with whichever grouping is selected.",
+    ]
+      .filter((l, i) => l || i < 2)
+      .join("\n");
+  } catch (err) {
+    return `\n\n[The branch on their map]\n${b.name}: couldn't read it (${err instanceof Error ? err.message : String(err)}).`;
+  }
+}
+
 function screenNote(screen?: ScreenContext): string {
   if (!screen) return "";
   const bits = [
@@ -995,6 +1065,9 @@ function narrate(msg: SDKMessage, root: string) {
         break;
       case "filter_map":
         pushActivity({ kind: "tool", detail: `Filtering the map: ${String(input.label ?? "")}` });
+        break;
+      case "read_at":
+        pushActivity({ kind: "read", detail: `Reading ${String(input.path)} at ${String(input.rev).slice(0, 12)}`, path: typeof input.path === "string" ? input.path : undefined });
         break;
       case "history":
         pushActivity({ kind: "search", detail: `Reading history${input.path ? ` of ${String(input.path)}` : ""}` });
@@ -1249,7 +1322,7 @@ export async function ask(
 
   try {
     const res = await run({
-      prompt: prompt + screenNote(opts.screen),
+      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)),
       frameId: frame.id,
       mode: "ask",
       effort: ASK_EFFORT,
@@ -1271,6 +1344,7 @@ export async function ask(
     return { frameId: frame.id, answer: getFrame(frame.id)?.answer ?? "", error: message };
   } finally {
     if (current?.frameId === frame.id) {
+      branchOnly = [];
       current = null;
       session.state.busy = false;
       emit();
@@ -1286,6 +1360,7 @@ export function stopNavigator() {
   current?.controller.abort();
   current = null;
   placeCtl?.abort();
+  branchOnly = [];
   clearTimeout(placeTimer);
   pending.clear();
   session.state.busy = false;

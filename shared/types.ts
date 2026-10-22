@@ -508,6 +508,8 @@ export type RemoteStatus = {
 /** What the browser reports about itself, so the voice knows what is on screen. */
 export type ScreenContext = {
   openFile?: { path: string; line?: number };
+  /** The branch shown on the map (Branch view), compared with its base. */
+  branch?: { name: string; base?: string };
   frameId?: string;
   focusLabel?: string;
   selection?: string;
