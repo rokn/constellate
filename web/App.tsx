@@ -1553,7 +1553,7 @@ export function App() {
         if (a && paths.length) focus(paths, a.title);
         else setToast({ text: "It hasn't changed anything on the map yet." });
       },
-      agentAction: (id, action) => void agentCall({ action, id }, action === "pr" ? "Pull request opened." : "Stopped."),
+      agentAction: (id, action) => void agentCall({ action, id }, { pr: "Pull request opened.", merge: "Merged.", stop: "Stopped." }[action]),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
       isFile: (p) => onMap.has(p),
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),

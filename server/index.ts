@@ -39,7 +39,7 @@ import {
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
-import { AGENTS_ON, discardAgent, getAgent, messageAgent, openPullRequest, startAgent, stopAgent, stopAllAgents } from "./agents";
+import { AGENTS_ON, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, startAgent, stopAgent, stopAllAgents } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
 import { branchDiff, branchFileDiff, fetchRemotes, listBranches } from "./branch";
@@ -570,6 +570,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
             return json(res, 200, { ok: stopAgent(b.id ?? "") }), true;
           case "pr":
             return json(res, 200, { ok: true, pr: await openPullRequest(b.id ?? "") }), true;
+          case "merge":
+            return json(res, 200, { ok: true, pr: await mergePullRequest(b.id ?? "") }), true;
           case "discard":
             if (!getAgent(b.id ?? "")) return json(res, 404, { error: "No such agent." }), true;
             await discardAgent(b.id!);
