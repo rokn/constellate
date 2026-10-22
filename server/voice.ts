@@ -6,6 +6,7 @@ import type { Frame, ScreenContext, UiCommand, View } from "../shared/types";
 import { ask, interrupt, storyNote } from "./navigator";
 import { findPath } from "./scan";
 import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
+import { AGENTS_ON, discardAgent, findAgent, messageAgent, onAgentFinished, startAgent, stopAgent } from "./agents";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -90,8 +91,28 @@ const TOOLS = [
   fn("stop_navigator", "Cancel what the navigator is working on, when they change their mind."),
 ];
 
+/** Coding agents: only offered when the server allows them. */
+const AGENT_TOOLS = [
+  fn("start_agent", [
+    "Start a coding agent that changes the code: it works on its own branch in its own copy of the repo, and its files light up on the map as it goes.",
+    "Use it only when they ask for code to be written, fixed or changed — never to answer a question (that's ask_navigator).",
+    "Pass the task in their words plus what they're looking at (the open file, the selection) so it knows where to start. If the ask is vague, ask one short question first.",
+    "Returns at once; you'll be told when it finishes.",
+  ].join(" "), {
+    task: { type: "string", description: "What the agent should do, specific and self-contained" },
+    title: { type: "string", description: "Three to six words naming it, e.g. 'Retry failed uploads'" },
+  }, ["task", "title"]),
+  fn("message_agent", "Tell a running or finished agent something more: a correction, a follow-up change. Sent while it works, it goes after its current step.", {
+    agent: { type: "string", description: "Its id or a word of its title" },
+    text: { type: "string" },
+  }, ["agent", "text"]),
+  fn("stop_agent", "Stop an agent. What it changed so far stays on its branch.", { agent: { type: "string" } }, ["agent"]),
+  fn("show_agent", "Show what an agent changed: its branch on the map, lit against where it started, and the camera on its files. Instant.", { agent: { type: "string" } }, ["agent"]),
+  fn("discard_agent", "Throw an agent's work away: its branch and its copy of the repo are deleted. Only when they explicitly ask to discard or delete it.", { agent: { type: "string" } }, ["agent"]),
+];
+
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
+const SILENT = new Set(["show_agent", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
 
@@ -149,6 +170,10 @@ function instructions(screen: ScreenContext): string {
     "You have NOT read this code. You only know what is written below. The moment they want to understand something, see something, or ask about code not shown here, call ask_navigator (or focus_topic for a suggested topic). Say a short line first ('let me pull that up'), then stop; when the result arrives, say it in your own words. Never invent how something is wired.",
     "If they just want to go somewhere — 'take me to the auth code', 'open the server' — that's navigation: use fly_to or focus_module yourself, no navigator needed.",
     "",
+    AGENTS_ON
+      ? "You can also start coding agents (start_agent) when they want the code changed: each works on its own branch, and they review what it did on the map (show_agent). Questions still go to the navigator."
+      : "",
+    "",
     `Repository: ${s.repo?.name ?? "(none)"} — status: ${s.status}${s.busy ? " (the navigator is working)" : ""}`,
     o
       ? [
@@ -173,6 +198,15 @@ function instructions(screen: ScreenContext): string {
     screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.lens ? `The map is organized by: ${screen.lens}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
+    s.agents.length
+      ? [
+          "Coding agents (for message_agent, stop_agent, show_agent):",
+          ...s.agents.map(
+            (a) =>
+              `  [${a.id}] ${a.title} — ${a.status}${a.activity ? `, ${a.activity}` : ""}; ${a.files.length} files changed on ${a.branch}${a.summary && a.status !== "working" ? `. It said: ${a.summary.slice(0, 400)}` : ""}${a.error ? ` (${a.error})` : ""}`,
+          ),
+        ].join("\n")
+      : "",
     s.frames.length
       ? `Earlier answers (for show_frame): ${s.frames.map((f) => `[${f.id}] ${f.title}`).join("; ")}`
       : "",
@@ -211,7 +245,7 @@ function sessionUpdate(text: string, v: VoiceSettings) {
         },
         output: { model: v.ttsModel, voice: v.voiceId, ...(v.speed !== 1 ? { speed: v.speed } : {}) },
       },
-      tools: TOOLS,
+      tools: AGENTS_ON ? [...TOOLS, ...AGENT_TOOLS] : TOOLS,
       providerData: { stt: { voice_profile: false } },
     },
   };
@@ -287,6 +321,19 @@ function bridge(client: WebSocket) {
         `The map is charted. Give them the opening in your own words — ${s.overview.welcome ?? s.overview.headline} — then offer the guided tour or one of the topics. Keep it short.`,
       );
     }
+  });
+
+  // An agent finishing is news: the voice says so, unprompted.
+  const offAgents = onAgentFinished((a) => {
+    if (!ready) return;
+    sync();
+    const what =
+      a.status === "done"
+        ? `finished. It changed ${a.files.length} file${a.files.length === 1 ? "" : "s"} and said: ${a.summary ?? "(nothing)"}`
+        : a.status === "failed"
+          ? `stopped with a problem: ${a.error ?? "unknown"}`
+          : "was stopped";
+    deliver(`The coding agent "${a.title}" ${what}\nTell them in a sentence or two, and offer to show it on the map.`);
   });
 
   const askNavigator = (request: string, topicId?: string) => {
@@ -435,6 +482,43 @@ function bridge(client: WebSocket) {
       }
       case "stop_navigator":
         return { ok: interrupt() };
+      case "start_agent": {
+        const task = str("task");
+        if (!task) return { ok: false, say: "Call again with the task in `task`." };
+        // Where they are is part of the task: "fix this" means the open file.
+        const where = [
+          screen.openFile ? `They have ${screen.openFile.path}${screen.openFile.line ? ` open at line ${screen.openFile.line}` : " open"}.` : "",
+          screen.selection ? `They selected:\n"""\n${screen.selection.slice(0, 1500)}\n"""` : "",
+        ].filter(Boolean).join("\n");
+        startAgent(where ? `${task}\n\n${where}` : task, { title: str("title") }).then(
+          () => sync(),
+          (err) => deliver(`The agent couldn't start: ${err instanceof Error ? err.message : String(err)}. Tell them briefly.`),
+        );
+        return { ok: true, status: "starting", say: "One short line that it's on it. Don't describe the change yet." };
+      }
+      case "message_agent": {
+        const a = findAgent(str("agent"));
+        if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
+        return { ok: true, status: messageAgent(a.id, str("text")) };
+      }
+      case "stop_agent": {
+        const a = findAgent(str("agent"));
+        if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
+        return { ok: stopAgent(a.id), note: a.status === "working" ? undefined : "It wasn't running." };
+      }
+      case "show_agent": {
+        const a = findAgent(str("agent"));
+        if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
+        if (!a.commits && !a.files.length) return { ok: false, error: "It hasn't changed anything yet." };
+        command({ cmd: "show_branch", branch: a.branch, base: a.base === "HEAD" ? a.baseSha : a.base });
+        return { ok: true, files: a.files };
+      }
+      case "discard_agent": {
+        const a = findAgent(str("agent"));
+        if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
+        void discardAgent(a.id);
+        return { ok: true };
+      }
       default:
         return { ok: false, error: `Unknown tool ${name}` };
     }
@@ -553,6 +637,7 @@ function bridge(client: WebSocket) {
   client.on("close", () => {
     closed = true;
     unsubscribe();
+    offAgents();
     clearTimeout(followUp);
     clearTimeout(syncTimer);
     upstream?.close();

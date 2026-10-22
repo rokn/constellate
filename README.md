@@ -33,6 +33,20 @@ Or one container for any GitHub repo: set `CODEFLIGHT_REPOS_DIR=/data/repos` ins
 
 It has no login of its own, so put it behind an authenticating proxy before exposing it.
 
+## Agents
+
+Constellate can also change the code. Ask the voice ("add retries to the uploader"), or
+type a task in **Agents**, and a coding agent (Claude Code, through the Agent SDK) starts
+on it in its own git worktree, on a branch of its own (`agent/<name>-<id>`) off the commit
+you're looking at. Several can work at once. The files each one touches light up under
+a marker as it goes, and when it finishes the voice tells you what it did. **Show on map**
+(or "show me what it did") puts its branch on the map against where it started; you can
+send it follow-ups, stop it, or discard it with its branch.
+
+What it changed is committed to its branch when it stops; it never pushes, and landing
+the branch is yours. An agent can read and edit files only inside its worktree, and has no
+shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
+
 ## In a headset
 
 With a Meta Quest 3 (its browser), or a PC with Link or SteamVR connected, **VR** and

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   Activity,
+  AgentRun,
   Frame,
   GroupOverlay,
   Lens,
@@ -67,6 +68,7 @@ export const session: Session = {
     commands: [],
     busy: false,
     fromCache: false,
+    agents: [],
   },
   commandSeq: 0,
 };
@@ -366,6 +368,8 @@ export function resetSession(abs: string, name: string) {
     fromCache: false,
     locked: session.state.locked,
     library: session.state.library,
+    agents: [],
+    agentsOn: session.state.agentsOn,
   };
   session.idx = undefined;
   session.agentSessionId = undefined;
@@ -405,6 +409,11 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     // A story caught mid-write by a restart has nothing to resume from.
     session.state.stories = (cached.stories ?? []).map((s) =>
       s.state === "writing" || s.state === "voicing" ? { ...s, state: s.beats.length ? "ready" : "error", error: s.beats.length ? undefined : "Interrupted by a restart." } : s,
+    );
+    // An agent saved mid-run has nothing running behind it after a restart;
+    // its worktree and branch are still there to pick up from.
+    session.state.agents = (cached.agents ?? []).map((a) =>
+      a.status === "working" || a.status === "starting" ? { ...a, status: "stopped", activity: undefined, error: "Interrupted by a restart." } : a,
     );
     session.agentSessionId = cached.agentSessionId;
     if (cached.overview && !opts.rechart) {
@@ -641,6 +650,7 @@ type Cached = {
   notes?: Note[];
   frames: Frame[];
   stories?: Story[];
+  agents?: AgentRun[];
   agentSessionId?: string;
 };
 
@@ -672,7 +682,7 @@ async function persist() {
   // Nothing to keep until something has been made; and never write while a
   // repo is still being opened, or an empty state would overwrite a saved one.
   if (!s.repo || !session.idx || s.status === "scanning") return;
-  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.frames.length && !s.stories.length && !s.view) return;
+  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.frames.length && !s.stories.length && !s.agents.length && !s.view) return;
   const body: Cached = {
     head: session.chartedHead,
     overview: s.overview,
@@ -682,6 +692,7 @@ async function persist() {
     notes: s.notes,
     frames: s.frames,
     stories: s.stories,
+    agents: s.agents,
     agentSessionId: session.agentSessionId,
   };
   try {
