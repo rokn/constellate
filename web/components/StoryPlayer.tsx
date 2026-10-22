@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import type { Story, View } from "../../shared/types";
 import { absMs, beatMs, clock, fromAbs, liveDiagrams, speechMs, stageAt, storyMs, wordAt } from "../lib/story";
 import { SPEEDS, useStoryPlayer } from "../lib/useStoryPlayer";
+import { touchFirst } from "../lib/haptics";
+import { EdgeScrub } from "./EdgeScrub";
 import { CodeBlock } from "./CodeBlock";
 import { CustomView } from "./CustomView";
 import { DiagramView } from "./DiagramView";
@@ -257,6 +259,18 @@ export function StoryPlayer({
           </div>
         </aside>
       </div>
+
+      {touchFirst() && !notReady && total > 0 && (
+        <EdgeScrub
+          value={now / total}
+          stepOf={(f) => fromAbs(story, f * total).beat}
+          labelOf={(f) => `Beat ${fromAbs(story, f * total).beat + 1}/${story.beats.length} · ${clock(f * total)}`}
+          onScrub={(f) => {
+            const p = fromAbs(story, f * total);
+            player.seek(p.beat, p.ms);
+          }}
+        />
+      )}
 
       {/* The transport */}
       <div className="pointer-events-none absolute inset-x-0 bottom-[84px] z-30 flex justify-center px-4">

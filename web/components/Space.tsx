@@ -10,6 +10,7 @@ import { COURSE, RUNTIME, STATIC, territoryColors } from "../lib/colors";
 import { FORCE_KNOBS, SHAPE_KNOBS, type Tuning } from "../lib/tuning";
 import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { Coupling, Heat, MapDelta } from "../lib/history";
+import { buzz, touchFirst } from "../lib/haptics";
 
 /**
  * The space you fly through.
@@ -89,7 +90,8 @@ export type TouchHit =
   | { kind: "empty" };
 
 /** Touch gestures that ask for more than a camera move. */
-export type TouchGesture = "back" | "forward" | "overview" | "ui";
+/** `flat`: the tablet was laid face-up, for the map from above. */
+export type TouchGesture = "back" | "forward" | "overview" | "ui" | "flat";
 
 /** A way of organizing the map: files gathered around group beacons. */
 export type Grouping = { key: string; groups: LogicalModule[]; edges: LogicalEdge[] };
@@ -138,7 +140,8 @@ export type SpaceHandle = {
   flyTo: (path: string, shift?: number) => void;
   focus: (paths: string[], shift?: number) => void;
   focusModule: (id: string, shift?: number) => void;
-  overview: () => void;
+  /** `above`: from straight overhead, rather than from where the camera looks. */
+  overview: (above?: boolean) => void;
   pulse: (path: string) => void;
   warp: () => void;
   /** Reheat the simulation so the layout settles again. */
@@ -239,6 +242,7 @@ export function Space({
   onBackground,
   onHold,
   onGesture,
+  onSpread,
 }: {
   ref: Ref<SpaceHandle>;
   graph: RepoGraph;
@@ -289,6 +293,12 @@ export function Space({
   /** Press and hold (touch): what's under the finger, where, and which pointer, so a menu can follow it. */
   onHold?: (hit: TouchHit, x: number, y: number, pointerId: number) => void;
   onGesture?: (g: TouchGesture) => void;
+  /**
+   * Two fingers spread apart on a module's beacon (open it: show only it), or
+   * pinched shut on one (close it again). Returns whether it did: if not, the
+   * gesture carries on as a plain pinch.
+   */
+  onSpread?: (moduleId: string, way: "open" | "close") => boolean;
 }) {
   const el = useRef<HTMLDivElement>(null);
   const fg = useRef<ForceGraph3DInstance<N, L> | null>(null);
@@ -339,8 +349,8 @@ export function Space({
       }
     >(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture };
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture, onSpread });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture, onSpread };
   /** Set up with the scene: turns tilt-to-look on or off. */
   const tiltOn = useRef<(on: boolean) => Promise<boolean>>(async () => false);
   /** Files close enough to the camera to be named (Tune -> Name nearby files). */
@@ -966,13 +976,25 @@ export function Space({
     controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: -1 as THREE.TOUCH };
     host.style.touchAction = "none";
     const fingers = new Map<number, { x: number; y: number }>();
-    /** The gesture in progress: two fingers' last spread, angle and middle; three fingers' start and travel. */
-    let two: { d: number; a: number; mx: number; my: number } | null = null;
+    type Two = { d: number; a: number; mx: number; my: number };
+    /**
+     * Two fingers: their last spread, angle and middle, and where they began.
+     * A pinch, a slide and a twist all move both fingers a little, so the
+     * first clear one wins and is the only thing they do until they lift.
+     * Fingers that start on a module's beacon can open it (or close it).
+     */
+    let two: (Two & { from: Two; mode: "pinch" | "pan" | "twist" | null; lockD: number; module?: string; done?: boolean }) | null = null;
+    /** Three fingers: their start and travel. */
     let three: { x: number; y: number; dx: number; dy: number } | null = null;
     let hold: { id: number; x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null = null;
     let lastTap: { x: number; y: number; at: number } | null = null;
     const HOLD_MS = 480;
     const TOUCH_SLOP = 10;
+    /** How far two fingers move before it's decided what they're doing. */
+    const LOCK_PX = 14;
+    /** Spread this much on a beacon opens the module; pinched to this, it closes. */
+    const OPEN_AT = 1.7;
+    const CLOSE_AT = 0.6;
 
     /** The body or beacon nearest a point on screen, within a fingertip. */
     const touchHit = (x: number, y: number): TouchHit => {
@@ -993,10 +1015,31 @@ export function Space({
       return n.type === "module" ? { kind: "module", id: n.id.slice(4), label: n.label, summary: n.summary, files: n.files } : { kind: "file", path: n.id };
     };
 
-    const twoOf = () => {
+    const twoOf = (): Two => {
       const [a, b] = [...fingers.values()];
       return { d: Math.hypot(b.x - a.x, b.y - a.y), a: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
     };
+    /** The module beacon between two fingers, if they went down around one. */
+    const beaconBetween = (t: Two) => {
+      const rect = host.getBoundingClientRect();
+      const camera = g.camera();
+      const fwd = camera.getWorldDirection(new THREE.Vector3());
+      const reach = Math.max(56, t.d * 0.55);
+      let best: { id: string; d: number } | null = null;
+      for (const n of nodes.current.values()) {
+        if (n.type !== "module" || n.x === undefined || objs.current.get(n.id)?.group.visible === false) continue;
+        if ((n.x - camera.position.x) * fwd.x + (n.y! - camera.position.y) * fwd.y + (n.z! - camera.position.z) * fwd.z <= 0) continue;
+        const sc = g.graph2ScreenCoords(n.x, n.y!, n.z!);
+        const d = Math.hypot(sc.x + rect.left - t.mx, sc.y + rect.top - t.my);
+        if (d < reach && (!best || d < best.d)) best = { id: n.id.slice(4), d };
+      }
+      return best?.id;
+    };
+    const startTwo = () => {
+      const t = twoOf();
+      return { ...t, from: t, mode: null, lockD: t.d, module: beaconBetween(t) };
+    };
+    const turnOf = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
     /** Slide the camera and its target along the screen, as if dragging the sky. */
     const panBy = (dx: number, dy: number) => {
       const camera = g.camera() as THREE.PerspectiveCamera;
@@ -1045,7 +1088,7 @@ export function Space({
         };
       } else {
         takeCamera();
-        if (fingers.size === 2) two = twoOf();
+        if (fingers.size === 2) two = startTwo();
         if (fingers.size === 3) {
           two = null;
           const c = [...fingers.values()];
@@ -1061,18 +1104,53 @@ export function Space({
       if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > TOUCH_SLOP) cancelHold();
       if (fingers.size === 2 && two) {
         const now = twoOf();
+        // Opened or closed a module: the flight that follows has the camera until they lift.
+        if (two.done) return;
+        if (!two.mode) {
+          const spread = Math.abs(now.d - two.from.d);
+          const slide = Math.hypot(now.mx - two.from.mx, now.my - two.from.my);
+          // As far as the fingertips travel round, a little discounted: a twist is the rarest of the three.
+          const twist = Math.abs(turnOf(now.a, two.from.a)) * (now.d / 2) * 0.7;
+          const most = Math.max(spread, slide, twist);
+          // Not decided yet; the first step taken counts from where they began.
+          if (most < LOCK_PX) return;
+          two.mode = most === spread ? "pinch" : most === slide ? "pan" : "twist";
+          two.lockD = now.d;
+        }
+        // A slide that turns into a plain pinch was meant as one.
+        if (two.mode === "pan" && (now.d / two.lockD > 1.5 || now.d / two.lockD < 0.67)) two.mode = "pinch";
+        if (two.mode === "pinch" && two.module) {
+          const k = now.d / two.from.d;
+          const way = k >= OPEN_AT ? "open" : k <= CLOSE_AT ? "close" : null;
+          if (way) {
+            const id = two.module;
+            two.module = undefined;
+            if (handlers.current.onSpread?.(id, way)) {
+              two.done = true;
+              buzz(way === "open" ? [10, 40, 22] : 14);
+              if (way === "open") {
+                const c = state.current.clusters.find((x) => x.id === id);
+                const at = performance.now();
+                // Its files light up as it comes apart.
+                for (const p of c?.members ?? []) if (objs.current.has(p)) pulses.current.set(p, at);
+              }
+              return;
+            }
+          }
+        }
         // Each step chains from where the last was heading, as the wheel's do.
         const goal = dollyGoal.current;
         takeCamera();
         dollyGoal.current = goal;
-        // Spread → in; the pinch leads toward the middle of your fingers.
-        if (now.d > 0 && two.d > 0) dollyBy(-Math.log(now.d / two.d) * 600, { clientX: now.mx, clientY: now.my });
-        panBy(now.mx - two.mx, now.my - two.my);
-        let da = now.a - two.a;
-        if (da > Math.PI) da -= 2 * Math.PI;
-        if (da < -Math.PI) da += 2 * Math.PI;
-        if (Math.abs(da) < 0.5) spinBy(-da);
-        two = now;
+        if (two.mode === "pinch") {
+          // Spread → in; the pinch leads toward the middle of your fingers.
+          if (now.d > 0 && two.d > 0) dollyBy(-Math.log(now.d / two.d) * 600, { clientX: now.mx, clientY: now.my });
+        } else if (two.mode === "pan") panBy(now.mx - two.mx, now.my - two.my);
+        else {
+          const da = turnOf(now.a, two.a);
+          if (Math.abs(da) < 0.5) spinBy(-da);
+        }
+        Object.assign(two, now);
       } else if (fingers.size === 3 && three) {
         const c = [...fingers.values()];
         three.dx = c.reduce((a, f) => a + f.x, 0) / 3 - three.x;
@@ -1106,7 +1184,7 @@ export function Space({
           else handlers.current.onGesture?.(dy > 0 ? "overview" : "ui");
         }
       }
-      two = fingers.size === 2 ? twoOf() : null;
+      two = fingers.size === 2 ? startTwo() : null;
     };
     // The finger holding the ring menu: its moves go to the menu (on window,
     // which hears them first) and stop here, short of the orbit controls.
@@ -1156,6 +1234,35 @@ export function Space({
       window.addEventListener("deviceorientation", onTilt);
       return true;
     };
+
+    /* ---- lay it flat: face-up on a table, the map is seen from above ---- */
+
+    // Once per lay-down: it has to be picked up again (tilted well off flat) to re-arm,
+    // so a tablet that starts out flat doesn't fly anywhere.
+    let flatArmed = false;
+    let flatSince = 0;
+    const onLevel = (e: DeviceOrientationEvent) => {
+      if (e.beta === null || e.gamma === null) return;
+      const tipped = Math.max(Math.abs(e.beta), Math.abs(e.gamma));
+      if (tipped > 25) {
+        flatArmed = true;
+        flatSince = 0;
+        return;
+      }
+      if (tipped > 8 || !flatArmed || fingers.size) {
+        flatSince = 0;
+        return;
+      }
+      const now = performance.now();
+      if (!flatSince) flatSince = now;
+      else if (now - flatSince > 700) {
+        flatArmed = false;
+        flatSince = 0;
+        buzz(12);
+        handlers.current.onGesture?.("flat");
+      }
+    };
+    if (touchFirst()) window.addEventListener("deviceorientation", onLevel);
 
     /* ---- fly mode: hold the right button; mouse looks, WASD moves ---- */
 
@@ -1318,9 +1425,29 @@ export function Space({
 
     let raf = 0;
     let nearAt = 0;
+    /** The module the camera is inside, checked a few times a second: going into another one ticks. */
+    const feelZones = touchFirst();
+    let zone: string | null = null;
+    let zoneAt = 0;
+    const zoneOf = (p: THREE.Vector3) => {
+      let best: { id: string; k: number } | null = null;
+      for (const c of state.current.clusters) {
+        const shape = clusterShape(c.members);
+        if (!shape) continue;
+        const k = p.distanceTo(shape.point) / shape.r;
+        if (k < 1 && (!best || k < best.k)) best = { id: c.id, k };
+      }
+      return best?.id ?? null;
+    };
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const now = performance.now();
+      if (feelZones && now - zoneAt > 160) {
+        zoneAt = now;
+        const z = zoneOf(g.camera().position);
+        if (z && z !== zone) buzz(8);
+        zone = z;
+      }
       if (flight) flyStep(now);
       else {
         const anim = camAnim.current;
@@ -1512,6 +1639,7 @@ export function Space({
       window.removeEventListener("pointerup", onTouchUp, true);
       window.removeEventListener("pointercancel", onTouchUp, true);
       window.removeEventListener("deviceorientation", onTilt);
+      window.removeEventListener("deviceorientation", onLevel);
       host.removeEventListener("pointerdown", onFlyDown, true);
       host.removeEventListener("pointermove", onFlyMove, true);
       host.removeEventListener("pointerup", onFlyUp, true);
@@ -2175,14 +2303,22 @@ export function Space({
     camAnim.current = { fromCam: g.camera().position.clone(), fromTarget: ctl.target.clone(), toCam: pos.clone(), toTarget: look.clone(), t0: performance.now(), ms };
   }
 
-  /** Frame the whole map, as a flight you can interrupt. */
-  function fitView(ms: number, padding: number) {
+  /** Frame the whole map, as a flight you can interrupt; `above`, looking straight down on it. */
+  function fitView(ms: number, padding: number, above = false) {
     const g = fg.current;
     const ctl = controls();
     if (!g || !ctl) return;
     // Let the library work out the framing, take its answer, put the camera back, then fly there ourselves.
     const camera = g.camera();
     const [cam, target, q] = [camera.position.clone(), ctl.target.clone(), camera.quaternion.clone()];
+    if (above) {
+      // The library frames along the way the camera faces: face down, keeping
+      // the heading (a hair off vertical, so "up" on screen stays defined).
+      const heading = camera.getWorldDirection(new THREE.Vector3()).projectOnPlane(camera.up);
+      if (heading.lengthSq() < 1e-6) heading.set(0, 0, -1);
+      camera.lookAt(camera.position.clone().sub(camera.up).addScaledVector(heading.normalize(), 0.06));
+      camera.updateMatrixWorld();
+    }
     g.zoomToFit(0, padding);
     const to = { cam: camera.position.clone(), target: controls()!.target.clone() };
     camera.position.copy(cam);
@@ -2257,11 +2393,11 @@ export function Space({
       const m = state.current.overview?.modules.find((x) => x.id === id);
       if (m) focusIds(m.paths.filter((p) => nodes.current.has(p)), shift);
     },
-    overview() {
+    overview(above = false) {
       const g = fg.current;
       if (!g) return;
       clearTimeout(refit.current);
-      fitView(tu().flySeconds * 900, 70);
+      fitView(tu().flySeconds * (above ? 1400 : 900), 70, above);
       setTimeout(
         unlessTouched(() => {
           const ctl = controls();

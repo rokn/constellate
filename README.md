@@ -59,9 +59,15 @@ pointer. Click a file to select it and light its connections. In the module list
 a dot to show only that module, Shift-click it to hide it, and double-click a module to
 isolate it and fly to it. Hold Shift over a module to light where it connects.
 
-**Touch:** one finger orbits. Pinch to zoom toward your fingers; drag two fingers to pan
-and twist them to spin the sky. Press and hold on a file, a module or open sky for a ring
+**Touch:** one finger orbits. Two fingers pinch to zoom toward your fingers, drag to pan, or
+twist to spin the sky, whichever they start doing; they keep to it until they lift. Spread
+two fingers on a module's beacon to show only that module, and pinch them shut on it to
+bring the rest back. Press and hold on a file, a module or open sky for a ring
 of actions (open, ask about it, note, show only, hide, the whole map…): slide to one and
 lift, or lift in the middle and tap one. Double-tap open sky to see the whole map. Swipe
 with three fingers: sideways for back and forward, down for the whole map, up to hide the
-controls. "Tilt to look", in the ring on open sky, turns the view as you turn the tablet.
+controls. "Tilt to look", in the ring on open sky, turns the view as you turn the tablet,
+and laying the tablet flat on a table shows the whole map from above. With History or a
+story open, slide your thumb along the bottom edge to scrub through it. On Android you feel
+a tick for each commit or beat you scrub past, each module you fly into, and the
+navigator's arrivals.

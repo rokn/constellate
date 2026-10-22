@@ -22,6 +22,8 @@ import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, r
 import { StoryPlayer, type StoryControl } from "./components/StoryPlayer";
 import { Shelf } from "./components/Shelf";
 import { TouchRing, type RingItem } from "./components/TouchRing";
+import { EdgeScrub } from "./components/EdgeScrub";
+import { buzz, touchFirst } from "./lib/haptics";
 import { StoriesPanel } from "./components/StoriesPanel";
 import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
 
@@ -672,14 +674,15 @@ export function App() {
     else space.current?.overview();
   }, [file, emphasis, neighbours]);
 
-  const toOverview = useCallback(() => {
+  /** `above`: from straight overhead (the tablet laid flat). Anything else, like a click event, is the usual view. */
+  const toOverview = useCallback((above?: unknown) => {
     setTour(null);
     setFile(null);
     setFrameId(null);
     setEmphasis([]);
     setFocusLabel(undefined);
     setPointer(null);
-    space.current?.overview();
+    space.current?.overview(above === true);
     record({ kind: "overview" });
   }, []);
 
@@ -910,6 +913,32 @@ export function App() {
     [gitHistory, showRange],
   );
 
+  /**
+   * The thumb strip along the bottom: oldest on the left, now on the right.
+   * Maps load for each commit picked, so a fast slide picks a few a second
+   * and always lands on the last one.
+   */
+  const scrubbed = useRef<{ at: number; timer?: ReturnType<typeof setTimeout> }>({ at: 0 });
+  const commitAt = (f: number) => listed[Math.round((1 - f) * (listed.length - 1))];
+  const scrubHistory = useCallback(
+    (f: number) => {
+      const c = listed[Math.round((1 - f) * (listed.length - 1))];
+      if (!c || c.sha === cursor.current) return;
+      cursor.current = c.sha;
+      setPlaying(false);
+      const s = scrubbed.current;
+      clearTimeout(s.timer);
+      const wait = 150 - (performance.now() - s.at);
+      const go = () => {
+        s.at = performance.now();
+        selectCommit(c);
+      };
+      if (wait <= 0) go();
+      else s.timer = setTimeout(go, wait);
+    },
+    [listed, selectCommit],
+  );
+
   /** Play from the selection (or a few weeks of commits back) toward the present. */
   const startPlay = useCallback(() => {
     if (playing) return setPlaying(false);
@@ -996,16 +1025,25 @@ export function App() {
 
   /* ------------------------------- commands ------------------------------- */
 
+  /** The navigator's flights land with a tap you can feel, as the camera arrives. */
+  const landing = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const feelLanding = useCallback(() => {
+    clearTimeout(landing.current);
+    landing.current = setTimeout(() => buzz([14, 60, 14]), tuning.flySeconds * 1000);
+  }, [tuning.flySeconds]);
   const run = useCallback(
     (c: UiCommand) => {
       switch (c.cmd) {
         case "fly_to":
+          feelLanding();
           return openFile(c.path);
         case "open_file":
           return openFile(c.path, c.line, c.endLine, false);
         case "focus":
+          feelLanding();
           return focus(c.paths, c.label);
         case "focus_module":
+          feelLanding();
           return focusModule(c.moduleId);
         case "overview":
           return toOverview();
@@ -1056,7 +1094,7 @@ export function App() {
         }
       }
     },
-    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay],
+    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding],
   );
   const runRef = useRef(run);
   runRef.current = run;
@@ -1410,7 +1448,24 @@ export function App() {
     if (g === "back") back();
     else if (g === "forward") forward();
     else if (g === "overview") toOverview();
+    else if (g === "flat") toOverview(true);
     else setMinimal((m) => !m);
+  };
+  /** Two fingers spread on a module's beacon show only it; pinched shut on one, everything again. */
+  const onSpread = (id: string, way: "open" | "close") => {
+    const ins = (filter.isolate ?? []).filter((i) => !i.exclude);
+    if (way === "open") {
+      if (ins.length === 1 && ins[0].kind === "module" && ins[0].id === id) return false;
+      pickModule(id, "solo");
+      return true;
+    }
+    if (!ins.length) return false;
+    // As Esc's last step: what you hid by hand stays hidden.
+    setFilter((f) => {
+      const kept = f.isolate?.filter((i) => i.exclude);
+      return { ...f, isolate: kept?.length ? kept : undefined };
+    });
+    return true;
   };
 
   const activeFrame = frames.find((f) => f.id === frameId);
@@ -1477,6 +1532,7 @@ export function App() {
           onBackground={() => setPointer(null)}
           onHold={(hit, x, y, pointerId) => setHeld({ hit, x, y, pointerId })}
           onGesture={onGesture}
+          onSpread={onSpread}
         />
       )}
 
@@ -1520,16 +1576,31 @@ export function App() {
         />
       )}
 
+      {touchFirst() && historyOpen && !story && listed.length > 1 && (() => {
+        const i = listed.findIndex((c) => c.sha === (range ? (cursor.current ?? range.to) : null));
+        return (
+          <EdgeScrub
+            value={i < 0 ? 1 : 1 - i / (listed.length - 1)}
+            stepOf={(f) => Math.round((1 - f) * (listed.length - 1))}
+            labelOf={(f) => {
+              const c = commitAt(f);
+              return c.worktree ? "Uncommitted changes" : `${c.short} · ${new Date(c.at).toLocaleDateString()} · ${c.subject}`;
+            }}
+            onScrub={scrubHistory}
+          />
+        );
+      })()}
+
       {held && <TouchRing key={`${held.pointerId}-${held.x}-${held.y}`} x={held.x} y={held.y} pointerId={held.pointerId} {...ringFor(held.hit)} onClose={() => setHeld(null)} />}
 
       {touchHint && (
         <div className="glass rise absolute left-1/2 top-[18%] z-30 w-[min(420px,calc(100%-32px))] -translate-x-1/2 rounded-2xl p-4">
           <p className="font-cond text-[19px] font-semibold">Flying by touch</p>
           <ul className="mt-2 space-y-1.5 text-[14px] leading-snug text-text/90">
-            <li>Pinch to zoom toward your fingers.</li>
-            <li>Two fingers drag to pan, and twist to spin the sky.</li>
+            <li>Two fingers pinch to zoom, drag to pan, or twist to spin the sky. Whatever they start doing, they keep doing.</li>
+            <li>Spread two fingers on a module to open it up on its own. Pinch it shut for everything again.</li>
             <li>Press and hold on a file, a module or open sky for its actions. Slide to one and lift.</li>
-            <li>Double-tap open sky to see the whole map.</li>
+            <li>Double-tap open sky to see the whole map, or lay the tablet flat to see it from above.</li>
             <li>Swipe with three fingers: sideways for back and forward, down for the whole map, up to hide the controls.</li>
           </ul>
           <button onClick={() => setTouchHint(false)} className="mt-3 rounded-lg bg-course px-4 py-1.5 font-cond text-[15px] font-semibold text-night">
