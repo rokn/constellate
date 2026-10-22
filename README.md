@@ -58,3 +58,10 @@ It has no login of its own, so put it behind an authenticating proxy before expo
 pointer. Click a file to select it and light its connections. In the module list, click
 a dot to show only that module, Shift-click it to hide it, and double-click a module to
 isolate it and fly to it. Hold Shift over a module to light where it connects.
+
+**Touch:** one finger orbits. Pinch to zoom toward your fingers; drag two fingers to pan
+and twist them to spin the sky. Press and hold on a file, a module or open sky for a ring
+of actions (open, ask about it, note, show only, hide, the whole map…): slide to one and
+lift, or lift in the middle and tap one. Double-tap open sky to see the whole map. Swipe
+with three fingers: sideways for back and forward, down for the whole map, up to hide the
+controls. "Tilt to look", in the ring on open sky, turns the view as you turn the tablet.

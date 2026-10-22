@@ -11,7 +11,7 @@ import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
 import { territoryColors } from "./lib/colors";
-import { Space, type Grouping, type Overlay, type SpaceHandle } from "./components/Space";
+import { Space, type Grouping, type Overlay, type SpaceHandle, type TouchHit, type TouchGesture } from "./components/Space";
 import { FilterPanel, GroupsPanel, Legend, OTHER, OrganizeBar } from "./components/MapControls";
 import { TuningPanel } from "./components/TuningPanel";
 import { DEFAULT_TUNING, loadTuning, saveTuning, type Tuning } from "./lib/tuning";
@@ -21,6 +21,7 @@ import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 import { StoryPlayer, type StoryControl } from "./components/StoryPlayer";
 import { Shelf } from "./components/Shelf";
+import { TouchRing, type RingItem } from "./components/TouchRing";
 import { StoriesPanel } from "./components/StoriesPanel";
 import { BranchDiff, BranchMapBar, type BranchSummary } from "./components/BranchDiff";
 
@@ -81,6 +82,26 @@ export function App() {
   const [pointer, setPointer] = useState<Pointer>(null);
   const [introDone, setIntroDone] = useState(false);
   const [shelfOpen, setShelfOpen] = useState(false);
+  /** A finger held on the map: the ring of actions on what it's on. */
+  const [held, setHeld] = useState<{ hit: TouchHit; x: number; y: number; pointerId: number } | null>(null);
+  const [tilting, setTilting] = useState(false);
+  // The first touch on the map shows what touch can do, once.
+  const [touchHint, setTouchHint] = useState(false);
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      if (e.pointerType !== "touch") return;
+      window.removeEventListener("pointerdown", onDown);
+      try {
+        if (localStorage.getItem("constellate.touchHint")) return;
+        localStorage.setItem("constellate.touchHint", "1");
+      } catch {
+        /* private mode: show it anyway */
+      }
+      setTouchHint(true);
+    };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, []);
   // Another repo opened, from this page or another device: start the page
   // over on it rather than carry this one's panels, history and camera across.
   const openRoot = useRef<string | undefined>(undefined);
@@ -94,7 +115,7 @@ export function App() {
   const [tour, setTour] = useState<number | null>(null);
   const [selection, setSelection] = useState("");
   /** A short-lived note with an undo — after hiding something. */
-  const [toast, setToast] = useState<{ text: string; undo: () => void } | null>(null);
+  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 6000);
@@ -1311,6 +1332,87 @@ export function App() {
     }
   };
 
+  /** A module's (or group's) beacon picked: fly there, or with `how`, isolate, take out or show only it. */
+  const pickModule = (id: string, how?: "isolate" | "exclude" | "solo") => {
+    if (!how) {
+      const m = legend?.groups.find((x) => x.id === id);
+      if (m) setPickedRow({ id: m.id, label: m.label });
+      return focusModule(id);
+    }
+    if (how === "solo") {
+      const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
+      if (m) soloIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths });
+      return;
+    }
+    // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
+    const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
+    if (!m) return;
+    const item: Isolated = { kind: "module", id: m.id, label: m.label, paths: m.paths };
+    toggleIsolate(item, how === "exclude");
+    // Hiding a whole module is a big change to the map: say so, with a way back.
+    const wasHidden = filter.isolate?.some((i) => i.kind === "module" && i.id === m.id && i.exclude);
+    if (how === "exclude" && !wasHidden) {
+      setToast({ text: `Hid ${m.label} — bring it back from the legend or Filter`, undo: () => toggleIsolate(item, true) });
+    }
+  };
+
+  /** The ring's actions for what the finger is held on. */
+  const ringFor = (hit: TouchHit): { title?: string; detail?: string; items: RingItem[] } => {
+    if (hit.kind === "file") {
+      const name = hit.path.split("/").pop()!;
+      return {
+        title: name,
+        detail: hit.path,
+        items: [
+          { label: "Open", run: () => openFile(hit.path) },
+          { label: "Ask about it", run: () => askNavigator(`What is ${hit.path} for, and how does it fit in?`) },
+          { label: "Note", run: () => setNoteEdit({ target: { kind: "file", path: hit.path } }) },
+          { label: "Hide", run: () => hide([hit.path], name) },
+          { label: "Fly here", run: () => space.current?.flyTo(hit.path) },
+        ],
+      };
+    }
+    if (hit.kind === "module") {
+      return {
+        title: hit.label,
+        detail: [hit.files ? `${hit.files} file${hit.files === 1 ? "" : "s"}` : "", hit.summary ?? ""].filter(Boolean).join(" · "),
+        items: [
+          { label: "Fly there", run: () => pickModule(hit.id) },
+          { label: "Show only", run: () => pickModule(hit.id, "solo") },
+          { label: "Ask about it", run: () => askNavigator(`Explain ${hit.label}: what it does and how it works.`) },
+          { label: "Hide", run: () => pickModule(hit.id, "exclude") },
+        ],
+      };
+    }
+    const tilt = "DeviceOrientationEvent" in window;
+    return {
+      items: [
+        { label: "Whole map", run: toOverview },
+        { label: "Back", run: back },
+        ...(tilt
+          ? [
+              {
+                label: tilting ? "Stop tilting" : "Tilt to look",
+                run: () =>
+                  void space.current?.setTilt(!tilting).then((on) => {
+                    setTilting(on);
+                    if (!tilting && !on) setToast({ text: "This device didn't allow motion sensing" });
+                  }),
+              },
+            ]
+          : []),
+        { label: minimal ? "Show controls" : "Hide controls", run: () => setMinimal((m) => !m) },
+        { label: "Forward", run: forward },
+      ],
+    };
+  };
+  const onGesture = (g: TouchGesture) => {
+    if (g === "back") back();
+    else if (g === "forward") forward();
+    else if (g === "overview") toOverview();
+    else setMinimal((m) => !m);
+  };
+
   const activeFrame = frames.find((f) => f.id === frameId);
   const showIntro = !minimal && !introDone && tour === null && !file && !frameId;
   const showDestinations = !minimal && introDone && tour === null && !file && !frameId && !emphasis.length && !!overview?.topics.length;
@@ -1348,28 +1450,7 @@ export function App() {
             openFile(t.from, edge?.line);
           }}
           onNoteOnLink={(from, to) => setNoteEdit({ target: { kind: "link", from, to } })}
-          onPickModule={(id, how) => {
-            if (!how) {
-              const m = legend?.groups.find((x) => x.id === id);
-              if (m) setPickedRow({ id: m.id, label: m.label });
-              return focusModule(id);
-            }
-            if (how === "solo") {
-              const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
-              if (m) soloIsolate({ kind: "module", id: m.id, label: m.label, paths: m.paths });
-              return;
-            }
-            // Shift+click a beacon isolates its module (or group); Alt+click takes it out of view.
-            const m = grouping?.groups.find((x) => x.id === id) ?? overview?.modules.find((x) => x.id === id);
-            if (!m) return;
-            const item: Isolated = { kind: "module", id: m.id, label: m.label, paths: m.paths };
-            toggleIsolate(item, how === "exclude");
-            // Hiding a whole module is a big change to the map: say so, with a way back.
-            const wasHidden = filter.isolate?.some((i) => i.kind === "module" && i.id === m.id && i.exclude);
-            if (how === "exclude" && !wasHidden) {
-              setToast({ text: `Hid ${m.label} — bring it back from the legend or Filter`, undo: () => toggleIsolate(item, true) });
-            }
-          }}
+          onPickModule={pickModule}
           onOpenImport={(from, line) => openFile(from, line)}
           onHideOverlay={(id) => {
             const g = overlays.find((o) => o.id === id);
@@ -1394,6 +1475,8 @@ export function App() {
               : focus(graph.files.filter((f) => f.path.startsWith(`${d}/`)).map((f) => f.path), `${d}/`)
           }
           onBackground={() => setPointer(null)}
+          onHold={(hit, x, y, pointerId) => setHeld({ hit, x, y, pointerId })}
+          onGesture={onGesture}
         />
       )}
 
@@ -1435,6 +1518,24 @@ export function App() {
           onTour={() => (setIntroDone(true), setTour(0))}
           onExplore={() => setIntroDone(true)}
         />
+      )}
+
+      {held && <TouchRing key={`${held.pointerId}-${held.x}-${held.y}`} x={held.x} y={held.y} pointerId={held.pointerId} {...ringFor(held.hit)} onClose={() => setHeld(null)} />}
+
+      {touchHint && (
+        <div className="glass rise absolute left-1/2 top-[18%] z-30 w-[min(420px,calc(100%-32px))] -translate-x-1/2 rounded-2xl p-4">
+          <p className="font-cond text-[19px] font-semibold">Flying by touch</p>
+          <ul className="mt-2 space-y-1.5 text-[14px] leading-snug text-text/90">
+            <li>Pinch to zoom toward your fingers.</li>
+            <li>Two fingers drag to pan, and twist to spin the sky.</li>
+            <li>Press and hold on a file, a module or open sky for its actions. Slide to one and lift.</li>
+            <li>Double-tap open sky to see the whole map.</li>
+            <li>Swipe with three fingers: sideways for back and forward, down for the whole map, up to hide the controls.</li>
+          </ul>
+          <button onClick={() => setTouchHint(false)} className="mt-3 rounded-lg bg-course px-4 py-1.5 font-cond text-[15px] font-semibold text-night">
+            Got it
+          </button>
+        </div>
       )}
 
       {shelfOpen && (
@@ -1741,15 +1842,17 @@ export function App() {
         <div className="pointer-events-none absolute left-1/2 top-14 z-30 -translate-x-1/2">
           <p className="glass rise pointer-events-auto flex items-center gap-3 rounded-full px-3.5 py-1 text-[13px]">
             <span className="max-w-[420px] truncate">{toast.text}</span>
-            <button
-              onClick={() => {
-                toast.undo();
-                setToast(null);
-              }}
-              className="text-course hover:underline"
-            >
-              Undo
-            </button>
+            {toast.undo && (
+              <button
+                onClick={() => {
+                  toast.undo?.();
+                  setToast(null);
+                }}
+                className="text-course hover:underline"
+              >
+                Undo
+              </button>
+            )}
           </p>
         </div>
       )}

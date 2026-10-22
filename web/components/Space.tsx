@@ -82,6 +82,15 @@ function importTag(l: L): string {
 
 type Obj = { group: THREE.Group; mesh: THREE.Mesh; base: number; label?: SpriteText; fileLabel?: SpriteText };
 
+/** What a held finger is on: a file, a module's (or group's) beacon, or open sky. */
+export type TouchHit =
+  | { kind: "file"; path: string }
+  | { kind: "module"; id: string; label: string; summary?: string; files?: number }
+  | { kind: "empty" };
+
+/** Touch gestures that ask for more than a camera move. */
+export type TouchGesture = "back" | "forward" | "overview" | "ui";
+
 /** A way of organizing the map: files gathered around group beacons. */
 export type Grouping = { key: string; groups: LogicalModule[]; edges: LogicalEdge[] };
 
@@ -138,6 +147,8 @@ export type SpaceHandle = {
   hoveredLink: () => { from: string; to: string } | null;
   /** Fly to where a note is pinned. */
   flyToNote: (id: string) => void;
+  /** Turn tilt-to-look on or off; resolves to whether it's on (the device may say no). */
+  setTilt: (on: boolean) => Promise<boolean>;
 };
 
 /**
@@ -226,6 +237,8 @@ export function Space({
   onHide,
   onOpenImport,
   onBackground,
+  onHold,
+  onGesture,
 }: {
   ref: Ref<SpaceHandle>;
   graph: RepoGraph;
@@ -273,6 +286,9 @@ export function Space({
   /** Click on an import line: open the importing file at its import. */
   onOpenImport: (from: string, line?: number) => void;
   onBackground: () => void;
+  /** Press and hold (touch): what's under the finger, where, and which pointer, so a menu can follow it. */
+  onHold?: (hit: TouchHit, x: number, y: number, pointerId: number) => void;
+  onGesture?: (g: TouchGesture) => void;
 }) {
   const el = useRef<HTMLDivElement>(null);
   const fg = useRef<ForceGraph3DInstance<N, L> | null>(null);
@@ -323,8 +339,10 @@ export function Space({
       }
     >(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground };
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture };
+  /** Set up with the scene: turns tilt-to-look on or off. */
+  const tiltOn = useRef<(on: boolean) => Promise<boolean>>(async () => false);
   /** Files close enough to the camera to be named (Tune -> Name nearby files). */
   const near = useRef(new Set<string>());
   /** What hovering is bringing up: one file's import lines, or a module's lines out. */
@@ -776,6 +794,14 @@ export function Space({
       if (!tu().dollyThrough) return;
       e.preventDefault();
       e.stopPropagation();
+      // Pixels, lines or pages: one notch is about 100px. Trackpads send many small ones.
+      dollyBy(e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY, e);
+    };
+    /**
+     * One step of dolly through, toward `at` (a point on screen): `px` is in
+     * wheel pixels, negative going in. The wheel and a pinch both drive it.
+     */
+    const dollyBy = (px: number, at: { clientX: number; clientY: number }) => {
       controls.autoRotate = false;
       const camera = g.camera();
       // Chain from where the last step was heading, so fast scrolling adds up.
@@ -787,7 +813,7 @@ export function Space({
       let dir = forward.clone();
       if (tu().zoomToCursor) {
         const rect = host.getBoundingClientRect();
-        const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+        const ndc = new THREE.Vector2(((at.clientX - rect.left) / rect.width) * 2 - 1, -((at.clientY - rect.top) / rect.height) * 2 + 1);
         // The ray from the goal position, with the camera's (unchanged) orientation.
         const probe = camera.clone();
         probe.position.copy(cam);
@@ -797,10 +823,8 @@ export function Space({
       }
       const span = sceneSpan();
       const floor = span * 0.06;
-      // Pixels, lines or pages: one notch is about 100px. Trackpads send many small ones.
-      const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
       const amount = Math.min(Math.abs(px) / 100, 3) * 0.17 * (tu().zoomSpeed / 1.6);
-      const aim = px < 0 && tu().autoAim ? aimFor(e, cam, dir) : null;
+      const aim = px < 0 && tu().autoAim ? aimFor(at, cam, dir) : null;
       if (aim) {
         // A gentle pull, not a lock-on: each notch closes in on the target
         // and turns the view only a part of the way onto it — so it centres
@@ -863,7 +887,7 @@ export function Space({
     /** Framed distances: a cluster fills the view, a file sits close with room around it. */
     const clusterStop = (r: number) => r * 2.4 + 40;
     const bodyStop = (r: number) => Math.max(r * 12, 45);
-    const aimFor = (e: WheelEvent, cam: THREE.Vector3, dir: THREE.Vector3) => {
+    const aimFor = (e: { clientX: number; clientY: number }, cam: THREE.Vector3, dir: THREE.Vector3) => {
       const now = performance.now();
       const held = aimLock && now - aimLock.at < 700 && Math.hypot(e.clientX - aimLock.x, e.clientY - aimLock.y) < 40 ? aimLock : null;
       let pick: { kind: "cluster" | "body"; id: string; label: string; point: THREE.Vector3; stop: number } | null = null;
@@ -933,6 +957,204 @@ export function Space({
       }
       aimLock = { kind: pick.kind, id: pick.id, x: e.clientX, y: e.clientY, at: now };
       return pick;
+    };
+
+    /* ---- touch: pinch, two-finger pan and twist, hold, three-finger swipes ---- */
+
+    // One finger orbits (the controls do that); everything with more fingers
+    // is ours, so the controls stand down for two.
+    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: -1 as THREE.TOUCH };
+    host.style.touchAction = "none";
+    const fingers = new Map<number, { x: number; y: number }>();
+    /** The gesture in progress: two fingers' last spread, angle and middle; three fingers' start and travel. */
+    let two: { d: number; a: number; mx: number; my: number } | null = null;
+    let three: { x: number; y: number; dx: number; dy: number } | null = null;
+    let hold: { id: number; x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null = null;
+    let lastTap: { x: number; y: number; at: number } | null = null;
+    const HOLD_MS = 480;
+    const TOUCH_SLOP = 10;
+
+    /** The body or beacon nearest a point on screen, within a fingertip. */
+    const touchHit = (x: number, y: number): TouchHit => {
+      const rect = host.getBoundingClientRect();
+      const camera = g.camera();
+      const fwd = camera.getWorldDirection(new THREE.Vector3());
+      let best: { n: N; d: number } | null = null;
+      for (const n of nodes.current.values()) {
+        if (n.x === undefined || n.type === "dir" || objs.current.get(n.id)?.group.visible === false) continue;
+        if ((n.x - camera.position.x) * fwd.x + (n.y! - camera.position.y) * fwd.y + (n.z! - camera.position.z) * fwd.z <= 0) continue;
+        const sc = g.graph2ScreenCoords(n.x, n.y!, n.z!);
+        // Beacons are bigger targets than files.
+        const d = Math.hypot(sc.x + rect.left - x, sc.y + rect.top - y) - (n.type === "module" ? 14 : 0);
+        if (d < 34 && (!best || d < best.d)) best = { n, d };
+      }
+      if (!best) return { kind: "empty" };
+      const n = best.n;
+      return n.type === "module" ? { kind: "module", id: n.id.slice(4), label: n.label, summary: n.summary, files: n.files } : { kind: "file", path: n.id };
+    };
+
+    const twoOf = () => {
+      const [a, b] = [...fingers.values()];
+      return { d: Math.hypot(b.x - a.x, b.y - a.y), a: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    };
+    /** Slide the camera and its target along the screen, as if dragging the sky. */
+    const panBy = (dx: number, dy: number) => {
+      const camera = g.camera() as THREE.PerspectiveCamera;
+      const dist = camera.position.distanceTo(controls.target);
+      const perPx = (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / host.clientHeight;
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      const move = right.multiplyScalar(-dx * perPx).addScaledVector(up, dy * perPx);
+      camera.position.add(move);
+      controls.target.add(move);
+      dollyGoal.current?.cam.add(move);
+      dollyGoal.current?.target.add(move);
+    };
+    /** Turn the sky around its centre, like a record under your fingers. */
+    const spinBy = (angle: number) => {
+      const axis = camera0Up.clone();
+      const turn = (v: THREE.Vector3, about: THREE.Vector3) => v.sub(about).applyAxisAngle(axis, angle).add(about);
+      const camera = g.camera();
+      turn(camera.position, controls.target);
+      if (dollyGoal.current) turn(dollyGoal.current.cam, dollyGoal.current.target);
+    };
+    const camera0Up = g.camera().up.clone();
+
+    const cancelHold = () => {
+      if (hold && !hold.fired) clearTimeout(hold.timer);
+      if (hold && !hold.fired) hold = null;
+    };
+    const onTouchDown = (e: PointerEvent) => {
+      if (e.pointerType !== "touch") return;
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      controls.autoRotate = false;
+      cancelHold();
+      if (fingers.size === 1) {
+        const id = e.pointerId;
+        hold = {
+          id,
+          x: e.clientX,
+          y: e.clientY,
+          fired: false,
+          timer: setTimeout(() => {
+            if (!hold || hold.id !== id) return;
+            hold.fired = true;
+            // A held body shouldn't keep orbiting under the menu.
+            handlers.current.onHold?.(touchHit(hold.x, hold.y), hold.x, hold.y, id);
+          }, HOLD_MS),
+        };
+      } else {
+        takeCamera();
+        if (fingers.size === 2) two = twoOf();
+        if (fingers.size === 3) {
+          two = null;
+          const c = [...fingers.values()];
+          three = { x: c.reduce((a, f) => a + f.x, 0) / 3, y: c.reduce((a, f) => a + f.y, 0) / 3, dx: 0, dy: 0 };
+        }
+      }
+    };
+    const onTouchMove = (e: PointerEvent) => {
+      if (e.pointerType !== "touch" || !fingers.has(e.pointerId)) return;
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      // The ring menu has this finger now (see blockHeld).
+      if (hold?.fired && hold.id === e.pointerId) return;
+      if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > TOUCH_SLOP) cancelHold();
+      if (fingers.size === 2 && two) {
+        const now = twoOf();
+        // Each step chains from where the last was heading, as the wheel's do.
+        const goal = dollyGoal.current;
+        takeCamera();
+        dollyGoal.current = goal;
+        // Spread → in; the pinch leads toward the middle of your fingers.
+        if (now.d > 0 && two.d > 0) dollyBy(-Math.log(now.d / two.d) * 600, { clientX: now.mx, clientY: now.my });
+        panBy(now.mx - two.mx, now.my - two.my);
+        let da = now.a - two.a;
+        if (da > Math.PI) da -= 2 * Math.PI;
+        if (da < -Math.PI) da += 2 * Math.PI;
+        if (Math.abs(da) < 0.5) spinBy(-da);
+        two = now;
+      } else if (fingers.size === 3 && three) {
+        const c = [...fingers.values()];
+        three.dx = c.reduce((a, f) => a + f.x, 0) / 3 - three.x;
+        three.dy = c.reduce((a, f) => a + f.y, 0) / 3 - three.y;
+      }
+    };
+    const onTouchUp = (e: PointerEvent) => {
+      if (e.pointerType !== "touch" || !fingers.has(e.pointerId)) return;
+      const start = hold?.id === e.pointerId ? hold : null;
+      fingers.delete(e.pointerId);
+      if (start?.fired) {
+        // The release belongs to the ring menu, not a click on what's underneath.
+        beaconClickAt.current = performance.now();
+        hold = null;
+      } else if (start && fingers.size === 0 && Math.hypot(e.clientX - start.x, e.clientY - start.y) <= TOUCH_SLOP) {
+        cancelHold();
+        // A double tap on empty sky frames the whole map.
+        const now = performance.now();
+        if (lastTap && now - lastTap.at < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+          lastTap = null;
+          if (touchHit(e.clientX, e.clientY).kind === "empty") handlers.current.onGesture?.("overview");
+        } else lastTap = { x: e.clientX, y: e.clientY, at: now };
+      } else cancelHold();
+      if (three && fingers.size < 3) {
+        const { dx, dy } = three;
+        three = null;
+        // A three-finger swipe: sideways steps through where you've been; down pulls back, up hides the controls.
+        if (Math.max(Math.abs(dx), Math.abs(dy)) > 70) {
+          beaconClickAt.current = performance.now();
+          if (Math.abs(dx) > Math.abs(dy)) handlers.current.onGesture?.(dx > 0 ? "back" : "forward");
+          else handlers.current.onGesture?.(dy > 0 ? "overview" : "ui");
+        }
+      }
+      two = fingers.size === 2 ? twoOf() : null;
+    };
+    // The finger holding the ring menu: its moves go to the menu (on window,
+    // which hears them first) and stop here, short of the orbit controls.
+    const blockHeld = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && hold?.fired && hold.id === e.pointerId) e.stopPropagation();
+    };
+    host.addEventListener("pointerdown", onTouchDown, true);
+    host.addEventListener("pointermove", blockHeld, true);
+    window.addEventListener("pointermove", onTouchMove, true);
+    window.addEventListener("pointerup", onTouchUp, true);
+    window.addEventListener("pointercancel", onTouchUp, true);
+
+    /* ---- tilt to look: the tablet is a window, turn it to look around ---- */
+
+    let tiltLast: { beta: number; gamma: number } | null = null;
+    const onTilt = (e: DeviceOrientationEvent) => {
+      if (e.beta === null || e.gamma === null) return;
+      const was = tiltLast;
+      tiltLast = { beta: e.beta, gamma: e.gamma };
+      if (!was || fingers.size) return;
+      const dg = e.gamma - was.gamma;
+      const db = e.beta - was.beta;
+      // gamma wraps at ±90 when the tablet passes upright; a jump that big is the wrap, not a turn.
+      if (Math.abs(dg) > 45 || Math.abs(db) > 45) return;
+      if (Math.abs(dg) < 0.08 && Math.abs(db) < 0.08) return;
+      // beta and gamma are the device's axes; held sideways, they swap.
+      const turn = window.screen.orientation?.angle ?? 0;
+      const [yaw, pitch] = turn === 90 ? [db, -dg] : turn === 270 || turn === -90 ? [-db, dg] : [dg, db];
+      const camera = g.camera();
+      const k = THREE.MathUtils.degToRad(1.6);
+      const off = camera.position.clone().sub(controls.target);
+      off.applyAxisAngle(camera0Up, -yaw * k);
+      const right = new THREE.Vector3().crossVectors(camera0Up, off).normalize();
+      const tilted = off.clone().applyAxisAngle(right, -pitch * k);
+      // Not over the poles.
+      if (Math.abs(tilted.clone().normalize().dot(camera0Up)) < 0.96) off.copy(tilted);
+      camera.position.copy(controls.target).add(off);
+      dollyGoal.current = null;
+    };
+    tiltOn.current = async (on: boolean) => {
+      window.removeEventListener("deviceorientation", onTilt);
+      tiltLast = null;
+      if (!on) return false;
+      // iOS asks first, and only from inside a tap.
+      const ask = (DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> }).requestPermission;
+      if (ask && (await ask().catch(() => "denied")) !== "granted") return false;
+      window.addEventListener("deviceorientation", onTilt);
+      return true;
     };
 
     /* ---- fly mode: hold the right button; mouse looks, WASD moves ---- */
@@ -1284,6 +1506,12 @@ export function Space({
       host.removeEventListener("pointermove", onHover, true);
       host.removeEventListener("contextmenu", onContext);
       host.removeEventListener("wheel", onWheel, true);
+      host.removeEventListener("pointerdown", onTouchDown, true);
+      host.removeEventListener("pointermove", blockHeld, true);
+      window.removeEventListener("pointermove", onTouchMove, true);
+      window.removeEventListener("pointerup", onTouchUp, true);
+      window.removeEventListener("pointercancel", onTouchUp, true);
+      window.removeEventListener("deviceorientation", onTilt);
       host.removeEventListener("pointerdown", onFlyDown, true);
       host.removeEventListener("pointermove", onFlyMove, true);
       host.removeEventListener("pointerup", onFlyUp, true);
@@ -2016,6 +2244,9 @@ export function Space({
     hoveredLink() {
       const l = hoverLink.current;
       return l ? { from: endId(l.source), to: endId(l.target) } : null;
+    },
+    setTilt(on) {
+      return tiltOn.current(on);
     },
     flyToNote(id) {
       const n = noteEls.current.get(id)?.note;
