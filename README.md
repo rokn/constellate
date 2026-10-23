@@ -48,8 +48,11 @@ branch is then pushed and a pull request opened into the branch it started from 
 fine-grained token needs Contents and Pull requests read and write); follow-ups you send
 it go to the same PR. **Merge** in the panel (or "merge it" to the voice, which asks
 first, or typed in Ask, which puts a Merge button on the answer to press) rebase-merges
-the PR on GitHub. Typed or spoken, questions still go to the navigator; the Ask box and
-the voice share one set of agent tools (`server/actions.ts`). Without a token, nothing
+the PR on GitHub. A PR merged, closed or retargeted on GitHub shows as such here: the
+server checks every two minutes (`CONSTELLATE_PR_SYNC_SECONDS`), when the repo opens and
+when the Agents panel does; a closed one can be opened afresh with **Open PR**. Typed or
+spoken, questions still go to the navigator; the Ask box and the voice share one set of
+agent tools (`server/actions.ts`). Without a token, nothing
 leaves the box. When its base has moved on, **Rebase** (or "rebase it") fetches the base
 branch and replays the agent's commits on top of it, pushing to its PR if it has one; if
 they conflict, the branch is left as it was and you're told which files. In the headset,

@@ -166,7 +166,7 @@ function ConfirmMerge({ agent: a }: { agent?: AgentRun }) {
     );
   }
   const running = a.status === "working" || a.status === "starting";
-  const what = a.pr ? `PR #${a.pr.number} “${a.title}” into ${a.pr.base}` : `“${a.title}” (its branch is pushed and a PR opened first)`;
+  const what = a.pr?.state === "open" ? `PR #${a.pr.number} “${a.title}” into ${a.pr.base}` : `“${a.title}” (its branch is pushed and a PR opened first)`;
 
   return (
     <div className="rounded-md border border-good/40 bg-good/10 px-3 py-2 text-[13.5px]">

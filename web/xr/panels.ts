@@ -354,13 +354,13 @@ export class MenuPanel extends Panel {
                 this.invalidate();
               },
             });
-          } else if (ag.commits > 0 && !ag.pr) extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
+          } else if (ag.commits > 0 && (!ag.pr || ag.pr.state === "closed")) extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
         }
         const what = running ? ag.activity ?? "working…" : ag.error ?? ag.summary ?? ag.status;
         return {
           id: ag.id,
           label: ag.title,
-          detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}${ag.pr.state === "merged" ? " merged" : ""}` : ""} · ${what}`,
+          detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}${ag.pr.state === "open" ? "" : ` ${ag.pr.state}`}` : ""} · ${what}`,
           color: dot[ag.status],
           onClick: () => a.focusAgent(ag.id),
           extra,
