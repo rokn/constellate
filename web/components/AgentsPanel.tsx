@@ -4,8 +4,9 @@ import { post } from "../lib/api";
 
 /**
  * Coding agents on this repo: start one, follow what each is doing, tell it
- * more, see its branch on the map, stop it or throw its work away. Each works
- * on its own branch in its own worktree; nothing lands until you land it.
+ * more, see its branch on the map, bring it up to date with its base, stop it
+ * or throw its work away. Each works on its own branch in its own worktree;
+ * nothing lands until you land it.
  */
 
 const STATUS: Record<AgentRun["status"], { label: string; dot: string }> = {
@@ -29,11 +30,12 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
   const [error, setError] = useState("");
   const running = a.status === "working" || a.status === "starting";
   const s = STATUS[a.status];
-  const [busy, setBusy] = useState(false);
-  const run = async (body: Record<string, unknown>) => {
-    setBusy(true);
+  // Which action is under way, so only its button says so.
+  const [busy, setBusy] = useState<string | null>(null);
+  const run = async (body: { action: string } & Record<string, unknown>) => {
+    setBusy(body.action);
     setError((await act({ id: a.id, ...body })) ?? "");
-    setBusy(false);
+    setBusy(null);
   };
 
   return (
@@ -97,14 +99,24 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
                 Stop
               </button>
             )}
+            {!running && a.commits > 0 && a.pr?.state !== "merged" && (
+              <button
+                onClick={() => void run({ action: "rebase" })}
+                disabled={!!busy}
+                className="glass rounded-md px-2 py-0.5 text-muted hover:text-text disabled:opacity-40"
+                title={`Replay its commits on top of ${a.pr?.base ?? (a.base === "HEAD" ? "the checkout" : a.base)} as it is now${a.pr?.state === "open" ? ", and push to its PR" : ""}`}
+              >
+                {busy === "rebase" ? "Rebasing…" : "Rebase"}
+              </button>
+            )}
             {!running && a.commits > 0 && !a.pr && (
               <button
                 onClick={() => void run({ action: "pr" })}
-                disabled={busy}
+                disabled={!!busy}
                 className="glass rounded-md px-2 py-0.5 text-course hover:text-text disabled:opacity-40"
                 title="Push its branch and open a pull request on GitHub"
               >
-                {busy ? "Opening…" : "Open PR"}
+                {busy === "pr" ? "Opening…" : "Open PR"}
               </button>
             )}
             {!running && a.pr?.state === "open" && (
@@ -112,11 +124,11 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
                 onClick={() => {
                   if (confirm(`Merge PR #${a.pr!.number} "${a.title}" into ${a.pr!.base}? Merging to main deploys.`)) void run({ action: "merge" });
                 }}
-                disabled={busy}
+                disabled={!!busy}
                 className="glass rounded-md px-2 py-0.5 text-good hover:text-text disabled:opacity-40"
                 title="Rebase-merge its pull request on GitHub"
               >
-                {busy ? "Merging…" : "Merge"}
+                {busy === "merge" ? "Merging…" : "Merge"}
               </button>
             )}
             <button

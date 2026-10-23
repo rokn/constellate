@@ -6,7 +6,7 @@ import type { Frame, ScreenContext, UiCommand, View } from "../shared/types";
 import { ask, interrupt, storyNote } from "./navigator";
 import { findPath } from "./scan";
 import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
-import { AGENTS_ON, discardAgent, findAgent, mergePullRequest, messageAgent, onAgentFinished, openPullRequest, startAgent, stopAgent } from "./agents";
+import { AGENTS_ON, discardAgent, findAgent, mergePullRequest, messageAgent, onAgentFinished, openPullRequest, rebaseAgent, startAgent, stopAgent } from "./agents";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -108,6 +108,7 @@ const AGENT_TOOLS = [
   }, ["agent", "text"]),
   fn("stop_agent", "Stop an agent. What it changed so far stays on its branch.", { agent: { type: "string" } }, ["agent"]),
   fn("show_agent", "Show what an agent changed: its branch on the map, lit against where it started, and the camera on its files. Instant.", { agent: { type: "string" } }, ["agent"]),
+  fn("rebase_agent", "Bring an agent's branch up to date: replay its commits on top of its base branch as it is now (and push to its PR, if it has one open). Use it when they ask to rebase or update it, or when merging failed on a conflict. If its changes conflict, nothing changes and you'll be told where. Takes a few seconds; you'll be told the result.", { agent: { type: "string" } }, ["agent"]),
   fn("open_pr", "Land an agent's work: push its branch and open a pull request on GitHub (or update the one it has). Only when they ask to open a PR, land, ship or submit it. Takes a few seconds; you'll be told the result.", { agent: { type: "string" } }, ["agent"]),
   fn("merge_pr", "Merge an agent's pull request (rebase) into its base branch. On this server merging to main deploys, so before calling it, say what will be merged and get a clear yes in this turn. Takes a few seconds; you'll be told the result.", { agent: { type: "string" } }, ["agent"]),
   fn("discard_agent", "Throw an agent's work away: its branch and its copy of the repo are deleted. Only when they explicitly ask to discard or delete it.", { agent: { type: "string" } }, ["agent"]),
@@ -202,7 +203,7 @@ function instructions(screen: ScreenContext): string {
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
     s.agents.length
       ? [
-          "Coding agents (for message_agent, stop_agent, show_agent, open_pr, merge_pr):",
+          "Coding agents (for message_agent, stop_agent, show_agent, rebase_agent, open_pr, merge_pr):",
           ...s.agents.map(
             (a) =>
               `  [${a.id}] ${a.title} — ${a.status}${a.activity ? `, ${a.activity}` : ""}; ${a.files.length} files changed on ${a.branch}${a.summary && a.status !== "working" ? `. It said: ${a.summary.slice(0, 400)}` : ""}${a.pr ? `; PR #${a.pr.number} ${a.pr.state}` : ""}${a.error ? ` (${a.error})` : ""}`,
@@ -514,6 +515,21 @@ function bridge(client: WebSocket) {
         if (!a.commits && !a.files.length) return { ok: false, error: "It hasn't changed anything yet." };
         command({ cmd: "show_branch", branch: a.branch, base: a.base === "HEAD" ? a.baseSha : a.base });
         return { ok: true, files: a.files };
+      }
+      case "rebase_agent": {
+        const a = findAgent(str("agent"));
+        if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
+        rebaseAgent(a.id).then(
+          (r) =>
+            (sync(),
+            deliver(
+              r.upToDate
+                ? `"${a.title}" was already up to date with ${r.onto}. Tell them in a line.`
+                : `"${a.title}" is rebased onto ${r.onto}${r.pr ? `, and PR #${r.pr.number} is updated` : ""}. Tell them in a line.`,
+            )),
+          (err) => deliver(`Rebasing "${a.title}" failed: ${err instanceof Error ? err.message : String(err)}. Tell them briefly.`),
+        );
+        return { ok: true, status: "working", say: "A few words that you're rebasing it." };
       }
       case "open_pr": {
         const a = findAgent(str("agent"));

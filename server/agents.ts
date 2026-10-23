@@ -49,6 +49,8 @@ const SYSTEM = [
 
 type Live = { controller: AbortController; queue: string[] };
 const live = new Map<string, Live>();
+/** Agents whose branch is being rebased: no turn or push until it's done. */
+const rebasing = new Set<string>();
 
 /** Fired when an agent stops working, however it ended. The voice tells you. */
 type Listener = (a: AgentRun) => void;
@@ -98,8 +100,16 @@ function mark(a: AgentRun) {
   emit();
 }
 
-const git = (cwd: string, args: string[]) =>
-  run("git", args, { cwd, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).then((r) => r.stdout.trim());
+const git = (cwd: string, args: string[], opts: { timeout?: number } = {}) =>
+  run("git", args, { cwd, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: opts.timeout }).then((r) => r.stdout.trim());
+
+/** git's own last words, not "Command failed: <the whole command line>". */
+const gitError = (err: unknown) =>
+  String((err as { stderr?: string }).stderr || (err instanceof Error ? err.message : err))
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .at(-1) ?? "unknown error";
 
 function slug(s: string) {
   return (
@@ -329,6 +339,7 @@ export function messageAgent(id: string, text: string): "sent" | "queued" {
   const a = getAgent(id);
   if (!a) throw new Error("No such agent.");
   if (!text.trim()) throw new Error("Say something.");
+  if (rebasing.has(id)) throw new Error("Its branch is being rebased; try again in a moment.");
   const l = live.get(id);
   if (l) {
     l.queue.push(text.trim());
@@ -371,6 +382,12 @@ export async function discardAgent(id: string) {
 /* ---------------------------- pull requests ---------------------------- */
 
 const TOKEN = () => process.env.GIT_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+
+/**
+ * The token through a credential helper read from the environment, as the
+ * container's entrypoint does: never on the command line or on disk.
+ */
+const auth = () => (TOKEN() ? ["-c", "credential.helper=", "-c", "credential.helper=!f() { echo username=x-access-token; echo \"password=${GIT_TOKEN:-${GITHUB_TOKEN:-$GH_TOKEN}}\"; }; f"] : []);
 
 async function github<T>(method: string, url: string, body?: unknown): Promise<{ status: number; data: T }> {
   const token = TOKEN();
@@ -418,6 +435,7 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
   const a = getAgent(id);
   if (!a) throw new Error("No such agent.");
   if (live.has(id)) throw new Error("It's still working; wait for it to finish.");
+  if (rebasing.has(id)) throw new Error("Its branch is being rebased; try again in a moment.");
   if (!a.commits) throw new Error("It hasn't committed anything to open a PR for.");
   const root = session.state.repo?.root;
   if (!root) throw new Error("No repository is open.");
@@ -427,18 +445,16 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
   const head = await git(root, ["rev-parse", `refs/heads/${a.branch}`]);
   if (a.pr?.pushedSha !== head) {
     patch(id, { activity: "Pushing its branch" });
-    // The token through a credential helper read from the environment, as the
-    // container's entrypoint does: never on the command line or on disk.
-    const auth = TOKEN() ? ["-c", "credential.helper=", "-c", "credential.helper=!f() { echo username=x-access-token; echo \"password=${GIT_TOKEN:-${GITHUB_TOKEN:-$GH_TOKEN}}\"; }; f"] : [];
     try {
-      await git(root, [...auth, "push", "--force-with-lease", "origin", `refs/heads/${a.branch}:refs/heads/${a.branch}`]);
+      // A rebase rewrote it since the last push: --force-with-lease lets that
+      // through, but not someone else's commits pushed to it in between.
+      await git(root, [...auth(), "push", "--force-with-lease", "origin", `refs/heads/${a.branch}:refs/heads/${a.branch}`]);
     } catch (err) {
-      // git's own words, not "Command failed: <the whole command line>".
-      const said = String((err as { stderr?: string }).stderr ?? (err instanceof Error ? err.message : err));
-      if (/\b403\b|denied/i.test(said)) {
+      const all = String((err as { stderr?: string }).stderr ?? (err instanceof Error ? err.message : err));
+      if (/\b403\b|denied/i.test(all)) {
         throw new Error(`GitHub refused the push: the server's GIT_TOKEN can't write to ${repo}. Give it Contents and Pull requests read and write on that repo.`);
       }
-      throw new Error(`The push failed: ${said.split("\n").map((l) => l.trim()).filter(Boolean).at(-1) ?? "unknown error"}`);
+      throw new Error(`The push failed: ${gitError(err)}`);
     } finally {
       patch(id, { activity: undefined });
     }
@@ -491,7 +507,10 @@ export async function mergePullRequest(id: string): Promise<NonNullable<AgentRun
     });
     if (res.status !== 200 || !res.data.merged) {
       const now = await github<{ merged?: boolean; state?: string }>("GET", `/repos/${repo}/pulls/${pr.number}`);
-      if (!now.data.merged) throw new Error(`GitHub wouldn't merge it: ${res.data.message ?? res.status}`);
+      if (!now.data.merged) {
+        const why = res.data.message ?? String(res.status);
+        throw new Error(`GitHub wouldn't merge it: ${why}${/conflict|not mergeable/i.test(why) ? `. Rebase it onto ${pr.base} first.` : ""}`);
+      }
     }
     const merged = { ...pr, state: "merged" as const };
     patch(id, { pr: merged, error: undefined });
@@ -500,4 +519,84 @@ export async function mergePullRequest(id: string): Promise<NonNullable<AgentRun
   } finally {
     patch(id, { activity: undefined });
   }
+}
+
+/* ------------------------------ rebasing ------------------------------ */
+
+const isAncestor = (cwd: string, a: string, b: string) => git(cwd, ["merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
+const commitOf = (cwd: string, ref: string) => git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).catch(() => "");
+
+/**
+ * Where an agent's branch belongs now: its PR's base, or the branch it
+ * started from, as it is today. Origin's copy is fetched first, and wins when
+ * it's ahead of yours (or when there's a PR, which merges into origin's).
+ */
+async function currentBase(root: string, a: AgentRun): Promise<{ name: string; sha: string }> {
+  const branch = a.pr?.base ?? (a.base !== "HEAD" ? a.base : "");
+  if (!branch) return { name: "the checkout", sha: await git(root, ["rev-parse", "HEAD"]) };
+  // Offline, or no origin: what was last fetched will do.
+  await git(root, [...auth(), "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { timeout: 60_000 }).catch(() => {});
+  const [local, remote] = await Promise.all([commitOf(root, `refs/heads/${branch}`), commitOf(root, `refs/remotes/origin/${branch}`)]);
+  if (!local && !remote) throw new Error(`There's no ${branch} branch to rebase onto.`);
+  const useRemote = !!remote && (!local || a.pr !== undefined || (local !== remote && (await isAncestor(root, local, remote))));
+  return useRemote ? { name: `origin/${branch}`, sha: remote } : { name: branch, sha: local };
+}
+
+/**
+ * Replay an agent's commits on top of its base branch as it is now, so its
+ * branch is current before you open a PR or merge it. When its changes
+ * conflict with what landed since, the rebase is undone and the branch is
+ * left as it was. An open PR gets the rebased branch pushed to it.
+ */
+export async function rebaseAgent(id: string): Promise<{ onto: string; upToDate: boolean; commits: number; pr?: AgentRun["pr"] }> {
+  const a = getAgent(id);
+  if (!a) throw new Error("No such agent.");
+  if (live.has(id)) throw new Error("It's still working; wait for it to finish.");
+  if (rebasing.has(id)) throw new Error("It's already being rebased.");
+  if (a.pr?.state === "merged") throw new Error(`PR #${a.pr.number} is already merged.`);
+  const root = session.state.repo?.root;
+  if (!root) throw new Error("No repository is open.");
+
+  rebasing.add(id);
+  patch(id, { activity: "Rebasing its branch" });
+  let onto = { name: a.base, sha: a.baseSha };
+  let upToDate = true;
+  try {
+    // A turn commits what it changed; anything a failed commit left goes along.
+    await commit(a, `${a.title}\n\nWork left uncommitted`);
+    onto = await currentBase(root, a);
+    upToDate = await isAncestor(a.worktree, onto.sha, "HEAD");
+    if (!upToDate) {
+      try {
+        // Exactly its own commits (those since it forked), however the base moved.
+        await git(a.worktree, [...IDENTITY, "rebase", "--quiet", "--no-verify", "--onto", onto.sha, a.baseSha]);
+      } catch (err) {
+        const conflicts = (await git(a.worktree, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).split("\n").filter(Boolean);
+        await git(a.worktree, ["rebase", "--abort"]).catch(() => {});
+        if (conflicts.length) {
+          throw new Error(`Its changes conflict with ${onto.name} in ${conflicts.join(", ")}, so its branch is left as it was.`);
+        }
+        throw new Error(`The rebase failed: ${gitError(err)}`);
+      }
+      patch(id, { baseSha: onto.sha, error: undefined });
+    }
+    await refresh(id);
+  } catch (err) {
+    patch(id, { error: err instanceof Error ? err.message : String(err) });
+    throw err;
+  } finally {
+    rebasing.delete(id);
+    patch(id, { activity: undefined });
+  }
+
+  // The PR shows what was pushed: bring it along.
+  let pr = getAgent(id)?.pr;
+  if (!upToDate && pr?.state === "open") {
+    pr = await openPullRequest(id).catch((err) => {
+      const why = `Rebased onto ${onto.name}, but its PR wasn't updated: ${err instanceof Error ? err.message : String(err)}`;
+      patch(id, { error: why });
+      throw new Error(why);
+    });
+  }
+  return { onto: onto.name, upToDate, commits: getAgent(id)?.commits ?? 0, pr };
 }

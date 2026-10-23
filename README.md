@@ -47,8 +47,11 @@ What it changed is committed to its branch when it stops. With `GIT_TOKEN` set, 
 branch is then pushed and a pull request opened into the branch it started from (a
 fine-grained token needs Contents and Pull requests read and write); follow-ups you send
 it go to the same PR. **Merge** in the panel (or "merge it" to the voice, which asks
-first) rebase-merges the PR on GitHub. Without a token, nothing leaves the box. In the headset,
-the menu's **Agents** tab lists them, starts new ones, and merges them (press Merge twice).
+first) rebase-merges the PR on GitHub. Without a token, nothing leaves the box. When its
+base has moved on, **Rebase** (or "rebase it") fetches the base branch and replays the
+agent's commits on top of it, pushing to its PR if it has one; if they conflict, the
+branch is left as it was and you're told which files. In the headset, the menu's
+**Agents** tab lists them, starts new ones, rebases them, and merges them (press Merge twice).
 
 An agent can read and edit files only inside its worktree, and has no
 shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
