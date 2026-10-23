@@ -71,6 +71,7 @@ export function useXR(feed: XRFeed) {
   const [tuneOpen, setTuneOpen] = useState(false);
   const [hintsOpen, setHintsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [viewsOpen, setViewsOpen] = useState(false);
   const [table, setTable] = useState(false);
   const [inputs, setInputs] = useState({ hands: false, controllers: false });
   /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
@@ -131,6 +132,11 @@ export function useXR(feed: XRFeed) {
         // Hand-edited, the navigator's name and file set no longer describe what's shown (as on the desktop).
         const f = feedRef.current.model.mapFilter;
         a.setMapFilter({ ...f, label: undefined, paths: undefined, [kb.mode]: splitList(text) });
+      } else if (kb?.mode === "view") {
+        // The current filter, under this name; the same name replaces it (as on the desktop).
+        const { mapFilter, savedFilters } = feedRef.current.model;
+        const name = text.trim();
+        if (name) a.setSavedFilters([...savedFilters.filter((v) => v.name !== name), { name, filter: mapFilter }]);
       } else if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
       else if (kb?.mode === "repo") a.openPath(text);
       else if (kb?.mode === "agent") a.startAgent(text);
@@ -173,6 +179,10 @@ export function useXR(feed: XRFeed) {
     toggleFilter: () => {
       setMenuOpen(false);
       setFilterOpen((o) => !o);
+    },
+    toggleViews: () => {
+      setMenuOpen(false);
+      setViewsOpen((o) => !o);
     },
     focusWider: () => {
       const f = focusRef.current;
@@ -267,6 +277,7 @@ export function useXR(feed: XRFeed) {
                   setTuneOpen(false);
                   setHintsOpen(false);
                   setFilterOpen(false);
+                  setViewsOpen(false);
                   setKeyboard(null);
                   setPlacing(false);
                 } else if (!feedRef.current.model.settings.hintsSeen) setHintsOpen(true);
@@ -351,7 +362,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

@@ -50,6 +50,12 @@ export type XRSettings = {
   panelDistance: number;
   // Sound
   voiceVolume: number;
+  /** Small sounds for what your hands do: presses, picks, snaps, throws. */
+  sfx: boolean;
+  sfxVolume: number;
+  /** A quiet pad under the map, and now and then a chime from one of its bodies. */
+  ambience: boolean;
+  ambienceVolume: number;
   // Hints
   hintsSeen: boolean;
 };
@@ -81,6 +87,10 @@ export const DEFAULT_XR: XRSettings = {
   dockFollows: false,
   panelDistance: 1,
   voiceVolume: 1,
+  sfx: true,
+  sfxVolume: 0.6,
+  ambience: true,
+  ambienceVolume: 0.5,
   hintsSeen: false,
 };
 
@@ -145,7 +155,13 @@ export const XR_SECTIONS: XRSection[] = [
   {
     id: "sound",
     title: "Headset · Sound",
-    knobs: [r("voiceVolume", "Voice volume", 0, 3, 0.05, "The voice and story narration")],
+    knobs: [
+      r("voiceVolume", "Voice volume", 0, 3, 0.05, "The voice and story narration"),
+      t("sfx", "Sound effects", "Presses, picks, panels snapping down, bodies thrown away"),
+      r("sfxVolume", "Effects volume", 0, 1.5, 0.05),
+      t("ambience", "Ambience", "A quiet hum under the map, and now and then a chime from one of its bodies"),
+      r("ambienceVolume", "Ambience volume", 0, 1.5, 0.05),
+    ],
   },
 ];
 

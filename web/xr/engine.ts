@@ -5,6 +5,7 @@ import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
 import { Bloom } from "./bloom";
 import { type Ell, HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
+import { sfx } from "./sound";
 import { C, Panel, Tag, roundRect } from "./ui";
 
 /**
@@ -29,7 +30,9 @@ import { C, Panel, Tag, roundRect } from "./ui";
 
 export type Mode = "flat" | "vr" | "ar";
 export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
-export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf";
+export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf" | "views";
+/** The slots that lie on the table when the map is on one: the strip along the front, the shelf on the right, the saved views on the left. */
+const TABLE_SLOTS: Slot[] = ["table", "shelf", "views"];
 /** Which kinds of hands are in: what the controls page lists. */
 export type Inputs = { hands: boolean; controllers: boolean };
 
@@ -65,6 +68,13 @@ export type EngineHandlers = {
  * edge to your right; the half sizes are along those.
  */
 export type Table = { center: THREE.Vector3; toward: THREE.Vector3; right: THREE.Vector3; halfW: number; halfD: number };
+
+/** A wall the headset found (a vertical plane): its pose, and its extent in its own x and z. */
+type Wall = { m: THREE.Matrix4; x0: number; x1: number; z0: number; z1: number };
+/** Where a panel would land if let go now: flat on the table, or flush on a wall. */
+type Snap = { on: "table" | "wall"; pos: THREE.Vector3; quat: THREE.Quaternion };
+/** How near a surface (m) a carried panel has to be let go for it to snap onto it. */
+const SNAP_REACH = 0.14;
 
 /** How long a pinch on open sky is held still before it draws a lasso instead of moving the map. */
 const LASSO_HOLD = 450;
@@ -188,6 +198,15 @@ export class Engine {
   /** Panels set by the room: the one on your wrist, and the shelf a dragged body can be dropped on. */
   wrist: Panel | null = null;
   shelf: Panel | null = null;
+  /** Panels lying on a real surface: on the table they move with it, and a fingertip presses them against it. */
+  private stuck = new Map<Panel, "table" | "wall">();
+  /** The walls the headset has found, looked at again every so often. */
+  private walls: Wall[] = [];
+  private wallsAt = 0;
+  /** The outline of where a carried panel would snap to. */
+  private ghost: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  /** The snap the carried panel had last frame, to tick when one comes into reach. */
+  private snapWas: string | null = null;
   private lasso: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   /** Both hands in an L: since when, and whether it has fired. */
   private framing = { since: 0, fired: false };
@@ -274,6 +293,22 @@ export class Engine {
     this.lasso.visible = false;
     this.overlay.add(this.lasso);
 
+    // Where a carried panel will land: its outline on the table or the wall.
+    const ghostGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, -0.5, 0), new THREE.Vector3(0.5, -0.5, 0), new THREE.Vector3(0.5, 0.5, 0), new THREE.Vector3(-0.5, 0.5, 0)]);
+    this.ghost = new THREE.LineLoop(ghostGeo, new THREE.LineBasicMaterial({ color: C.good, transparent: true, opacity: 0.9, depthTest: false, toneMapped: false }));
+    this.ghost.renderOrder = 31;
+    this.ghost.visible = false;
+    this.overlay.add(this.ghost);
+
+    // Now and then a body on the map chimes: one at random, in its top folder's note.
+    sfx.chimeSource = () => {
+      if (this.mode === "flat") return null;
+      const files = this.map.files();
+      const id = files[Math.floor(Math.random() * files.length)];
+      const at = id ? this.map.positionOf(id) : null;
+      return at ? { at: this.map.toWorld(at), key: id.split("/")[0] } : null;
+    };
+
     this.setupXRInput();
     this.setupMouse();
     window.addEventListener("resize", this.onResize);
@@ -292,6 +327,7 @@ export class Engine {
   setSettings(s: XRSettings) {
     const was = this.settings;
     this.settings = s;
+    sfx.configure(s);
     if (s.foveation !== was.foveation) this.renderer.xr.setFoveation(s.foveation);
     if (s.renderScale !== was.renderScale && !this.renderer.xr.isPresenting) this.renderer.xr.setFramebufferScaleFactor(s.renderScale);
     if (s.panelDistance !== was.panelDistance) this.recenterPanels();
@@ -362,6 +398,8 @@ export class Engine {
       await old.end().catch(() => {});
     }
     this.renderer.xr.setFramebufferScaleFactor(this.settings.renderScale);
+    // Audio starts on the press that took you in, while it still counts as one.
+    sfx.start();
     const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
       requiredFeatures: ["local-floor"],
       optionalFeatures: mode === "ar" ? ["hand-tracking", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "bounded-floor"],
@@ -373,6 +411,7 @@ export class Engine {
       this.hitSource?.cancel();
       this.hitSource = null;
       this.mouse.keys.clear();
+      sfx.stop();
       this.setMode("flat");
     });
     await this.renderer.xr.setSession(session);
@@ -380,7 +419,9 @@ export class Engine {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     // A new session is a new room: panels open in front of you again.
     this.placed.clear();
+    this.stuck.clear();
     this.setMode(mode);
+    sfx.play("enter");
     if (mode === "ar") void this.restoreAnchor(session);
     // Once the first poses are in, set the surface in front of you and frame what you were looking at (or the whole map).
     setTimeout(() => {
@@ -408,6 +449,7 @@ export class Engine {
       this.anchorLast = null;
       this.anchorWanted = null;
       this.tableFrom = null;
+      this.walls = [];
       this.setTable(null);
     }
     this.surfaceSet = false;
@@ -451,7 +493,8 @@ export class Engine {
     const was = p.open;
     p.mesh.visible = true;
     p.invalidate();
-    if (!was && (!this.placed.has(p) || !this.inView(p) || slot === "focusbar")) this.place(p, slot);
+    // One you've stuck on a wall or the table stays there, seen or not.
+    if (!was && (!this.placed.has(p) || (!this.inView(p) && !this.stuck.has(p)) || slot === "focusbar")) this.place(p, slot);
     this.slots.set(p, slot);
   }
 
@@ -475,12 +518,17 @@ export class Engine {
   /** Put every open panel back around where you're looking; closed ones open there next time. */
   recenterPanels() {
     this.placed.clear();
+    this.stuck.clear();
     for (const [p, slot] of this.slots) if (p.open) this.place(p, slot);
   }
 
   private place(p: Panel, slot: Slot) {
-    if ((slot === "table" || slot === "shelf") && this.table) {
-      this.placeOnTable(p, slot);
+    this.stuck.delete(p);
+    if (TABLE_SLOTS.includes(slot) && this.table) {
+      const { pos, quat } = this.tablePose(p, slot);
+      p.mesh.position.copy(pos);
+      p.mesh.quaternion.copy(quat);
+      this.stuck.set(p, "table");
       this.placed.add(p);
       return;
     }
@@ -506,6 +554,7 @@ export class Engine {
       focusbar: { yaw: 0, dist: 0.95, dy: -0.36, tilt: 0.4 },
       table: { yaw: 0, dist: 0.7, dy: -0.45, tilt: 0.9 },
       shelf: { yaw: -0.5, dist: 0.8, dy: -0.4, tilt: 0.7 },
+      views: { yaw: 0.5, dist: 0.85, dy: -0.3, tilt: 0.4 },
     }[slot];
     // A desktop window sees a much narrower cone than a headset: the preview
     // sets the same panels further out and closer to the middle.
@@ -833,6 +882,7 @@ export class Engine {
   private pressStart(id: string) {
     const p = this.pointers.get(id);
     if (!p) return;
+    sfx.resume();
     if (this.placing && this.reticle.visible) {
       this.placeAt(this.reticle.position.clone());
       return;
@@ -865,7 +915,7 @@ export class Engine {
     p.press = null;
     const moved = (from: THREE.Vector3) => from.distanceTo(p.origin.clone().add(p.dir)) > (p.kind === "mouse" ? 0.02 : 0.035);
     if (press.kind === "handle") {
-      if (!p.squeezing) (p.carry = null), (p.resize = null);
+      if (!p.squeezing) this.letGo(p);
     } else if (press.kind === "lasso") {
       this.lasso.visible = false;
       const pts = press.pts;
@@ -873,7 +923,10 @@ export class Engine {
       for (let i = 1; i < pts.length; i++) length += pts[i].distanceTo(pts[i - 1]);
       if (pts.length >= 6 && length > 0.12) {
         const paths = this.within(pts);
-        if (paths.length) this.h.onSelect?.(paths, "lasso");
+        if (paths.length) {
+          sfx.play("focus");
+          this.h.onSelect?.(paths, "lasso");
+        }
       } else this.h.onBackground();
     } else if (press.kind === "body") {
       // Thrown, not set down: hide it.
@@ -884,11 +937,17 @@ export class Engine {
       // Thrown, or dropped on the table's shelf: off the map.
       const shelved = !!this.shelf && p.hoverPanel?.panel === this.shelf && !!this.h.onFlick;
       const thrown = shelved || (this.settings.flick && speed > this.settings.flickSpeed && !!this.h.onFlick);
+      const at = this.map.positionOf(press.id);
+      const where = at ? this.map.toWorld(at) : null;
       this.map.release(press.id, press.pin && !thrown);
       if (thrown) {
         this.haptic(p, 0.8, 60);
+        sfx.play(shelved ? "snap" : "fling", where);
         this.h.onFlick!(press.hit);
-      } else this.haptic(p, press.pin ? 0.6 : 0.3, press.pin ? 40 : 20);
+      } else {
+        this.haptic(p, press.pin ? 0.6 : 0.3, press.pin ? 40 : 20);
+        sfx.play("drop", where);
+      }
     } else if (press.kind === "panel") {
       const hp = p.hoverPanel?.panel === press.panel ? p.hoverPanel : null;
       press.panel.pointer("up", hp?.x ?? -1, hp?.y ?? -1, p.id);
@@ -896,6 +955,7 @@ export class Engine {
       const still = p.kind === "mouse" ? !this.mouse.moved : !moved(press.from);
       if (still) {
         this.haptic(p, 0.5, 30);
+        sfx.play("pick", this.hitPoint(p, press.hit), this.hitKey(press.hit));
         this.h.onPick(press.hit);
       }
     } else {
@@ -935,7 +995,27 @@ export class Engine {
     panel.mesh.updateMatrixWorld();
     p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
     this.placed.add(panel);
+    this.stuck.delete(panel);
+    this.snapWas = null;
     this.haptic(p, 0.4, 25);
+    sfx.play("grab", panel.mesh.position);
+  }
+
+  /** A carried panel let go: near the table or a wall it snaps onto it, else it stays in the air where it is. */
+  private letGo(p: Pointer) {
+    const c = p.carry;
+    p.carry = null;
+    p.resize = null;
+    if (!c) return;
+    this.ghost.visible = false;
+    this.snapWas = null;
+    const snap = this.snapFor(c.panel);
+    if (!snap) return void sfx.play("drop", c.panel.mesh.position);
+    c.panel.mesh.position.copy(snap.pos);
+    c.panel.mesh.quaternion.copy(snap.quat);
+    this.stuck.set(c.panel, snap.on);
+    this.haptic(p, 0.7, 35);
+    sfx.play("snap", snap.pos);
   }
 
   /** How far apart two hands are across a panel and up it. */
@@ -972,7 +1052,7 @@ export class Engine {
       return;
     }
     if (p.carry) {
-      if (p.press?.kind !== "handle") p.carry = null;
+      if (p.press?.kind !== "handle") this.letGo(p);
       return;
     }
     this.endGrab(p);
@@ -1095,6 +1175,7 @@ export class Engine {
     // Anchored on the next frame (anchors are made from a frame), and the table under it looked for.
     this.anchorWanted = at.clone();
     this.tableFrom = { at: at.clone(), t0: performance.now() };
+    sfx.play("place", at);
     this.overview(900);
     this.h.onPlaced?.();
   }
@@ -1180,10 +1261,14 @@ export class Engine {
             if (this.flight) this.flight.toP.add(d);
             this.grabStart?.pos.add(d);
             if (this.table) this.table.center.add(d);
-            for (const [p, slot] of this.slots) if (slot === "table" || slot === "shelf") p.mesh.position.add(d);
+            for (const [p, on] of this.stuck) if (on === "table") p.mesh.position.add(d);
           }
         }
       }
+    }
+    if (performance.now() - this.wallsAt > 1000) {
+      this.wallsAt = performance.now();
+      this.walls = this.findWalls(frame, ref);
     }
     if (this.tableFrom) {
       const t = this.fitTable(frame, ref, this.tableFrom.at);
@@ -1250,27 +1335,138 @@ export class Engine {
   private setTable(t: Table | null) {
     const had = !!this.table;
     this.table = t;
-    for (const [p, slot] of this.slots) if (p.open && (slot === "table" || slot === "shelf")) this.place(p, slot);
+    // The table's panels go on it (back to their edges, when it's a new table).
+    for (const [p, slot] of this.slots) if (p.open && TABLE_SLOTS.includes(slot)) this.place(p, slot);
+    if (!t) for (const [p, on] of this.stuck) if (on === "table") this.stuck.delete(p);
     if (had !== !!t || t) this.h.onTable?.(!!t);
   }
 
   /**
-   * A panel lying on the table, tipped up a little towards you so it reads:
-   * the controls along the front edge, the shelf along the right.
+   * Where a table panel lies: flat on the table top, where a fingertip can
+   * press it against the wood, with its top edge away from you so it reads.
+   * The controls along the front edge, the shelf along the right, the saved
+   * views along the left.
    */
-  private placeOnTable(p: Panel, slot: "table" | "shelf") {
+  private tablePose(p: Panel, slot: Slot): { pos: THREE.Vector3; quat: THREE.Quaternion } {
     const t = this.table!;
-    const tilt = slot === "table" ? 0.45 : 0.2;
-    const c = Math.cos(tilt);
-    const sn = Math.sin(tilt);
-    const up = t.toward.clone().multiplyScalar(-c).addScaledVector(Y, sn);
-    const normal = Y.clone().multiplyScalar(c).addScaledVector(t.toward, sn);
-    p.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t.right, up, normal));
-    const lift = (sn * p.heightM) / 2 + 0.008;
-    const at = t.center.clone().addScaledVector(Y, lift);
-    if (slot === "table") at.addScaledVector(t.toward, Math.max(0, t.halfD - (c * p.heightM) / 2 - 0.03));
-    else at.addScaledVector(t.right, Math.max(0, t.halfW - p.widthM / 2 - 0.03)).addScaledVector(t.toward, Math.min(0.1, Math.max(0, t.halfD - (c * p.heightM) / 2 - 0.2)));
-    p.mesh.position.copy(at);
+    const quat = flatOn(t.toward.clone().negate());
+    const pos = t.center.clone().addScaledVector(Y, LIFT);
+    const front = Math.max(0, t.halfD - p.heightM / 2 - 0.03);
+    const side = Math.max(0, t.halfW - p.widthM / 2 - 0.03);
+    const back = Math.min(0.1, Math.max(0, t.halfD - p.heightM / 2 - 0.2));
+    if (slot === "table") pos.addScaledVector(t.toward, front);
+    else if (slot === "shelf") pos.addScaledVector(t.right, side).addScaledVector(t.toward, back);
+    else pos.addScaledVector(t.right, -side).addScaledVector(t.toward, back);
+    return { pos, quat };
+  }
+
+  /**
+   * Where a carried panel would land if let go now: flat on the table when
+   * it's held just over it (back on its own edge when it's near there), or
+   * flush against a wall when it's held up to one. Null in the open air.
+   */
+  private snapFor(panel: Panel): Snap | null {
+    const at = panel.mesh.position;
+    const head = this.head().pos;
+    let best: (Snap & { d: number }) | null = null;
+    const t = this.table;
+    if (t) {
+      const rel = at.clone().sub(t.center);
+      const up = rel.y;
+      const x = rel.dot(t.right);
+      const z = rel.dot(t.toward);
+      if (up > -0.05 && up < SNAP_REACH + 0.1 && Math.abs(x) < t.halfW + 0.1 && Math.abs(z) < t.halfD + 0.1) {
+        // Its own edge, if it's a table panel let go near there.
+        const slot = this.slots.get(panel);
+        const home = slot && TABLE_SLOTS.includes(slot) ? this.tablePose(panel, slot) : null;
+        if (home && home.pos.distanceTo(at.clone().setY(home.pos.y)) < 0.15) best = { on: "table", ...home, d: Math.max(0, up) };
+        else {
+          // Square to the table, the top edge whichever of its sides faces most away from you.
+          const away = at.clone().sub(head).setY(0).normalize();
+          const axes = [t.toward, t.toward.clone().negate(), t.right, t.right.clone().negate()];
+          const top = axes.reduce((a, b) => (b.dot(away) > a.dot(away) ? b : a));
+          const clamp = (v: number, half: number, size: number) => THREE.MathUtils.clamp(v, -Math.max(0, half - size / 2), Math.max(0, half - size / 2));
+          // Kept on the table: across its width and depth, whichever way round the panel lies.
+          const sideways = Math.abs(top.dot(t.right)) > 0.5;
+          const cx = clamp(x, t.halfW, sideways ? panel.heightM : panel.widthM);
+          const cz = clamp(z, t.halfD, sideways ? panel.widthM : panel.heightM);
+          const pos = t.center.clone().addScaledVector(t.right, cx).addScaledVector(t.toward, cz).addScaledVector(Y, LIFT);
+          best = { on: "table", pos, quat: flatOn(top), d: Math.max(0, up) };
+        }
+      }
+    }
+    for (const w of this.walls) {
+      const inv = w.m.clone().invert();
+      const local = at.clone().applyMatrix4(inv);
+      // A plane lies in its own x-z; its y is out of it.
+      const d = Math.abs(local.y);
+      if (d > SNAP_REACH || (best && d >= best.d)) continue;
+      if (local.x < w.x0 - 0.1 || local.x > w.x1 + 0.1 || local.z < w.z0 - 0.1 || local.z > w.z1 + 0.1) continue;
+      const normal = new THREE.Vector3(0, 1, 0).transformDirection(w.m);
+      // Out of the wall on your side of it.
+      const origin = new THREE.Vector3().setFromMatrixPosition(w.m);
+      if (head.clone().sub(origin).dot(normal) < 0) normal.negate();
+      normal.setY(0);
+      if (normal.lengthSq() < 0.5) continue;
+      normal.normalize();
+      const onWall = new THREE.Vector3(THREE.MathUtils.clamp(local.x, w.x0, w.x1), 0, THREE.MathUtils.clamp(local.z, w.z0, w.z1)).applyMatrix4(w.m);
+      // Keep the panel's height where you held it; only its depth snaps.
+      const pos = at.clone().sub(normal.clone().multiplyScalar(at.clone().sub(onWall).dot(normal))).addScaledVector(normal, 0.006);
+      const right = new THREE.Vector3().crossVectors(Y, normal).normalize();
+      const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, Y, normal));
+      best = { on: "wall", pos, quat, d };
+    }
+    return best;
+  }
+
+  /** The walls the headset knows about: vertical planes, with their extents. */
+  private findWalls(frame: XRFrame, ref: XRReferenceSpace): Wall[] {
+    let planes: XRPlaneSet | undefined;
+    try {
+      planes = frame.detectedPlanes;
+    } catch {
+      return [];
+    }
+    const out: Wall[] = [];
+    for (const plane of planes ?? []) {
+      if (plane.orientation !== "vertical" || plane.polygon.length < 3) continue;
+      const pose = frame.getPose(plane.planeSpace, ref);
+      if (!pose) continue;
+      const xs = plane.polygon.map((q) => q.x);
+      const zs = plane.polygon.map((q) => q.z);
+      out.push({ m: new THREE.Matrix4().fromArray(pose.transform.matrix), x0: Math.min(...xs), x1: Math.max(...xs), z0: Math.min(...zs), z1: Math.max(...zs) });
+    }
+    return out;
+  }
+
+  /** While a panel is carried: its landing spot outlined, and a tick when one comes into reach. */
+  private showSnap(p: Pointer) {
+    const snap = p.carry ? this.snapFor(p.carry.panel) : null;
+    const key = snap ? snap.on : null;
+    if (key !== this.snapWas) {
+      this.snapWas = key;
+      if (snap) {
+        this.haptic(p, 0.25, 12);
+        sfx.play("tick", snap.pos);
+      }
+    }
+    if (!snap || !p.carry) return void (this.ghost.visible = false);
+    this.ghost.position.copy(snap.pos);
+    this.ghost.quaternion.copy(snap.quat);
+    this.ghost.scale.set(p.carry.panel.widthM, p.carry.panel.heightM, 1);
+    this.ghost.visible = true;
+  }
+
+  /** Where on the map a hit is, in the room, for a sound to come from. */
+  private hitPoint(p: Pointer, hit: MapHit) {
+    const id = this.map.bodyOf(hit);
+    const at = id ? this.map.positionOf(id) : null;
+    return at ? this.map.toWorld(at) : p.origin.clone().addScaledVector(p.dir, this.hitDistanceM(p, hit));
+  }
+
+  /** A hit's top folder (or module): its note. */
+  private hitKey(hit: MapHit) {
+    return hit.kind === "file" ? hit.id.split("/")[0] : `${hit.kind}:${hit.id}`;
   }
 
   /* --------------------------------- hands --------------------------------- */
@@ -1284,7 +1480,10 @@ export class Engine {
     const hands = [...this.pointers.values()].filter((p) => p.kind === "hand" && p.hand && p.gest);
     for (const p of hands) {
       const { middlePinch } = p.gest!.update(p.hand!, now);
-      if (middlePinch && !p.press) this.h.onButton(p.handedness === "left" ? "back" : "forward");
+      if (middlePinch && !p.press) {
+        sfx.play("back");
+        this.h.onButton(p.handedness === "left" ? "back" : "forward");
+      }
       this.poke(p);
     }
     this.updateWrist(hands);
@@ -1302,8 +1501,11 @@ export class Engine {
       panel.mesh.updateMatrixWorld();
       const local = panel.mesh.worldToLocal(tip.clone());
       // In front of the face by a centimetre counts as touching; once touching, a little more.
-      const depth = p.poke?.panel === panel ? 0.025 : 0.01;
-      if (local.z > depth || local.z < -0.04) continue;
+      // One lying on the table is pressed against it: the real top can sit a little off the
+      // detected one, so it starts a touch higher and goes on through the wood.
+      const flat = this.stuck.has(panel);
+      const depth = p.poke?.panel === panel ? (flat ? 0.03 : 0.025) : flat ? 0.016 : 0.01;
+      if (local.z > depth || local.z < (flat ? -0.07 : -0.04)) continue;
       if (Math.abs(local.x) > panel.widthM / 2 || Math.abs(local.y) > panel.heightM / 2) continue;
       touched = { panel, x: (local.x / panel.widthM + 0.5) * panel.W, y: (0.5 - local.y / panel.heightM) * panel.H };
       break;
@@ -1312,6 +1514,7 @@ export class Engine {
     const was = p.poke;
     if (was && was.panel !== touched?.panel) was.panel.pointer("up", was.x, was.y, who);
     if (touched) {
+      if (was?.panel !== touched.panel) sfx.resume();
       touched.panel.pointer(was?.panel === touched.panel ? "move" : "down", touched.x, touched.y, who);
       p.poke = touched;
       p.pokeBody = null;
@@ -1328,6 +1531,7 @@ export class Engine {
     // Still on the last one (or only near something): wait for a fresh touch.
     if (p.pokeBody || near.gap > 0.008 * k) return;
     p.pokeBody = near.hit.id;
+    sfx.play("pick", tip, this.hitKey(near.hit));
     this.h.onPick(near.hit);
   }
 
@@ -1378,7 +1582,10 @@ export class Engine {
     this.lasso.visible = false;
     const paths = this.within(rect);
     if (!paths.length || paths.length >= this.map.files().length * 0.85) this.h.onButton("overview");
-    else this.h.onSelect?.(paths, "frame");
+    else {
+      sfx.play("focus");
+      this.h.onSelect?.(paths, "frame");
+    }
   }
 
   /**
@@ -1511,10 +1718,14 @@ export class Engine {
       p.carry.panel.mesh.position.setFromMatrixPosition(m);
       p.carry.panel.mesh.lookAt(head.pos);
     }
+    const carrier = [...this.pointers.values()].find((p) => p.carry);
+    if (carrier) this.showSnap(carrier);
+    else this.ghost.visible = false;
+    if (this.mode !== "flat") sfx.listen(head.pos, head.quat, now);
 
     // The dock can follow lazily (a setting): it only turns with you once you've looked well away.
     for (const [panel, slot] of this.slots) {
-      if (!this.settings.dockFollows || slot !== "dock" || !panel.open || this.pointers.size === 0 || [...this.pointers.values()].some((p) => p.carry?.panel === panel)) continue;
+      if (!this.settings.dockFollows || slot !== "dock" || !panel.open || this.stuck.has(panel) || this.pointers.size === 0 || [...this.pointers.values()].some((p) => p.carry?.panel === panel)) continue;
       let d = head.yaw - this.dockYaw;
       d = Math.atan2(Math.sin(d), Math.cos(d));
       if (Math.abs(d) > 0.6) this.place(panel, "dock");
@@ -1701,7 +1912,8 @@ export class Engine {
       if (id && at) {
         // Hold it where it is along the ray; from here on it rides the ray.
         const w = this.map.toWorld(at);
-        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)), hit: press.hit, trail: [], pin: false };
+        sfx.play("grab", w);
+        p.press = { kind: "body", id, dist: Math.max(0.05, w.clone().sub(p.origin).dot(p.dir)), hit: press.hit, trail: [], pin: false };
         this.haptic(p, 0.35, 20);
       } else {
         p.press = { kind: "grab", from: press.from, moved: true };
@@ -1764,7 +1976,10 @@ export class Engine {
     if (!panelHit && !p.hoverHandle && !p.carry && !(p.press?.kind === "grab" && this.grabs.length) && p.press?.kind !== "body" && p.press?.kind !== "lasso") mapHit = this.map.pick(p.origin, p.dir);
     const hoverKey = (h: MapHit | null) => (h ? `${h.kind}:${h.id}` : null);
     if (hoverKey(mapHit) !== hoverKey(p.hoverMap) && mapHit) {
-      if (p.lastHapticId !== hoverKey(mapHit)) this.haptic(p, 0.12, 8);
+      if (p.lastHapticId !== hoverKey(mapHit)) {
+        this.haptic(p, 0.12, 8);
+        sfx.play("hover", this.hitPoint(p, mapHit), this.hitKey(mapHit));
+      }
       p.lastHapticId = hoverKey(mapHit);
     }
     p.hoverMap = mapHit;
@@ -1928,6 +2143,16 @@ export class Engine {
     if (this.settings.stickMovesMap) this.world.position.add(move);
     else this.world.position.sub(move);
   }
+}
+
+/** How far over the table top a panel lies on it: enough not to flicker into it. */
+const LIFT = 0.004;
+
+/** Lying flat, face up, its top edge pointing `top` (level). */
+function flatOn(top: THREE.Vector3) {
+  const up = top.clone().setY(0).normalize();
+  const right = new THREE.Vector3().crossVectors(up, Y).normalize();
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, Y));
 }
 
 /** How far the map's middle is from the camera, for turning mouse pixels into metres. */

@@ -3,10 +3,11 @@ import { C, Panel, cond, fit, roundRect, sans, wrap } from "./ui";
 
 /**
  * Panels for a map set down on a real table (passthrough), and the one on
- * your wrist. They lie on the table itself, where your hands already are: a
- * strip of controls along the edge nearest you, and on the right-hand edge
+ * your wrist. They lie flat on the table itself, where your hands already
+ * are: a strip of controls along the edge nearest you, on the right-hand edge
  * the modules you've thrown off the map, each waiting, collapsed, to be put
- * back with a press. All of them can be poked with a fingertip.
+ * back with a press, and on the left the saved views (views.ts). All of them
+ * are pressed with a fingertip, against the table.
  */
 
 const PAD = 22;
@@ -131,13 +132,13 @@ export class WristPanel extends Panel {
   m: Model | null = null;
 
   constructor(private a: Actions) {
-    super("wrist", 0.21, 0.13);
+    super("wrist", 0.27, 0.13);
   }
 
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || p.menuOpen !== m.menuOpen || p.filterOpen !== m.filterOpen || p.hintsOpen !== m.hintsOpen || p.voice !== m.voice) this.invalidate();
+    if (!p || p.menuOpen !== m.menuOpen || p.filterOpen !== m.filterOpen || p.viewsOpen !== m.viewsOpen || p.hintsOpen !== m.hintsOpen || p.voice !== m.voice || p.table !== m.table) this.invalidate();
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
@@ -151,12 +152,14 @@ export class WristPanel extends Panel {
       { id: "overview", label: "Whole map", run: this.a.overview },
       { id: "ask", label: "Ask", run: () => this.a.openKeyboard("ask") },
       { id: "filter", label: "Filter", run: this.a.toggleFilter, active: m.filterOpen },
+      { id: "views", label: "Views", run: this.a.toggleViews, active: m.viewsOpen || m.table, accent: C.course, disabled: m.table },
       { id: "hints", label: "?", run: this.a.toggleHints, active: m.hintsOpen },
     ];
     const gap = 8;
     const pad = 14;
-    const w = (this.W - pad * 2 - gap * 2) / 3;
+    const cols = 4;
+    const w = (this.W - pad * 2 - gap * (cols - 1)) / cols;
     const h = (this.H - pad * 2 - gap) / 2;
-    cells.forEach((c, i) => this.button(ctx, `w:${c.id}`, pad + (i % 3) * (w + gap), pad + Math.floor(i / 3) * (h + gap), c.label, c.run, { w, h, size: 24, active: c.active, accent: c.accent, disabled: c.disabled }));
+    cells.forEach((c, i) => this.button(ctx, `w:${c.id}`, pad + (i % cols) * (w + gap), pad + Math.floor(i / cols) * (h + gap), c.label, c.run, { w, h, size: 24, active: c.active, accent: c.accent, disabled: c.disabled }));
   }
 }
