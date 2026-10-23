@@ -175,6 +175,11 @@ export class Surface {
     u.uN.value = contour.length;
   }
 
+  /** Where it lies, as a pose: its outline in the pose's x and z. */
+  setMatrix(m: THREE.Matrix4) {
+    m.decompose(this.mesh.position, this.mesh.quaternion, new THREE.Vector3());
+  }
+
   /** Where it lies: centred at `center`, its z toward `toward`. */
   setPose(center: THREE.Vector3, toward: THREE.Vector3) {
     const t = toward.clone().setY(0).normalize();
@@ -243,4 +248,72 @@ export function tableIn(m: THREE.Matrix4, saved: { center: V3; toward: V3 }, pol
 /** The table, in some space (`inv`: the room into that space). */
 export function tableInto(inv: THREE.Matrix4, t: Table): { center: V3; toward: V3 } {
   return { center: v3(t.center.clone().applyMatrix4(inv)), toward: v3(t.toward.clone().transformDirection(inv)) };
+}
+
+/* ------------------------------ your own surfaces ------------------------------ */
+
+/**
+ * A surface of your own, traced by hand like the table: any flat thing a
+ * panel can lie on (a shelf, a stretch of wall the headset didn't find, a
+ * slanted desk). `m` is its pose: x along it, y out of it toward you, z along
+ * it the other way; `poly` its outline in x and z about the middle of its bounds.
+ */
+export type Plane = { m: THREE.Matrix4; poly: [number, number][]; halfX: number; halfZ: number };
+
+/** The plane through traced corners (its face toward `head`), with their outline on it. Three corners make a rectangle. */
+export function planeThrough(raw: THREE.Vector3[], head: THREE.Vector3): Plane | null {
+  let pts = raw.map((p) => p.clone());
+  if (pts.length === 3) {
+    const [a, b, c] = pts;
+    const ab = b.clone().sub(a);
+    const bc = c.clone().sub(b);
+    bc.sub(ab.clone().multiplyScalar(bc.dot(ab) / Math.max(1e-6, ab.lengthSq())));
+    pts = [a, b, b.clone().add(bc), a.clone().add(bc)];
+  }
+  // Newell's normal: the best plane through a loop of points, however it bends.
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    n.x += (p.y - q.y) * (p.z + q.z);
+    n.y += (p.z - q.z) * (p.x + q.x);
+    n.z += (p.x - q.x) * (p.y + q.y);
+  }
+  if (n.lengthSq() < 1e-8) return null;
+  n.normalize();
+  const mid = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+  if (head.clone().sub(mid).dot(n) < 0) n.negate();
+  // Along it: level on an upright surface, along its longest side on a lying one.
+  const x = Math.abs(n.y) < 0.7 ? new THREE.Vector3().crossVectors(Y, n).normalize() : mainAxis(pts).projectOnPlane(n).normalize();
+  const z = new THREE.Vector3().crossVectors(x, n).normalize();
+  const flat = pts.map((p) => [p.clone().sub(mid).dot(x), p.clone().sub(mid).dot(z)] as [number, number]);
+  const xs = flat.map((q) => q[0]);
+  const zs = flat.map((q) => q[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cz = (Math.min(...zs) + Math.max(...zs)) / 2;
+  const center = mid.clone().addScaledVector(x, cx).addScaledVector(z, cz);
+  const m = new THREE.Matrix4().makeBasis(x, n, z).setPosition(center);
+  return { m, poly: flat.map(([a, b]) => [a - cx, b - cz]), halfX: (Math.max(...xs) - Math.min(...xs)) / 2, halfZ: (Math.max(...zs) - Math.min(...zs)) / 2 };
+}
+
+/** Your surfaces as kept: each by the headset's anchor at its middle (which carries its pose), and its outline. */
+export type SavedSurface = { uuid: string; poly: [number, number][] };
+
+const SURFACES_KEY = "constellate.xr.surfaces";
+
+export function loadSurfaces(): SavedSurface[] {
+  try {
+    const l = JSON.parse(localStorage.getItem(SURFACES_KEY) ?? "[]") as SavedSurface[];
+    return Array.isArray(l) ? l.filter((s) => typeof s.uuid === "string" && Array.isArray(s.poly) && s.poly.length >= 3) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveSurfaces(l: SavedSurface[]) {
+  try {
+    localStorage.setItem(SURFACES_KEY, JSON.stringify(l));
+  } catch {
+    /* no storage: they last this session */
+  }
 }

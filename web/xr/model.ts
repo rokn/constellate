@@ -84,8 +84,10 @@ export type Model = {
   viewsOpen: boolean;
   /** On a real table (passthrough, placed): its menu and shelf are out. */
   table: boolean;
-  /** Tracing the table by hand: the corners touched so far; null when not. */
-  outlining: number | null;
+  /** Tracing the table (or a surface of your own) by hand: the corners touched so far; null when not. */
+  outlining: { kind: "table" | "surface"; corners: number } | null;
+  /** How many surfaces of your own there are (passthrough): panels snap onto them as onto the table. */
+  surfaces: number;
   /** What you're holding: the controls page lists what these can do. */
   inputs: { hands: boolean; controllers: boolean };
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
@@ -136,6 +138,9 @@ export type Actions = {
   undoOutline: () => void;
   finishOutline: () => void;
   cancelOutline: () => void;
+  /** Trace a surface of your own, for panels to lie on. */
+  addSurface: () => void;
+  clearSurfaces: () => void;
   recenterPanels: () => void;
   toggleTune: () => void;
   toggleHints: () => void;
@@ -183,7 +188,7 @@ export type Actions = {
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs" | "outlining">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs" | "outlining" | "surfaces">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
@@ -202,6 +207,8 @@ export type AppActions = Omit<
   | "undoOutline"
   | "finishOutline"
   | "cancelOutline"
+  | "addSurface"
+  | "clearSurfaces"
   | "recenterPanels"
   | "toggleTune"
   | "toggleHints"

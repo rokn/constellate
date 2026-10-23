@@ -180,20 +180,21 @@ export class OutlinePanel extends Panel {
 
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
-    if (!m || m.outlining === null) return;
+    if (!m || !m.outlining) return;
     this.frame(ctx, C.good);
-    const n = m.outlining;
+    const n = m.outlining.corners;
+    const what = m.outlining.kind === "table" ? "the table" : "the surface";
     const press = m.inputs.hands && !m.inputs.controllers ? "pinch" : "pull the trigger";
     ctx.font = cond(34, 600);
     ctx.fillStyle = C.text;
-    ctx.fillText(n ? `${n} corner${n > 1 ? "s" : ""}` : "Trace your table", PAD, 58);
+    ctx.fillText(n ? `${n} corner${n > 1 ? "s" : ""}` : m.outlining.kind === "table" ? "Trace your table" : "Trace a surface for panels", PAD, 58);
     ctx.font = sans(23);
     ctx.fillStyle = C.muted;
     const say =
       n < 3
-        ? `Touch each corner of the table in turn and ${press} right there. Three corners make a rectangle.`
+        ? `Touch each corner of ${what} in turn and ${press} right there. Three corners make a rectangle.`
         : n === 3
-          ? "Done makes a rectangle of these three corners, or go on round the table to trace its shape."
+          ? `Done makes a rectangle of these three corners, or go on round ${what} to trace its shape.`
           : "Done when you've been all the way round.";
     wrap(ctx, say, this.W - PAD * 2)
       .slice(0, 2)
