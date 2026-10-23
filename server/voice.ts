@@ -21,7 +21,7 @@ import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
 
 const INWORLD_WS = "wss://api.inworld.ai/api/v1/realtime/session";
 // The voice drives the UI through tools, so the session model must support them.
-const REALTIME_MODEL = process.env.INWORLD_REALTIME_MODEL ?? "openai/gpt-5.5";
+const REALTIME_MODEL = process.env.INWORLD_REALTIME_MODEL ?? "openai/gpt-5.6-luna";
 
 const fn = (name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []) => ({
   type: "function",
