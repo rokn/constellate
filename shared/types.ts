@@ -420,6 +420,8 @@ export type UiCommand =
   | { cmd: "changed_only"; on: boolean }
   /** Files moved; what the page keeps by path (its filter) follows them. */
   | { cmd: "renamed"; renames: Renames }
+  /** Headset: take the map off the table it's set down on. */
+  | { cmd: "leave_table" }
   /** Turn Tune knobs: the map's and the headset's (by key). */
   | { cmd: "tune"; map?: Record<string, number | boolean>; headset?: Record<string, number | boolean> }
   /** Switch to a preset: its knobs over the defaults (the headset's only when it keeps them). */

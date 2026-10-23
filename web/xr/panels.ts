@@ -232,7 +232,7 @@ export class MenuPanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story", "placing", "outlining", "surfaces"] as const).some((k) => p[k] !== m[k])) this.invalidate();
+    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story", "placing", "outlining", "surfaces", "table"] as const).some((k) => p[k] !== m[k])) this.invalidate();
   }
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
@@ -386,6 +386,7 @@ export class MenuPanel extends Panel {
     if (m.mode !== "vr" && m.canVR) add("vr", "Enter VR", () => a.enter("vr"), { accent: C.course });
     if (m.mode !== "ar" && m.canAR) add("ar", "Passthrough (AR)", () => a.enter("ar"), { accent: C.course });
     if (m.mode === "ar") add("place", "Place on a surface", a.placeMap, { active: m.placing });
+    if (m.mode === "ar" && m.table) add("lift", "Off the table", a.leaveTable);
     if (m.mode === "ar") add("outline", "Trace the table", a.outlineTable, { active: m.outlining?.kind === "table" });
     if (m.mode === "ar") add("surface", "Add a surface", a.addSurface, { active: m.outlining?.kind === "surface" });
     if (m.mode === "ar" && m.surfaces) {

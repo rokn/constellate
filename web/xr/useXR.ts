@@ -173,6 +173,10 @@ export function useXR(feed: XRFeed) {
       setPlacing(true);
       roomRef.current?.engine.startPlacing();
     },
+    leaveTable: () => {
+      setMenuOpen(false);
+      roomRef.current?.engine.leaveTable();
+    },
     recenterPanels: () => roomRef.current?.engine.recenterPanels(),
     outlineTable: () => {
       setMenuOpen(false);
@@ -442,6 +446,7 @@ export function useXR(feed: XRFeed) {
       focus: (ps: string[]) => live() && roomRef.current!.engine.focus(ps),
       overview: () => live() && roomRef.current!.engine.overview(),
       pulse: (p: string) => live() && roomRef.current!.engine.map.pulse(p),
+      leaveTable: () => live() && roomRef.current!.engine.leaveTable(),
     }),
     [],
   );

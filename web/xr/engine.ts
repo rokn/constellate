@@ -1500,6 +1500,35 @@ export class Engine {
     saveTable(saved);
   }
 
+  /**
+   * Off the table: the map comes back in front of you, the table's panels go,
+   * and it's forgotten (next time you come in, it isn't put back on it).
+   * Place on a surface sets it down again.
+   */
+  leaveTable() {
+    if (this.mode !== "ar") return;
+    const session = this.session;
+    this.xrAnchor?.delete();
+    this.xrAnchor = null;
+    try {
+      const uuid = localStorage.getItem(ANCHOR_KEY);
+      if (uuid && session?.deletePersistentAnchor) void session.deletePersistentAnchor(uuid).catch(() => {});
+      localStorage.removeItem(ANCHOR_KEY);
+    } catch {
+      /* no storage: nothing kept */
+    }
+    saveTable(null);
+    this.anchor = null;
+    this.anchorPose = null;
+    this.anchorLast = null;
+    this.anchorWanted = null;
+    this.tableFrom = null;
+    this.lookFor = null;
+    this.setTable(null);
+    sfx.play("grab");
+    this.overview(900);
+  }
+
   /* ------------------------- tracing the table by hand ------------------------- */
 
   /**

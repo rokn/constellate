@@ -137,6 +137,8 @@ export type Actions = {
   /** Reload the page, and go back into the headset after if the browser allows it. */
   reload: () => void;
   placeMap: () => void;
+  /** Take the map off the table: back in front of you, the table forgotten. */
+  leaveTable: () => void;
   /** Trace the table's outline by hand, corner by corner (passthrough). */
   outlineTable: () => void;
   undoOutline: () => void;
@@ -209,6 +211,7 @@ export type AppActions = Omit<
   | "exitXR"
   | "reload"
   | "placeMap"
+  | "leaveTable"
   | "outlineTable"
   | "undoOutline"
   | "finishOutline"

@@ -327,6 +327,7 @@ const HINTS: HintGroup[] = [
       ["Drop a dragged body on the shelf", "Take it off the map"],
       ["Menu → Recenter panels", "Put the table's panels back on its edges"],
       ["Menu → Place on a surface", "Move the map to another table"],
+      ["Off table (on the strip), or say so", "Take the map off the table, back in front of you"],
       ["Menu → Trace the table", "Touch its corners to give it its real shape"],
       ["Menu → Add a surface", "Trace a shelf or a stretch of wall: panels snap onto it too"],
     ],
