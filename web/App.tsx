@@ -1578,6 +1578,7 @@ export function App() {
         if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}` : label);
         return { label, count: out.length, more, paths: out, core };
       },
+      focusPaths: (paths, label) => focus(paths, label),
       hideHit: (h) => {
         const { paths, label, module } = filesOfHit(h);
         if (module) {

@@ -69,6 +69,10 @@ export type Model = {
   tuneOpen: boolean;
   hintsOpen: boolean;
   filterOpen: boolean;
+  /** On a real table (passthrough, placed): its menu and shelf are out. */
+  table: boolean;
+  /** What you're holding: the controls page lists what these can do. */
+  inputs: { hands: boolean; controllers: boolean };
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
   focus: { label: string; depth: number; count: number; more: boolean; only: boolean } | null;
 };
@@ -135,6 +139,8 @@ export type Actions = {
   openRepo: (id: string) => void;
   reanalyze: () => void;
   startAgent: (task: string) => void;
+  /** Light up these files and fly there (a lasso or a frame made by hand), under this name. */
+  focusPaths: (paths: string[], label: string) => void;
   /** Light up an agent's files and fly there. */
   focusAgent: (id: string) => void;
   agentAction: (id: string, action: "stop" | "pr" | "merge") => void;
@@ -142,7 +148,7 @@ export type Actions = {
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "focus">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "focus" | "table" | "inputs">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<

@@ -1094,6 +1094,20 @@ export class MapView {
   }
 
   /** A point in map units to world. */
+  /** The body nearest a point (map units), within `reach` of its surface: what a fingertip is touching. */
+  nearest(at: THREE.Vector3, reach: number): { hit: MapHit; gap: number } | null {
+    let best: { hit: MapHit; gap: number } | null = null;
+    for (let i = 0; i < this.nodes.length; i++) {
+      const n = this.nodes[i];
+      if (n.type === "dir" || (n.type === "module" && !this.beacons.get(n.id)?.mesh.visible)) continue;
+      const dx = this.pos[i * 3] - at.x, dy = this.pos[i * 3 + 1] - at.y, dz = this.pos[i * 3 + 2] - at.z;
+      const gap = Math.sqrt(dx * dx + dy * dy + dz * dz) - this.base[i];
+      if (gap > reach || (best && gap >= best.gap)) continue;
+      best = { gap, hit: n.type === "file" ? { kind: "file", id: n.id, t: 0 } : { kind: "module", id: n.id.slice(4), label: n.label, summary: n.summary, files: n.files, t: 0 } };
+    }
+    return best;
+  }
+
   toWorld(v: THREE.Vector3) {
     this.root.updateWorldMatrix(true, false);
     return v.clone().applyMatrix4(this.root.matrixWorld);

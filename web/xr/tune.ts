@@ -218,10 +218,13 @@ const withMuted = () => "#c3cbdb";
 
 /* --------------------------------- hints --------------------------------- */
 
-const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
+type HintGroup = { title: string; color: string; rows: [string, string][]; when: "controllers" | "hands" | "table" };
+
+const HINTS: HintGroup[] = [
   {
-    title: "Either hand",
+    title: "Either controller",
     color: C.static,
+    when: "controllers",
     rows: [
       ["Trigger", "Pick a file, module or button"],
       ["Trigger on a module", "Its files and their links; again, with what they talk to"],
@@ -239,6 +242,7 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
   {
     title: "Left controller",
     color: C.course,
+    when: "controllers",
     rows: [
       ["Stick", "Fly where you point"],
       ["X", "Voice on / off"],
@@ -249,6 +253,7 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
   {
     title: "Right controller",
     color: C.runtime,
+    when: "controllers",
     rows: [
       ["Stick left / right", "Turn"],
       ["Stick up / down", "Zoom toward what you point at (or push / pull a held body)"],
@@ -261,20 +266,55 @@ const HINTS: { title: string; color: string; rows: [string, string][] }[] = [
   {
     title: "Hands",
     color: C.good,
+    when: "hands",
     rows: [
-      ["Pinch", "Same as the trigger"],
-      ["Pinch both hands on open sky", "Scale the map and rotate it any way"],
+      ["Pinch", "Pick a file, module or button"],
+      ["Pinch + move on a body", "Drag it; throw it and let go to hide it"],
+      ["Pinch on open sky and move", "Move the map"],
+      ["Pinch with both hands", "Stretch to scale; turn to rotate any way"],
+      ["Touch with a fingertip", "Press a button; point and touch a body to pick it"],
+      ["Pinch open sky, hold still, draw a loop", "Light up what's inside it"],
+      ["Thumb on middle finger", "Right hand: forward · left hand: back"],
+      ["Left palm up", "Wrist menu; touch it with your right hand"],
+      ["Both hands in an L, framing", "Light up what's in the frame (all of it: the whole map)"],
+      ["Trigger on a panel's handle", "Pinch it to carry the panel"],
+    ],
+  },
+  {
+    title: "On the table",
+    color: C.runtime,
+    when: "table",
+    rows: [
+      ["Strip on the near edge", "Back, the whole map, menus, voice"],
+      ["Shelf on the right edge", "What's off the map: press one to put it back"],
+      ["Drop a dragged body on the shelf", "Take it off the map"],
+      ["Menu → Place on a surface", "Move the map to another table"],
     ],
   },
 ];
 
-/** What every button does: opened from the dock's "?" (and on your first visit). */
+/**
+ * What every button and gesture does: opened from the dock's "?" (and on your
+ * first visit). It lists what you're holding: controllers, hands, or both
+ * (all of it outside a session), and the table's own when the map is on one.
+ */
 export class HintsPanel extends Panel {
+  private m: Model | null = null;
+
   constructor(private a: Actions) {
     super("hints", 1.0, 0.68);
   }
 
+  update(m: Model) {
+    const p = this.m;
+    this.m = m;
+    if (!p || p.inputs.hands !== m.inputs.hands || p.inputs.controllers !== m.inputs.controllers || p.table !== m.table) this.invalidate();
+  }
+
   protected draw(ctx: CanvasRenderingContext2D) {
+    const m = this.m;
+    const any = !!m && (m.inputs.hands || m.inputs.controllers);
+    const groups = HINTS.filter((g) => (g.when === "table" ? !!m?.table : !any || m!.inputs[g.when]));
     this.frame(ctx, C.static);
     const W = this.W;
     ctx.font = cond(36, 600);
@@ -282,16 +322,17 @@ export class HintsPanel extends Panel {
     ctx.fillText("Controls", PAD, 64);
     ctx.font = sans(25);
     ctx.fillStyle = C.muted;
-    ctx.fillText("Panels stay where you put them. Lost one? Menu → Recenter panels.", PAD + 180, 62);
+    const holding = !any ? "" : m!.inputs.hands && m!.inputs.controllers ? "For your controllers and hands. " : m!.inputs.hands ? "For your hands. " : "For your controllers. ";
+    ctx.fillText(fit(ctx, `${holding}Lost a panel? Menu → Recenter panels.`, W - PAD * 2 - 260), PAD + 180, 62);
     this.button(ctx, "close", W - PAD - 58, 22, "✕", this.a.toggleHints, { w: 58, h: 52 });
 
     const colW = (W - PAD * 3) / 2;
     const col = (i: number) => PAD + (i % 2) * (colW + PAD);
     const ys = [130, 130];
     const LH = 36;
-    HINTS.forEach((g, i) => {
-      // Either hand on the left; the two controllers and hands on the right.
-      const c = i === 0 ? 0 : 1;
+    // The first group on the left, the rest on the right; a long one alone takes the left.
+    groups.forEach((g, i) => {
+      const c = i === 0 ? 0 : groups.length === 2 || ys[1] <= ys[0] ? 1 : 0;
       const x = col(c);
       let y = ys[c];
       ctx.font = cond(32, 600);
@@ -311,6 +352,9 @@ export class HintsPanel extends Panel {
       }
       ys[c] = y + 46;
     });
+    // Taller or shorter to fit what's listed: the canvas grows with the panel, the letters stay the same size.
+    const want = Math.max(0.5, (Math.max(...ys) + 100) / (this.H / this.heightM));
+    if (Math.abs(want - this.heightM) > 0.02) return this.resize(this.widthM, want);
     this.button(ctx, "ok", W - PAD - 160, this.H - 82, "Got it", this.a.toggleHints, { w: 160, h: 56, accent: C.course, active: true });
   }
 }
