@@ -19,7 +19,7 @@ import { TuningPanel } from "./components/TuningPanel";
 import { DEFAULT_TUNING, loadTuning, saveTuning, type Tuning } from "./lib/tuning";
 import { loadXR, saveXR, sound, type XRSettings } from "./lib/xrSettings";
 import { Dossier, type Pointer } from "./components/Dossier";
-import { FilePanel } from "./components/FilePanel";
+import { FilePanel, type FileChange } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 import { StoryPlayer, type StoryControl } from "./components/StoryPlayer";
@@ -479,6 +479,21 @@ export function App() {
     [branchSum],
   );
 
+  /** What the open file went through on the branch or in the span on the map, and where its diff is read. */
+  const fileChange = useMemo((): FileChange | undefined => {
+    if (!file) return undefined;
+    if (branchMap) {
+      const h = branchHeat?.get(file.path);
+      if (!h || !branchSum) return undefined;
+      const q = new URLSearchParams(branchSum.agent ? { agent: branchSum.agent.id } : { branch: branchSum.branch, base: branchSum.base });
+      q.set("path", file.path);
+      // Keyed by the tip, so a working agent's next commit reads the diff again.
+      return { from: branchSum.mergeBase, to: branchSum.head, add: h.add, del: h.del, status: h.status, label: branchSum.agent ? `"${branchSum.agent.title}"` : branchSum.branch, diffUrl: `/api/branch-diff?${q}` };
+    }
+    const h = heat?.get(file.path);
+    if (!h || !range) return undefined;
+    return { from: range.from, to: range.to, add: h.add, del: h.del, status: h.status, label: range.label };
+  }, [file, branchMap, branchHeat, branchSum, heat, range]);
   const shownTime = branchMap ? branchShown : range ? (timeMap ?? lastTimeMap.current) : null;
   const mapGraph = shownTime?.graph ?? graph;
 
@@ -1482,7 +1497,9 @@ export function App() {
     (): MapInput | null => (mapGraph ? { graph: mapGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning } : null),
     [mapGraph, overview, grouping, visible, notes, shownOverlays, tuning],
   );
-  const xrStyle = useMemo((): MapStyle => ({ emphasis, active: file?.path ?? null, layers }), [emphasis, file?.path, layers]);
+  // A branch or a span of history wears its changes in the headset too.
+  const xrHeat = branchMap ? branchHeat : range ? heat : null;
+  const xrStyle = useMemo((): MapStyle => ({ emphasis, active: file?.path ?? null, layers, heat: xrHeat }), [emphasis, file?.path, layers, xrHeat]);
   /** What's under a folder on the map. */
   const filesUnder = (dir: string) => (mapGraph?.files ?? []).map((f) => f.path).filter((p) => (dir === "." ? !p.includes("/") : p.startsWith(`${dir}/`)));
   /** The files and name behind something pointed at on the map in the headset. */
@@ -1559,6 +1576,7 @@ export function App() {
       agents: state?.agents ?? NO_ACTIVITY,
       agentsOn: !!state?.agentsOn,
       checkedOut: state?.repo?.branch,
+      fileChange: fileChange ?? null,
       branch: xrBranch,
       tuning,
       settings: xrSettings,
@@ -2367,11 +2385,7 @@ export function App() {
             path={file.path}
             line={file.line}
             endLine={file.endLine}
-            change={(() => {
-              const h = heat?.get(file.path);
-              if (!h || !range) return undefined;
-              return { from: range.from, to: range.to, add: h.add, del: h.del, status: h.status, label: range.label };
-            })()}
+            change={fileChange}
             onClose={() => setFile(null)}
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}

@@ -1,5 +1,6 @@
 import type { Activity, AgentRun, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story, TunePreset } from "../../shared/types";
 import type { FileData } from "../lib/api";
+import type { FileChange } from "../components/FilePanel";
 import type { Tuning } from "../lib/tuning";
 import type { XRSettings } from "../lib/xrSettings";
 import type { Stage } from "../lib/story";
@@ -36,6 +37,9 @@ export type Model = {
   pointer: { viewId?: string; nodeIds?: string[]; lines?: number[] } | null;
   file: { path: string; line?: number; endLine?: number } | null;
   fileData: FileData | null;
+  /** The open file's change on the branch or in the span on the map; its diff, once read (null: it couldn't be). */
+  fileChange: (FileChange & { label?: string }) | null;
+  fileDiff: string | null | undefined;
   /** The desktop's Intro card: shown until you've asked, opened or toured something. */
   intro: boolean;
   voice: { available: boolean; state: VoiceState; caption: string; heard: string; error: string | null };
@@ -188,7 +192,7 @@ export type Actions = {
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs" | "outlining" | "surfaces">;
+export type AppModel = Omit<Model, "fileData" | "fileDiff" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs" | "outlining" | "surfaces">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<

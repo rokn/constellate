@@ -40,7 +40,16 @@ export type MapStyle = {
   layers: Record<Layer, boolean>;
   /** With a focus made of rings: only links touching these are lit (a module's insides, then its direct connections, not the links among those). */
   core?: string[];
+  /** A branch or a span of history on the map: what each changed file went through. The rest fade. */
+  heat?: Map<string, { add: number; del: number; status: "A" | "M" | "D" }> | null;
 };
+
+const ADDED = new THREE.Color("#6ee7a8");
+const REMOVED = new THREE.Color("#ff6b6b");
+const WARM = new THREE.Color("#ffd27a");
+const HOT = new THREE.Color("#ff4a2e");
+/** 0..1 by lines touched, on a log scale: as the desktop sizes and colours churn. */
+const churnHeat = (add: number, del: number) => Math.min(1, Math.log10(add + del + 1) / 3);
 
 export type MapHit =
   | { kind: "file"; id: string; t: number }
@@ -534,6 +543,8 @@ export class MapView {
   /* -------------------------------- style -------------------------------- */
 
   setStyle(style: MapStyle) {
+    // Changed files swell with their churn: the bodies are rewritten.
+    if (style.heat !== this.style.heat) this.moved = true;
     this.style = style;
     this.emph = new Set(style.emphasis);
     this.core = style.core ? new Set(style.core) : null;
@@ -561,7 +572,21 @@ export class MapView {
 
   private isLit(i: number) {
     const id = this.nodes[i].id;
-    return this.emph.size === 0 || this.emph.has(id) || id === this.style.active;
+    const heat = this.style.heat;
+    return (this.emph.size === 0 || this.emph.has(id) || id === this.style.active) && (!heat || this.nodes[i].type !== "file" || heat.has(id));
+  }
+
+  /** A file's colour: what it went through on the branch or in the span, else its territory's. */
+  private colorOf(i: number) {
+    const h = this.style.heat?.get(this.nodes[i].id);
+    if (!h) return this.colors[i];
+    return h.status === "A" ? ADDED : h.status === "D" ? REMOVED : WARM.clone().lerp(HOT, churnHeat(h.add, h.del));
+  }
+
+  /** Larger by churn while a branch or history is shown. */
+  private swell(i: number) {
+    const h = this.style.heat?.get(this.nodes[i].id);
+    return h ? 1 + 1.4 * churnHeat(h.add, h.del) : 1;
   }
 
   private both(l: L) {
@@ -599,7 +624,7 @@ export class MapView {
     const tmpC = new THREE.Color();
     const setColors = (s: Spheres, idx: number[], alphaOf: (i: number) => number) => {
       idx.forEach((i, k) => {
-        s.mesh.setColorAt(k, this.nodes[i].type === "file" ? tmpC.copy(this.colors[i]).multiplyScalar(bright) : this.colors[i]);
+        s.mesh.setColorAt(k, this.nodes[i].type === "file" ? tmpC.copy(this.colorOf(i)).multiplyScalar(bright) : this.colors[i]);
         s.alpha.array[k] = alphaOf(i);
       });
       s.mesh.count = idx.length;
@@ -611,7 +636,7 @@ export class MapView {
     setColors(this.lit, this.litIdx, (i) => (this.nodes[i].type === "dir" ? dirAlpha(i) : 1));
     setColors(this.dim, this.dimIdx, (i) => (this.nodes[i].type === "dir" ? dirAlpha(i) : Math.max(0.1, tu.dimOpacity)));
     this.glowIdx.forEach((i, k) => {
-      this.glows.mesh.setColorAt(k, this.colors[i]);
+      this.glows.mesh.setColorAt(k, this.colorOf(i));
       // With the bloom pass on it does the glowing; the halo is a softer extra.
       this.glows.alpha.array[k] = (emphOn ? 0.55 : 0.32) * (this.glow.amount / 0.35) * (this.glow.bloom ? 0.5 : 0.4 + tu.bloomStrength);
     });
@@ -846,7 +871,7 @@ export class MapView {
     const write = (mesh: THREE.InstancedMesh, idx: number[], k: number) => {
       const arr = mesh.instanceMatrix.array as Float32Array;
       idx.forEach((i, j) => {
-        let s = this.base[i] * k;
+        let s = this.base[i] * k * this.swell(i);
         const t0 = this.pulses.get(this.nodes[i].id);
         if (t0 !== undefined) {
           const t = (now - t0) / 1200;

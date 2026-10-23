@@ -1,7 +1,7 @@
 import type { Frame, Layer, Story } from "../../shared/types";
 import { clock, liveDiagrams, storyMs, absMs, wordAt } from "../lib/story";
 import type { Actions, KeyboardMode, Model } from "./model";
-import { CodeView, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
+import { CodeView, DiffBlock, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
 import type { Engine } from "./engine";
 import { FilterPanel, FocusBar } from "./filter";
 import { OutlinePanel, Shelf, TableMenu, WristPanel } from "./table";
@@ -533,7 +533,9 @@ export class FilePanel extends ScrollPanel {
     this.m = m;
     const f = m.file;
     const d = m.fileData && f && m.fileData.path === f.path ? m.fileData : null;
-    const key = `${f?.path}:${f?.line}:${f?.endLine}:${!!d}`;
+    const c = m.fileChange;
+    const diff = m.fileDiff === undefined ? "…" : m.fileDiff === null ? "x" : m.fileDiff.length;
+    const key = `${f?.path}:${f?.line}:${f?.endLine}:${!!d}:${c ? `${c.from}..${c.to}:${diff}` : ""}`;
     if (key !== this.key) {
       this.key = key;
       this.build(m, d);
@@ -544,8 +546,19 @@ export class FilePanel extends ScrollPanel {
     this.blocks = [];
     this.code = null;
     if (!f) return;
+    // Changed on the branch or in the span on the map: its diff comes first.
+    const c = m.fileChange;
+    if (c) {
+      const what = c.status === "A" ? "Added" : c.status === "D" ? "Deleted" : "Changed";
+      this.blocks.push(new Heading(`${what}${c.label ? ` on ${c.label}` : ""} · +${c.add} −${c.del}`, { size: 24, color: C.course }));
+      const diff = m.fileDiff;
+      if (diff) this.blocks.push(new DiffBlock(diff));
+      else this.blocks.push(new RichText(diff === undefined ? "_Reading the diff…_" : diff === null ? "The diff couldn't be read." : "_No changes to this file._", null, { color: C.muted }));
+      this.blocks.push(new Gap(14));
+    }
     if (!d) {
-      this.blocks = [new RichText("_Loading…_", null, { color: C.muted })];
+      // A file only the branch has isn't in the checked-out code: the diff is all there is.
+      if (!c) this.blocks = [new RichText("_Loading…_", null, { color: C.muted })];
       return this.invalidate();
     }
     const row = (p: string, names?: string[], line?: number) => ({
@@ -560,6 +573,7 @@ export class FilePanel extends ScrollPanel {
     if (importers.length) this.blocks.push(new Heading(`Imported by ${importers.length}`, { size: 22, color: C.static }), new Rows(importers.slice(0, 12), 58));
     if (d.externals.length) this.blocks.push(new RichText(`Packages: ${d.externals.slice(0, 12).map((e) => `\`${e}\``).join(" ")}`, null, { size: 21, color: C.muted }));
     this.blocks.push(new Gap(14));
+    if (c) this.blocks.push(new Heading(`Source${m.checkedOut ? ` as on ${m.checkedOut}` : ""}`, { size: 22, color: C.muted }));
     const hl = new Set<number>();
     if (f.line) for (let n = f.line; n <= (f.endLine ?? f.line); n++) hl.add(n);
     // What comes before the code, so we can scroll to a line.
