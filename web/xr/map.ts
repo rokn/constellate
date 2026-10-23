@@ -1095,6 +1095,11 @@ export class MapView {
 
   /** A point in map units to world. */
   /** The body nearest a point (map units), within `reach` of its surface: what a fingertip is touching. */
+  /** Every lit file body, in the map's own space: what can stand in front of a panel. */
+  litBodies(cb: (x: number, y: number, z: number) => void) {
+    for (let i = 0; i < this.nodes.length; i++) if (this.nodes[i].type === "file" && this.isLit(i)) cb(this.pos[i * 3], this.pos[i * 3 + 1], this.pos[i * 3 + 2]);
+  }
+
   nearest(at: THREE.Vector3, reach: number): { hit: MapHit; gap: number } | null {
     let best: { hit: MapHit; gap: number } | null = null;
     for (let i = 0; i < this.nodes.length; i++) {

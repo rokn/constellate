@@ -87,10 +87,9 @@ export abstract class Panel {
     this.texture = this.makeTexture();
     this.mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(widthM, heightM),
-      // Panels sit in the room like anything else: a body in front of one hides
-      // it, and one in front of the map hides what's behind it. The clear
-      // margins (alpha test) don't, so rounded corners don't cut holes.
-      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, alphaTest: 0.02, toneMapped: false }),
+      // Never depth-tested: the engine draws a panel either over the map, or,
+      // when the map stands in front of it, before the map so it covers it.
+      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
     );
     this.mesh.name = name;
     this.mesh.userData.panel = this;
