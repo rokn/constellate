@@ -422,6 +422,8 @@ export type UiCommand =
   | { cmd: "renamed"; renames: Renames }
   /** Headset: take the map off the table it's set down on. */
   | { cmd: "leave_table" }
+  /** Headset: which of a focus's connections light: what imports it (in), what it imports (out), or both. */
+  | { cmd: "focus_direction"; dir: "in" | "out" | "both" }
   /** Turn Tune knobs: the map's and the headset's (by key). */
   | { cmd: "tune"; map?: Record<string, number | boolean>; headset?: Record<string, number | boolean> }
   /** Switch to a preset: its knobs over the defaults (the headset's only when it keeps them). */

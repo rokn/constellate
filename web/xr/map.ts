@@ -40,6 +40,8 @@ export type MapStyle = {
   layers: Record<Layer, boolean>;
   /** With a focus made of rings: only links touching these are lit (a module's insides, then its direct connections, not the links among those). */
   core?: string[];
+  /** With a focus one way only: a lit link leaves the core (out) or arrives in it (in). */
+  coreDir?: "in" | "out";
   /** A branch or a span of history on the map: what each changed file went through. The rest fade. */
   heat?: Map<string, { add: number; del: number; status: "A" | "M" | "D" }> | null;
 };
@@ -592,7 +594,9 @@ export class MapView {
   private both(l: L) {
     const a = this.nodes[l.s].id;
     const b = this.nodes[l.t].id;
-    return this.emph.has(a) && this.emph.has(b) && (!this.core || this.core.has(a) || this.core.has(b));
+    if (!this.emph.has(a) || !this.emph.has(b) || !this.core) return this.emph.has(a) && this.emph.has(b);
+    const dir = this.style.coreDir;
+    return dir === "out" ? this.core.has(a) : dir === "in" ? this.core.has(b) : this.core.has(a) || this.core.has(b);
   }
 
   private bumped(l: L) {
