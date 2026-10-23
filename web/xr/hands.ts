@@ -131,12 +131,17 @@ export class HandGestures {
     return p ? p.thumbTip.clone().add(p.indexTip).multiplyScalar(0.5) : null;
   }
 
-  /** The inside corner of the L, where the thumb meets the index. */
-  ellCorner() {
+  /** The L: its inside corner, where the thumb meets the index, and the two fingertips. */
+  ellPoints(): Ell | null {
     const p = this.pose;
-    return p ? p.thumbKnuckle.clone().add(p.indexKnuckle).multiplyScalar(0.5) : null;
+    if (!p) return null;
+    const corner = p.thumbKnuckle.clone().add(p.indexKnuckle).multiplyScalar(0.5);
+    return { corner, index: p.indexTip.clone(), thumb: p.thumbTip.clone() };
   }
 }
+
+/** One half of a frame, in the room's space. */
+export type Ell = { corner: THREE.Vector3; index: THREE.Vector3; thumb: THREE.Vector3 };
 
 /** Whether a 2D point is inside a polygon (even-odd). */
 export function inside(x: number, y: number, poly: [number, number][]) {

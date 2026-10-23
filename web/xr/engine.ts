@@ -3,7 +3,7 @@ import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerM
 import { XRHandModelFactory } from "three/examples/jsm/webxr/XRHandModelFactory.js";
 import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
 import { Bloom } from "./bloom";
-import { HandGestures, inside } from "./hands";
+import { type Ell, HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
 import { C, Panel, Tag, roundRect } from "./ui";
 
@@ -1314,9 +1314,9 @@ export class Engine {
   private updateFraming(hands: Pointer[], now: number) {
     const l = hands.find((p) => p.handedness === "left");
     const r = hands.find((p) => p.handedness === "right");
-    const a = l?.gest?.ell && !l.press ? l.gest.ellCorner() : null;
-    const b = r?.gest?.ell && !r.press ? r.gest.ellCorner() : null;
-    if (!a || !b || a.distanceTo(b) < 0.12) {
+    const a = l?.gest?.ell && !l.press ? l.gest.ellPoints() : null;
+    const b = r?.gest?.ell && !r.press ? r.gest.ellPoints() : null;
+    if (!a || !b || a.corner.distanceTo(b.corner) < 0.12) {
       if (this.framing.since && ![...this.pointers.values()].some((p) => p.press?.kind === "lasso")) this.lasso.visible = false;
       this.framing = { since: 0, fired: false };
       return;
@@ -1333,23 +1333,48 @@ export class Engine {
     else this.h.onSelect?.(paths, "frame");
   }
 
-  /** The rectangle two L corners span, as you see it: upright, square to your view, at their depth. */
-  private frameRect(a: THREE.Vector3, b: THREE.Vector3) {
+  /**
+   * The rectangle two Ls span, as you see it: upright, square to your view, at
+   * their depth, its edges through both corners. Worked out in your view, as
+   * directions from your eye, so it lines up with your hands whatever their
+   * depths. Along each axis, fingers pointing at each other across the gap (the
+   * usual diagonal frame) leave the corners as its two sides; corners held
+   * level, or one above the other, with the fingers both pointing the same way,
+   * would make a sliver, so its far side is where those fingertips reach.
+   */
+  private frameRect(a: Ell, b: Ell) {
     const cam = this.eye();
     const view = cam.matrixWorld.clone().invert();
-    const va = a.clone().applyMatrix4(view);
-    const vb = b.clone().applyMatrix4(view);
-    const z = Math.min(-0.1, (va.z + vb.z) / 2);
-    const xa = (va.x * z) / va.z;
-    const ya = (va.y * z) / va.z;
-    const xb = (vb.x * z) / vb.z;
-    const yb = (vb.y * z) / vb.z;
+    const see = (w: THREE.Vector3) => {
+      const v = w.clone().applyMatrix4(view);
+      const d = Math.max(0.01, -v.z);
+      return { x: v.x / d, y: v.y / d, d };
+    };
+    const ells = [a, b].map((e) => {
+      const c = see(e.corner);
+      const arms = [see(e.index), see(e.thumb)].map((t) => ({ x: t.x - c.x, y: t.y - c.y }));
+      // Along each axis, how far (and which way) the finger running most that way reaches.
+      const reach = (k: "x" | "y") => arms.reduce((m, arm) => (Math.abs(arm[k]) > Math.abs(m) ? arm[k] : m), 0);
+      return { c, reach: { x: reach("x"), y: reach("y") } };
+    });
+    const span = (k: "x" | "y") => {
+      const [p, q] = ells[0].c[k] <= ells[1].c[k] ? ells : [ells[1], ells[0]];
+      const lo = p.c[k];
+      const hi = q.c[k];
+      const tips = (p.c[k] + p.reach[k] + q.c[k] + q.reach[k]) / 2;
+      if (p.reach[k] > 0 && q.reach[k] > 0) return [lo, Math.max(hi, tips)];
+      if (p.reach[k] < 0 && q.reach[k] < 0) return [Math.min(lo, tips), hi];
+      return [lo, hi];
+    };
+    const [x0, x1] = span("x");
+    const [y0, y1] = span("y");
+    const d = Math.max(0.1, (ells[0].c.d + ells[1].c.d) / 2);
     return [
-      [xa, ya],
-      [xb, ya],
-      [xb, yb],
-      [xa, yb],
-    ].map(([x, y]) => new THREE.Vector3(x, y, z).applyMatrix4(cam.matrixWorld));
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ].map(([x, y]) => new THREE.Vector3(x * d, y * d, -d).applyMatrix4(cam.matrixWorld));
   }
 
   private eye() {
