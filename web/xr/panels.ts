@@ -6,6 +6,7 @@ import type { Engine } from "./engine";
 import { FilterPanel, FocusBar } from "./filter";
 import { Shelf, TableMenu, WristPanel } from "./table";
 import { HintsPanel, TunePanel } from "./tune";
+import { ViewsPanel } from "./views";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
 
 /**
@@ -92,7 +93,7 @@ abstract class ScrollPanel extends Panel {
 export class DockPanel extends Panel {
   m: Model | null = null;
   constructor(private a: Actions) {
-    super("dock", 0.8, 0.15);
+    super("dock", 0.88, 0.15);
   }
   update(m: Model) {
     const p = this.m;
@@ -110,7 +111,9 @@ export class DockPanel extends Panel {
       p.hintsOpen !== m.hintsOpen ||
       p.repoName !== m.repoName ||
       p.placing !== m.placing ||
-      p.visibleCount !== m.visibleCount
+      p.visibleCount !== m.visibleCount ||
+      p.viewsOpen !== m.viewsOpen ||
+      p.table !== m.table
     )
       this.invalidate();
   }
@@ -137,7 +140,7 @@ export class DockPanel extends Panel {
 
     // Middle: the voice, a tour caption, a toast, or what the navigator is doing.
     const midX = 360;
-    const midW = W - midX - 620;
+    const midW = W - midX - 734;
     ctx.font = sans(23);
     let line = "";
     let color = C.text;
@@ -153,10 +156,12 @@ export class DockPanel extends Panel {
     lines.forEach((l, i) => ctx.fillText(l, midX, 52 + i * 32 + (3 - lines.length) * 16));
     if (m.toast?.undo) this.button(ctx, "undo", midX + midW - 100, this.H - 64, "Undo", m.toast.undo, { size: 22, w: 100 });
 
-    // Right: menu, tune, voice, ask, hints.
-    let x = W - PAD - 596;
+    // Right: menu, views, tune, voice, ask, hints.
+    let x = W - PAD - 710;
     const y = (this.H - 64) / 2;
     x = this.button(ctx, "menu", x, y, "Menu", this.a.toggleMenu, { w: 112, h: 64, active: m.menuOpen }) + 10;
+    // On a table the views already lie on it.
+    x = this.button(ctx, "views", x, y, "Views", this.a.toggleViews, { w: 104, h: 64, active: m.viewsOpen || m.table, accent: C.course, disabled: m.table }) + 10;
     x = this.button(ctx, "tune", x, y, "Tune", this.a.toggleTune, { w: 104, h: 64, active: m.tuneOpen }) + 10;
     const v = m.voice.state;
     const voiceLabel = v === "listening" ? "Listening" : v === "speaking" ? "Speaking" : v === "connecting" ? "…" : "Voice";
@@ -273,6 +278,7 @@ export class MenuPanel extends Panel {
     x = this.button(ctx, "docs", x, y, "Hide docs & config", () => a.setFilter({ hideDocs: !m.filter.hideDocs }), { size: 24, active: m.filter.hideDocs }) + 10;
     x = this.button(ctx, "clear", x, y, "Show everything", a.clearFilter, { size: 24, disabled: !m.filter.active }) + 10;
     x = this.button(ctx, "morefilter", x, y, "More…", a.toggleFilter, { size: 24, accent: C.static }) + 10;
+    if (!m.table) x = this.button(ctx, "views", x, y, "Views…", a.toggleViews, { size: 24, accent: C.course, active: m.viewsOpen }) + 10;
     if (m.filter.label) {
       ctx.font = sans(20);
       ctx.fillStyle = C.muted;
@@ -785,6 +791,8 @@ export class KeyboardPanel extends Panel {
             ? "Only paths matching (comma-separated: internal/**, *.go, auth)"
             : this.mode === "exclude"
               ? "Hide paths matching (comma-separated)"
+              : this.mode === "view"
+                ? "Name this view (the same name replaces it)"
               : this.target === "story"
                 ? "Write a story about…"
                 : "Ask the navigator, or jump to a file";
@@ -834,7 +842,7 @@ export class KeyboardPanel extends Panel {
     bx = this.button(ctx, "shift", bx, y, "⇧", () => ((this.shift = !this.shift), this.invalidate()), { w: keyW * 1.3, h: keyH, active: this.shift, size: 26 }) + 10;
     bx = this.button(ctx, "space", bx, y, "space", () => this.press(" "), { w: keyW * 5, h: keyH, size: 24 }) + 10;
     bx = this.button(ctx, "back", bx, y, "⌫", () => this.backspace(), { w: keyW * 1.3, h: keyH, size: 26 }) + 10;
-    const go = this.mode === "note" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
+    const go = this.mode === "note" || this.mode === "view" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
     this.button(ctx, "enter", bx, y, go, () => this.submit(), { w: W - PAD - bx, h: keyH, size: 26, accent: C.course, active: !!this.text.trim() });
   }
   private press(s: string) {
@@ -867,6 +875,7 @@ export class Panels {
   readonly tableMenu: TableMenu;
   readonly shelf: Shelf;
   readonly wrist: WristPanel;
+  readonly views: ViewsPanel;
   private lastKeyboard: Model["keyboard"] = null;
 
   constructor(
@@ -887,7 +896,8 @@ export class Panels {
     this.tableMenu = new TableMenu(a);
     this.shelf = new Shelf(a);
     this.wrist = new WristPanel(a);
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist]) engine.addPanel(p);
+    this.views = new ViewsPanel(a);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views]) engine.addPanel(p);
     // The wrist menu comes and goes with your palm, and the shelf takes bodies dropped on it: both the engine's to run.
     engine.wrist = this.wrist;
     engine.shelf = this.shelf;
@@ -895,9 +905,9 @@ export class Panels {
 
   update(m: Model) {
     const e = this.engine;
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist]) p.update(m);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views]) p.update(m);
     e.show(this.dock, "dock");
-    // On a real table: controls along its front edge, and what's off the map along its right.
+    // On a real table: controls along its front edge, what's off the map along its right, and the saved views along its left.
     if (m.table) {
       e.show(this.tableMenu, "table");
       e.show(this.shelf, "shelf");
@@ -905,6 +915,8 @@ export class Panels {
       e.hide(this.tableMenu);
       e.hide(this.shelf);
     }
+    if (m.table || m.viewsOpen) e.show(this.views, "views");
+    else e.hide(this.views);
     if (m.menuOpen) e.show(this.menu, "center");
     else e.hide(this.menu);
     if (m.tuneOpen) e.show(this.tune, "tune");

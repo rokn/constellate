@@ -287,7 +287,11 @@ const HINTS: HintGroup[] = [
     rows: [
       ["Strip on the near edge", "Back, the whole map, menus, voice"],
       ["Shelf on the right edge", "What's off the map: press one to put it back"],
+      ["Views on the left edge", "Your saved filters: press one to switch to it"],
+      ["Tap a panel on the table", "Press its buttons with a fingertip, against the table"],
+      ["Carry a panel down to the table, or up to a wall", "Let go when the green outline shows: it snaps flat onto it"],
       ["Drop a dragged body on the shelf", "Take it off the map"],
+      ["Menu → Recenter panels", "Put the table's panels back on its edges"],
       ["Menu → Place on a surface", "Move the map to another table"],
     ],
   },

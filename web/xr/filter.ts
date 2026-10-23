@@ -84,9 +84,15 @@ export class FilterPanel extends Panel {
       y += 46;
     }
 
+    const same = (a: MapFilter, b: MapFilter) => JSON.stringify({ ...EMPTY_FILTER, ...a }) === JSON.stringify({ ...EMPTY_FILTER, ...b });
+    const current = m.savedFilters.find((v) => same(v.filter, f));
+    // Saving names it on the room's keyboard; the views themselves are on the table, or behind the dock's Views.
+    if (m.filter.active && !current) {
+      this.button(ctx, "saveview", W - PAD - 220, y, "Save as a view…", () => this.a.openKeyboard("view", undefined, f.label ?? ""), { size: 20, w: 220, h: 38, accent: C.course });
+      if (!m.savedFilters.length) y += 58;
+    }
     if (m.savedFilters.length) {
       heading("Saved views");
-      const same = (a: MapFilter, b: MapFilter) => JSON.stringify({ ...EMPTY_FILTER, ...a }) === JSON.stringify({ ...EMPTY_FILTER, ...b });
       chips(
         m.savedFilters.map((v) => {
           const on = same(v.filter, f);

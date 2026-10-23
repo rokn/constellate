@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { sfx } from "./sound";
 
 /**
  * Panels in the room. There is no DOM inside an immersive session, so every
@@ -63,6 +64,8 @@ export abstract class Panel {
   H: number;
   regions: Region[] = [];
   hover: string | null = null;
+  /** The region a pointer or fingertip is pressing right now: it shows pushed in. */
+  pressed: string | null = null;
   dirty = true;
   /** Body scroll, in canvas px. */
   scrollY = 0;
@@ -165,11 +168,13 @@ export abstract class Panel {
     const r = this.regionAt(x, y);
     if (kind === "leave") {
       this.presses.delete(who);
+      this.setPressed();
       return this.setHover(null), false;
     }
     if (kind === "down") {
       this.presses.set(who, { x, y, scroll: this.scrollY, region: r, moved: false, drag: !!r?.onDrag });
       r?.onDrag?.(x, y);
+      this.setPressed();
       return !!r;
     }
     if (kind === "move") {
@@ -181,7 +186,9 @@ export abstract class Panel {
       }
       if (p) {
         // Dragging the body scrolls it, the way a finger does on a page.
-        if (Math.abs(y - p.y) > CLICK_SLOP || Math.abs(x - p.x) > CLICK_SLOP) p.moved = true;
+        if (Math.abs(y - p.y) > CLICK_SLOP || Math.abs(x - p.x) > CLICK_SLOP) {
+          if (!p.moved) (p.moved = true), this.setPressed();
+        }
         if (p.moved && this.maxScroll > 0) this.scrollTo(p.scroll - (y - p.y) * 1.4);
       }
       this.setHover(r?.onClick ? r.id : null);
@@ -190,12 +197,25 @@ export abstract class Panel {
     // up
     const p = this.presses.get(who);
     this.presses.delete(who);
+    this.setPressed();
     if (p?.drag) {
       p.region!.onRelease?.();
       return true;
     }
-    if (p && !p.moved && r && p.region?.id === r.id) r.onClick?.();
+    if (p && !p.moved && r && p.region?.id === r.id && r.onClick) {
+      sfx.play("tick", this.mesh.getWorldPosition(new THREE.Vector3()));
+      r.onClick();
+    }
     return !!r;
+  }
+
+  /** What's held down now, from the presses in progress that haven't wandered off into a scroll. */
+  private setPressed() {
+    const held = [...this.presses.values()].find((p) => !p.moved && p.region?.onClick && !p.drag);
+    const id = held?.region?.id ?? null;
+    if (id === this.pressed) return;
+    this.pressed = id;
+    this.dirty = true;
   }
 
   setHover(id: string | null) {
@@ -246,12 +266,13 @@ export abstract class Panel {
     const w = o.w ?? Math.ceil(ctx.measureText(text).width + 36);
     const h = o.h ?? Math.round(size * 1.9);
     const hot = this.hover === id && !o.disabled;
+    const down = this.pressed === id && !o.disabled;
     const accent = o.accent ?? C.static;
     roundRect(ctx, x, y, w, h, 12);
-    ctx.fillStyle = o.active ? withAlpha(accent, 0.22) : hot ? "rgba(91, 214, 255, 0.16)" : C.panel2;
+    ctx.fillStyle = down ? withAlpha(accent, 0.42) : o.active ? withAlpha(accent, 0.22) : hot ? "rgba(91, 214, 255, 0.16)" : C.panel2;
     ctx.fill();
     ctx.lineWidth = 2;
-    ctx.strokeStyle = o.active ? accent : hot ? withAlpha(C.static, 0.7) : C.line;
+    ctx.strokeStyle = o.active || down ? accent : hot ? withAlpha(C.static, 0.7) : C.line;
     ctx.stroke();
     ctx.fillStyle = o.disabled ? withAlpha(C.muted, 0.6) : o.active ? accent : C.text;
     ctx.textAlign = "center";

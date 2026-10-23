@@ -1583,6 +1583,7 @@ export function App() {
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),
       setXR: (patch) => setXRSettings((x) => ({ ...x, ...patch })),
       setMapFilter: (f) => setFilter(f),
+      setSavedFilters: (list) => setSavedFilters(list),
       focusAround: (h, depth) => {
         const { paths, label } = filesOfHit(h);
         const shown = (p: string) => (visible ? visible.has(p) : onMap.has(p));

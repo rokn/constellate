@@ -7,7 +7,7 @@ import type { VoiceState } from "../lib/useVoice";
 import type { Mode } from "./engine";
 import type { MapHit } from "./map";
 
-export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent";
+export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent" | "view";
 
 /**
  * What the headset's panels show, in one object. The desktop app (App.tsx)
@@ -69,6 +69,8 @@ export type Model = {
   tuneOpen: boolean;
   hintsOpen: boolean;
   filterOpen: boolean;
+  /** The saved views panel, away from a table (on one, it lies along the left edge). */
+  viewsOpen: boolean;
   /** On a real table (passthrough, placed): its menu and shelf are out. */
   table: boolean;
   /** What you're holding: the controls page lists what these can do. */
@@ -126,6 +128,9 @@ export type Actions = {
   toggleFilter: () => void;
   /** Replace the whole filter. */
   setMapFilter: (f: MapFilter) => void;
+  /** Replace the saved views (the desktop's Filter panel keeps the same list). */
+  setSavedFilters: (list: SavedFilter[]) => void;
+  toggleViews: () => void;
   /**
    * Light a body (a file, a module's files, a folder's) and `depth` rings of
    * its import neighbours; fly there. Says what it lit, and whether there's a
@@ -150,7 +155,7 @@ export type Actions = {
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "focus" | "table" | "inputs">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
@@ -170,6 +175,7 @@ export type AppActions = Omit<
   | "toggleHints"
   | "relayout"
   | "toggleFilter"
+  | "toggleViews"
   | "focusWider"
   | "focusNarrower"
   | "focusOnly"
