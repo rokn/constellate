@@ -24,6 +24,9 @@ export type XRSettings = {
   floorOpacity: number;
   floorSize: number;
   floorInAR: boolean;
+  /** A faint disc where the map is set down: the table you placed it on in passthrough, in front of you otherwise. */
+  table: boolean;
+  tableOpacity: number;
   // Comfort
   flySpeed: number;
   /** The left stick pushes the map around instead of flying you through it. */
@@ -62,6 +65,8 @@ export const DEFAULT_XR: XRSettings = {
   floorOpacity: 0.5,
   floorSize: 8,
   floorInAR: false,
+  table: true,
+  tableOpacity: 0.6,
   flySpeed: 1,
   stickMovesMap: false,
   flyWhereLooking: false,
@@ -114,6 +119,8 @@ export const XR_SECTIONS: XRSection[] = [
       t("floor", "Floor in VR", "A grid where your real floor is, so the sky has somewhere to stand"),
       r("floorOpacity", "Floor brightness", 0.05, 1, 0.01),
       r("floorSize", "Floor size (m)", 2, 30, 0.5),
+      t("table", "Table under the map", "Where the map is set down: the surface you placed it on in passthrough, in front of you otherwise"),
+      r("tableOpacity", "Table brightness", 0.05, 1, 0.01),
     ],
   },
   {

@@ -21,9 +21,10 @@ import { C, Panel, Tag, roundRect } from "./ui";
  * move the world group, which keeps the real room (in AR) and your own body
  * (in VR) where they are, and is the comfortable way to fly in a headset.
  *
- * Two scenes are drawn each frame: the map (with the stars, the floor and the
- * passthrough dimmer), which gets the desktop's bloom (see bloom.ts), and the
- * overlay over it (panels, hands, rays and tags), which stays crisp.
+ * Two scenes are drawn each frame: the map (with the stars, the floor, the
+ * table it's set down on and the passthrough dimmer), which gets the desktop's
+ * bloom (see bloom.ts), and the overlay over it (panels, hands, rays and
+ * tags), which stays crisp.
  */
 
 export type Mode = "flat" | "vr" | "ar";
@@ -141,6 +142,12 @@ export class Engine {
 
   private stars: THREE.Points;
   private floor: THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial>;
+  /**
+   * Where the map is set down, in the room: it holds still while you move the
+   * map, and the overview puts the map back on it. Placed by `placeSurface`.
+   */
+  private surface: THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial>;
+  private surfaceSet = false;
   /** In passthrough, the night drawn over your room as much as you ask for. */
   private backdrop: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   private bloom: Bloom | null = null;
@@ -230,6 +237,9 @@ export class Engine {
     this.scene.add(this.backdrop);
     this.floor = makeFloor();
     this.scene.add(this.floor);
+    // Only drawn, never pointed at: rays, grabs and panels go straight through it.
+    this.surface = makeSurface();
+    this.scene.add(this.surface);
 
     // A far starfield, so there is something to fly past. It belongs to the
     // room, not the map: it holds still while the map moves, which keeps the
@@ -282,7 +292,7 @@ export class Engine {
     this.applyRoom();
   }
 
-  /** The floor, the passthrough dimmer and the stars, for this mode and these settings. */
+  /** The floor, the table, the passthrough dimmer and the stars, for this mode and these settings. */
   private applyRoom() {
     const s = this.settings;
     const ar = this.mode === "ar";
@@ -297,7 +307,27 @@ export class Engine {
     this.floor.visible = (ar ? s.floorInAR : s.floor && this.mode === "vr") && s.floorOpacity > 0;
     this.floor.scale.setScalar(s.floorSize / 2);
     this.floor.material.uniforms.uOpacity.value = s.floorOpacity;
+    // While you're choosing a surface, the reticle says where; the old table would only confuse it.
+    this.surface.visible = this.surfaceSet && this.mode !== "flat" && !this.placing && s.table && s.tableOpacity > 0;
+    this.surface.material.uniforms.uOpacity.value = s.tableOpacity;
   }
+
+  /**
+   * Put the table where the overview sets the map down: on the surface you
+   * placed it on (AR), else under the overview's framing in front of you.
+   */
+  private placeSurface() {
+    const f = this.overviewFrame();
+    // On the real table when one was found under the anchor, else at the anchor.
+    if (this.mode === "ar" && (this.table || this.anchor)) this.surface.position.copy(this.table?.center ?? this.anchor!);
+    else {
+      const { pos, yaw } = this.head();
+      this.surface.position.set(pos.x - Math.sin(yaw) * f.dist, Math.max(0.05, pos.y + f.dy - f.radiusM), pos.z - Math.cos(yaw) * f.dist);
+    }
+    this.surface.scale.setScalar(f.radiusM * 1.25);
+    this.surfaceSet = true;
+  }
+
 
   private onResize = () => {
     if (this.renderer.xr.isPresenting) return;
@@ -346,8 +376,12 @@ export class Engine {
     this.placed.clear();
     this.setMode(mode);
     if (mode === "ar") void this.restoreAnchor(session);
-    // Once the first poses are in, frame what you were looking at (or the whole map).
-    setTimeout(() => (this.h.onEntered ? this.h.onEntered() : this.overview(900)), 400);
+    // Once the first poses are in, set the surface in front of you and frame what you were looking at (or the whole map).
+    setTimeout(() => {
+      this.placeSurface();
+      if (this.h.onEntered) this.h.onEntered();
+      else this.overview(900);
+    }, 400);
   }
 
   exit() {
@@ -370,6 +404,7 @@ export class Engine {
       this.tableFrom = null;
       this.setTable(null);
     }
+    this.surfaceSet = false;
     this.applyRoom();
     this.recenterPanels();
     this.h.onMode(mode);
@@ -544,13 +579,20 @@ export class Engine {
   overview(ms = this.flyMs() * 1.1) {
     const b = this.map.bounds();
     if (!b) return;
-    if (this.mode === "ar") {
-      const at = this.anchor ? this.anchor.clone().add(new THREE.Vector3(0, 0.38, 0)) : undefined;
-      this.frameAt(b.center, b.radius, { radiusM: 0.38, dist: 0.95, dy: -0.4, ms, at });
-    } else if (this.mode === "vr") this.frameAt(b.center, b.radius, { radiusM: 1.1, dist: 2.0, dy: -0.1, ms });
-    else this.frameAt(b.center, b.radius, { radiusM: 0.85, dist: 1.65, dy: 0.05, ms });
+    const f = this.overviewFrame();
+    const at = this.mode === "ar" && this.anchor ? this.anchor.clone().add(new THREE.Vector3(0, f.radiusM, 0)) : undefined;
+    this.frameAt(b.center, b.radius, { ...f, ms, at });
+    // The map is set down again: the table goes under it.
+    if (this.mode !== "flat") this.placeSurface();
     // Then it drifts, as the desktop's overview does (on the table or in the preview; turning the whole sky around you in VR is no comfort).
     this.drift = true;
+  }
+
+  /** How the overview frames the whole map: small on the table in AR, all around you in VR, further out in the preview. */
+  private overviewFrame() {
+    if (this.mode === "ar") return { radiusM: 0.38, dist: 0.95, dy: -0.4 };
+    if (this.mode === "vr") return { radiusM: 1.1, dist: 2.0, dy: -0.1 };
+    return { radiusM: 0.85, dist: 1.65, dy: 0.05 };
   }
 
   /** "Focus distance": how close flights stop. Further away is the same framing, smaller. */
@@ -1831,6 +1873,50 @@ function makeFloor() {
   floor.renderOrder = -4;
   floor.visible = false;
   return floor;
+}
+
+/**
+ * The table top the map sits on: a faint glassy disc with a brighter rim, so
+ * the surface reads in the headset without hiding anything under it (it
+ * writes no depth, and the map draws over it).
+ */
+function makeSurface() {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uOpacity: { value: 0.6 }, uColor: { value: new THREE.Color(C.static).multiplyScalar(0.6) } },
+    vertexShader: /* glsl */ `
+      varying vec2 vR;
+      void main() {
+        vR = position.xz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uOpacity;
+      uniform vec3 uColor;
+      varying vec2 vR;
+      float ring(float r, float at, float w) {
+        return 1.0 - smoothstep(w, w + fwidth(r) * 1.5, abs(r - at));
+      }
+      void main() {
+        float r = length(vR);
+        // The top: a faint fill, a touch brighter in the middle where the map stands.
+        float top = (0.07 + 0.08 * (1.0 - smoothstep(0.0, 0.9, r))) * (1.0 - smoothstep(0.95, 0.97, r));
+        float rim = ring(r, 0.97, 0.008);
+        float inner = ring(r, 0.62, 0.002) * 0.3;
+        float alpha = (top + rim * 0.75 + inner) * uOpacity;
+        gl_FragColor = vec4(uColor * (0.5 + rim * 0.7), alpha);
+        #include <colorspace_fragment>
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const surface = new THREE.Mesh(new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2), mat);
+  // Over the floor grid, under the map.
+  surface.renderOrder = -3;
+  surface.visible = false;
+  return surface;
 }
 
 /** The pill under each panel that carries it. */
