@@ -414,6 +414,8 @@ export type UiCommand =
   | { cmd: "replay" }
   /** Put a branch on the map, lit against where it forked from `base` (an agent's: where it started). */
   | { cmd: "show_branch"; branch: string; base?: string; agent?: string }
+  /** Back to the map as it's checked out. */
+  | { cmd: "close_branch" }
   /** Files moved; what the page keeps by path (its filter) follows them. */
   | { cmd: "renamed"; renames: Renames };
 

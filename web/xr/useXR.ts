@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryRepo } from "../../shared/types";
-import { fetchFile, type FileData } from "../lib/api";
+import { fetchFile, post, type FileData } from "../lib/api";
 import type { Mode } from "./engine";
 import type { MapHit, MapInput, MapStyle } from "./map";
 import { splitList } from "../../shared/filter";
-import type { Actions, AppActions, AppModel, Model } from "./model";
+import type { Actions, AppActions, AppModel, BranchRow, Model } from "./model";
 import type { Room, StorySource } from "./room";
 import { suggest } from "./suggest";
 
@@ -81,6 +81,7 @@ export function useXR(feed: XRFeed) {
   const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
   const [fileData, setFileData] = useState<FileData | null>(null);
   const [repos, setRepos] = useState<LibraryRepo[]>([]);
+  const [branches, setBranches] = useState<Model["branches"]>(null);
   const [error, setError] = useState<string | null>(null);
   const [entering, setEntering] = useState(false);
   const feedRef = useRef(feed);
@@ -217,7 +218,29 @@ export function useXR(feed: XRFeed) {
       setMenuOpen(false);
       feedRef.current.actions.startTour();
     },
+    showBranch: (name, base) => {
+      setMenuOpen(false);
+      feedRef.current.actions.showBranch(name, base);
+    },
+    showAgent: (id) => {
+      setMenuOpen(false);
+      feedRef.current.actions.showAgent(id);
+    },
+    fetchBranches: () => {
+      setBranches((b) => b && { ...b, fetching: true, error: undefined });
+      void loadBranches(post("/api/branches/fetch"));
+    },
   };
+  /** The branches, from a list or a fetch of the remotes; a failed fetch keeps the list it had. */
+  const loadBranches = (req: Promise<Response>) =>
+    req
+      .then(async (r) => {
+        const j = (await r.json().catch(() => ({}))) as { base?: string; branches?: BranchRow[]; error?: string; failed?: { remote: string }[] };
+        if (!r.ok || !j.base) throw new Error(j.error ?? "Couldn't list the branches.");
+        const failed = j.failed?.length ? `Couldn't fetch ${j.failed.map((f) => f.remote).join(", ")}.` : undefined;
+        setBranches({ base: j.base, list: j.branches ?? [], fetching: false, error: failed });
+      })
+      .catch((e) => setBranches((b) => ({ base: b?.base ?? "", list: b?.list ?? [], fetching: false, error: String(e instanceof Error ? e.message : e) })));
   /** The filter from before "Show only these", to go back to. */
   const beforeOnly = useRef<AppModel["mapFilter"] | null>(null);
   /** Focus on a body with `depth` rings of its connections. */
@@ -359,10 +382,15 @@ export function useXR(feed: XRFeed) {
   useEffect(() => {
     if (presenting && menuOpen && feed.model.library) void fetch("/api/repos").then((r) => (r.ok ? r.json() : [])).then(setRepos).catch(() => {});
   }, [presenting, menuOpen, feed.model.library]);
+  // Fresh each time the menu opens, as an agent may have made one since.
+  useEffect(() => {
+    if (presenting && menuOpen && feed.model.status !== "idle" && feed.model.status !== "scanning") void loadBranches(fetch("/api/branches"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenting, menuOpen, feed.model.status]);
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

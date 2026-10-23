@@ -18,6 +18,11 @@ import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } 
 
 const PAD = 34;
 
+const ago = (at: number) => {
+  const h = (Date.now() - at) / 3_600_000;
+  return h < 1 ? "just now" : h < 24 ? `${Math.round(h)}h ago` : h < 48 ? "yesterday" : `${Math.round(h / 24)} days ago`;
+};
+
 /* ----------------------------- scroll panel ----------------------------- */
 
 abstract class ScrollPanel extends Panel {
@@ -92,6 +97,8 @@ abstract class ScrollPanel extends Panel {
 /** Under your gaze: what's going on, what the voice is saying, and the way to the menu. */
 export class DockPanel extends Panel {
   m: Model | null = null;
+  /** Opens the menu on its Branches tab; the room wires it to the menu. */
+  openBranches = () => {};
   constructor(private a: Actions) {
     super("dock", 0.88, 0.15);
   }
@@ -113,7 +120,9 @@ export class DockPanel extends Panel {
       p.placing !== m.placing ||
       p.visibleCount !== m.visibleCount ||
       p.viewsOpen !== m.viewsOpen ||
-      p.table !== m.table
+      p.table !== m.table ||
+      p.branch !== m.branch ||
+      p.checkedOut !== m.checkedOut
     )
       this.invalidate();
   }
@@ -127,10 +136,14 @@ export class DockPanel extends Panel {
     ctx.fillStyle = C.text;
     ctx.fillText(fit(ctx, m.repoName ?? "Constellate", 300), PAD, 56);
     ctx.font = sans(21);
+    const files = `${m.visibleCount} files${m.filter.active ? " (filtered)" : ""}`;
+    const b = m.branch;
     const status =
-      m.status === "scanning" ? "scanning…" : m.status === "analyzing" ? "charting the modules…" : m.status === "error" ? "error" : m.status === "idle" ? "no repository open" : `${m.visibleCount} files${m.filter.active ? " (filtered)" : ""}`;
-    ctx.fillStyle = m.status === "error" ? C.bad : C.muted;
+      m.status === "scanning" ? "scanning…" : m.status === "analyzing" ? "charting the modules…" : m.status === "error" ? "error" : m.status === "idle" ? "no repository open" : b ? `⑂ ${b.agent ?? b.name}` : m.checkedOut ? `${m.checkedOut} · ${files}` : files;
+    ctx.fillStyle = m.status === "error" ? C.bad : b ? C.course : C.muted;
     ctx.fillText(fit(ctx, status, 300), PAD, 92);
+    // Which branch the map is: pointing here is the way to another.
+    if (m.status !== "idle" && m.status !== "scanning") this.row(ctx, "branch", PAD - 14, 18, 328, this.H - 36, this.openBranches);
     if (m.busy) {
       ctx.fillStyle = C.course;
       ctx.beginPath();
@@ -173,7 +186,9 @@ export class DockPanel extends Panel {
 
 /* --------------------------------- menu --------------------------------- */
 
-type Tab = "map" | "modules" | "answers" | "stories" | "agents" | "repo";
+type Row = { id: string; label: string; detail?: string; color?: string; active?: boolean; onClick: () => void; extra?: { label: string; onClick: () => void; active?: boolean }[] };
+
+type Tab = "map" | "modules" | "answers" | "stories" | "agents" | "branches" | "repo";
 
 export class MenuPanel extends Panel {
   m: Model | null = null;
@@ -202,7 +217,7 @@ export class MenuPanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story"] as const).some((k) => p[k] !== m[k])) this.invalidate();
+    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story"] as const).some((k) => p[k] !== m[k])) this.invalidate();
   }
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
@@ -214,6 +229,7 @@ export class MenuPanel extends Panel {
       ["answers", `Answers${m.frames.length ? ` ${m.frames.length}` : ""}`],
       ["stories", `Stories${m.stories.length ? ` ${m.stories.length}` : ""}`],
       ...(m.agentsOn ? ([["agents", `Agents${m.agents.length ? ` ${m.agents.length}` : ""}`]] as [Tab, string][]) : []),
+      ["branches", "Branches"],
       ["repo", "Repo"],
     ];
     let x = PAD;
@@ -224,6 +240,56 @@ export class MenuPanel extends Panel {
     const top = 112;
     if (this.tab === "map") this.mapTab(ctx, m, top);
     else this.listTab(ctx, m, top);
+  }
+
+  /** Opened on a tab, at its top. */
+  showTab(t: Tab) {
+    this.tab = t;
+    this.scrollY = 0;
+    this.invalidate();
+  }
+
+  /**
+   * The branches with work of their own, newest first: pick one and the map
+   * becomes the code on it, lit against where it forked. An agent's goes by
+   * its title, and shows against where it started.
+   */
+  private branchRows(m: Model): Row[] {
+    const a = this.a;
+    const b = m.branch;
+    const rows: Row[] = [];
+    const here = m.checkedOut ?? "the checked-out code";
+    if (b) {
+      const size = b.error ?? (b.loading ? "building its map…" : `${b.commits} commits · ${b.files} files · +${b.add} −${b.del}`);
+      rows.push({ id: "shown", label: `On the map: ${b.agent ?? b.name}`, detail: `${b.agent ? `${b.name} · ` : ""}${size}`, color: b.error ? C.bad : C.course, active: true, onClick: () => {} });
+      rows.push({ id: "present", label: `Back to ${here}`, detail: "The map as it's checked out now", onClick: a.closeBranch });
+    }
+    const list = m.branches;
+    const agentOf = new Map(m.agents.map((g) => [g.branch, g]));
+    for (const x of list?.list ?? []) {
+      if (x.name === list!.base || x.ahead === 0) continue;
+      const ag = agentOf.get(x.name);
+      const shown = b?.name === x.name;
+      if (shown) continue;
+      const where = [`${x.ahead} ahead`, x.behind ? `${x.behind} behind` : "", x.current ? "checked out" : "", x.remote ? "remote" : "", ago(x.at)].filter(Boolean).join(" · ");
+      rows.push({
+        id: `b:${x.name}`,
+        label: ag ? ag.title : x.name,
+        detail: `${ag ? `${x.name} · ` : ""}${where} · ${x.subject}`,
+        color: ag ? C.runtime : x.remote ? C.muted : C.static,
+        onClick: () => (ag ? a.showAgent(ag.id) : a.showBranch(x.name, list!.base)),
+      });
+    }
+    if (!list) rows.push({ id: "loading", label: "Listing the branches…", onClick: () => {} });
+    else if (rows.length === (b ? 2 : 0)) rows.push({ id: "none", label: `No branches ahead of ${list.base}`, detail: list.error ?? "Start an agent, or fetch to see others' branches.", onClick: () => {} });
+    else if (list.error) rows.push({ id: "err", label: "Not all of them", detail: list.error, color: C.bad, onClick: () => {} });
+    rows.push({
+      id: "fetch",
+      label: list?.fetching ? "Fetching…" : "Fetch from the remote",
+      detail: "Others' branches as they are now",
+      onClick: () => !list?.fetching && a.fetchBranches(),
+    });
+    return rows;
   }
 
   private section(ctx: CanvasRenderingContext2D, label: string, y: number) {
@@ -305,7 +371,6 @@ export class MenuPanel extends Panel {
   private listTab(ctx: CanvasRenderingContext2D, m: Model, top: number) {
     const a = this.a;
     const rowH = 66;
-    type Row = { id: string; label: string; detail?: string; color?: string; active?: boolean; onClick: () => void; extra?: { label: string; onClick: () => void; active?: boolean }[] };
     let rows: Row[] = [];
     if (this.tab === "modules") {
       rows = m.legend.rows.map((r) => ({
@@ -368,11 +433,14 @@ export class MenuPanel extends Panel {
           label: ag.title,
           detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}${ag.pr.state === "merged" ? " merged" : ""}` : ""} · ${what}`,
           color: dot[ag.status],
-          onClick: () => a.focusAgent(ag.id),
+          active: m.branch?.name === ag.branch,
+          onClick: () => a.showAgent(ag.id),
           extra,
         };
       });
       rows.push({ id: "new", label: "Start an agent…", detail: "It changes the code on a branch of its own. Or just ask the voice.", onClick: () => a.openKeyboard("agent") });
+    } else if (this.tab === "branches") {
+      rows = this.branchRows(m);
     } else {
       rows = [];
       if (m.library) {
@@ -877,6 +945,7 @@ export class Panels {
   readonly wrist: WristPanel;
   readonly views: ViewsPanel;
   private lastKeyboard: Model["keyboard"] = null;
+  private menuOpen = false;
 
   constructor(
     private engine: Engine,
@@ -885,6 +954,10 @@ export class Panels {
     const links: Links = { isFile: a.isFile, open: (p, l, e) => a.openFile(p, l, e) };
     this.dock = new DockPanel(a);
     this.menu = new MenuPanel(a);
+    this.dock.openBranches = () => {
+      this.menu.showTab("branches");
+      if (!this.menuOpen) a.toggleMenu();
+    };
     this.file = new FilePanel(a, links);
     this.answer = new AnswerPanel(a, links);
     this.story = new StoryPanel(a, links);
@@ -917,6 +990,7 @@ export class Panels {
     }
     if (m.table || m.viewsOpen) e.show(this.views, "views");
     else e.hide(this.views);
+    this.menuOpen = m.menuOpen;
     if (m.menuOpen) e.show(this.menu, "center");
     else e.hide(this.menu);
     if (m.tuneOpen) e.show(this.tune, "tune");

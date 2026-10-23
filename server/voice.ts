@@ -8,6 +8,7 @@ import { findPath } from "./scan";
 import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
 import { AGENTS_ON, onAgentFinished } from "./agents";
 import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
+import { listBranches } from "./branch";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -70,6 +71,10 @@ const TOOLS = [
     span: { type: "string", enum: ["last_commit", "day", "week", "month", "all", "uncommitted"] },
   }, ["span"]),
   fn("clear_history", "Back to the present: stop showing history on the map."),
+  fn("show_branch", "Put a branch on the map (names from the branches list): the map becomes the code on that branch, with what it changed since it forked lit, and the camera flies there. Instant. For an agent's branch, use show_agent.", {
+    branch: { type: "string", description: "The branch name; a close guess like 'login' is fine" },
+  }, ["branch"]),
+  fn("close_branch", "Back to the map as it's checked out: stop showing a branch."),
   fn("replay_history", "Play through the commits toward the present, one at a time: the map turns to each commit in turn."),
   fn("add_marker", "Put a marker on files by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a marker that needs the code read to choose its files, ask the navigator.", {
     label: { type: "string" },
@@ -96,7 +101,7 @@ const TOOLS = [
 const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
 
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["show_agent", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
+const SILENT = new Set(["show_agent", "show_branch", "close_branch", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
 /** The least time between two instruction updates. */
@@ -142,7 +147,10 @@ function frameDoc(frame: Frame | undefined): string {
     .join("\n");
 }
 
-function instructions(screen: ScreenContext): string {
+/** The branches worth showing: those with commits their base doesn't have. */
+type Branches = { base: string; names: string[] };
+
+function instructions(screen: ScreenContext, branches: Branches | null): string {
   const s = session.state;
   const o = s.overview;
   const frame = s.frames.find((f) => f.id === screen.frameId) ?? s.frames.at(-1);
@@ -183,6 +191,10 @@ function instructions(screen: ScreenContext): string {
     s.overlays.length
       ? `Markers on the map (for edit_markers): ${s.overlays.map((g) => `[${g.id}] ${g.label} — ${g.paths.length} files${g.frameId ? `, from answer ${g.frameId}` : ""}${g.visible ? "" : " (hidden)"}`).join("; ")}`
       : "",
+    branches?.names.length
+      ? `Branches ahead of ${branches.base} (for show_branch), newest first: ${branches.names.slice(0, 30).join(", ")}${s.repo?.branch ? `. Checked out: ${s.repo.branch}` : ""}.`
+      : "",
+    screen.branch ? `The map is showing the branch ${screen.branch.name}${screen.branch.base ? ` against ${screen.branch.base}` : ""}; close_branch goes back to the checked-out code.` : "",
     screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.lens ? `The map is organized by: ${screen.lens}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
@@ -256,6 +268,8 @@ function bridge(client: WebSocket) {
   }
 
   let screen: ScreenContext = {};
+  let branches: Branches | null = null;
+  let branchesAt = 0;
   let settings = DEFAULTS;
   let upstream: WebSocket | null = null;
   let ready = false;
@@ -287,7 +301,7 @@ function bridge(client: WebSocket) {
     clearTimeout(syncTimer);
     syncTimer = undefined;
     if (!ready) return;
-    const text = instructions(screen);
+    const text = instructions(screen, branches);
     if (text === lastInstructions) return;
     lastInstructions = text;
     lastSync = Date.now();
@@ -313,6 +327,20 @@ function bridge(client: WebSocket) {
     if (!pendingSync || userSpeaking || responseActive) return;
     pendingSync = false;
     sync();
+  };
+
+  /** The branch list, read again at most every 20s: an agent may have made one since. */
+  const refreshBranches = () => {
+    const root = session.idx?.graph.root;
+    if (!root || Date.now() - branchesAt < 20_000) return;
+    branchesAt = Date.now();
+    void listBranches(root).then(
+      (b) => {
+        branches = { base: b.base, names: b.branches.filter((x) => x.name !== b.base && x.ahead > 0).map((x) => x.name) };
+        sync();
+      },
+      () => undefined,
+    );
   };
 
   /**
@@ -472,6 +500,23 @@ function bridge(client: WebSocket) {
       case "clear_history":
         command({ cmd: "clear_range" });
         return { ok: true };
+      case "show_branch": {
+        const want = str("branch");
+        const names = branches?.names ?? [];
+        const bare = (n: string) => n.replace(/^[^/]+\//, "");
+        const lower = want.toLowerCase();
+        const hits = names.includes(want)
+          ? [want]
+          : [names.filter((n) => n.toLowerCase() === lower || bare(n).toLowerCase() === lower), names.filter((n) => n.toLowerCase().includes(lower))].find((h) => h.length) ?? [];
+        if (!want || hits.length !== 1) {
+          return { ok: false, error: hits.length ? `"${want}" could be ${hits.slice(0, 6).join(", ")}: ask which.` : `No branch matches "${want}". The branches: ${names.slice(0, 20).join(", ") || "none ahead of the base"}.` };
+        }
+        command({ cmd: "show_branch", branch: hits[0], base: branches?.base });
+        return { ok: true, branch: hits[0] };
+      }
+      case "close_branch":
+        command({ cmd: "close_branch" });
+        return { ok: true };
       case "replay_history":
         command({ cmd: "replay" });
         return { ok: true, say: "Narrate each commit briefly as it flies by." };
@@ -582,7 +627,7 @@ function bridge(client: WebSocket) {
 
       switch (msg.type) {
         case "session.created":
-          lastInstructions = instructions(screen);
+          lastInstructions = instructions(screen, branches);
           ws.send(JSON.stringify(sessionUpdate(lastInstructions, settings)));
           return;
         case "session.updated":
@@ -640,13 +685,14 @@ function bridge(client: WebSocket) {
     if (msg.type === "proxy.settings") {
       settings = { ...DEFAULTS, ...(msg.settings ?? {}) };
       if (ready) {
-        lastInstructions = instructions(screen);
+        lastInstructions = instructions(screen, branches);
         send(sessionUpdate(lastInstructions, settings));
       }
       return;
     }
     if (msg.type === "proxy.screen") {
       screen = msg.screen ?? {};
+      refreshBranches();
       sync();
       return;
     }

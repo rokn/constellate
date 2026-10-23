@@ -18,6 +18,9 @@ export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "ag
 
 export type LegendRow = { id: string; label: string; color?: string; count: number; isolated?: "in" | "out" };
 
+/** A branch with work of its own, as /api/branches lists it. */
+export type BranchRow = { name: string; current: boolean; remote: boolean; ahead: number; behind: number; subject: string; at: number };
+
 export type Model = {
   status: string;
   error?: string;
@@ -55,6 +58,12 @@ export type Model = {
   /** Coding agents, and whether this server lets you start them. */
   agents: AgentRun[];
   agentsOn: boolean;
+  /** The branch checked out: the map shows it when no other branch is on. */
+  checkedOut?: string;
+  /** The branch on the map, lit against its base (an agent's: where it started); `loading` while its maps build. */
+  branch: { name: string; base?: string; agent?: string; commits: number; files: number; add: number; del: number; loading: boolean; error?: string } | null;
+  /** The repo's branches, fetched while the menu is open; `fetching` while the remotes are being fetched. */
+  branches: { base: string; list: BranchRow[]; fetching: boolean; error?: string } | null;
   story: { story: Story; beat: number; ms: number; playing: boolean; stage: Stage } | null;
   repos: LibraryRepo[];
   mode: Mode;
@@ -148,14 +157,20 @@ export type Actions = {
   startAgent: (task: string) => void;
   /** Light up these files and fly there (a lasso or a frame made by hand), under this name. */
   focusPaths: (paths: string[], label: string) => void;
-  /** Light up an agent's files and fly there. */
-  focusAgent: (id: string) => void;
+  /** Put an agent's branch on the map, lit against where it started, and fly to what it changed. */
+  showAgent: (id: string) => void;
+  /** Put a branch on the map, lit against `base` (the default branch when left out). */
+  showBranch: (name: string, base?: string) => void;
+  /** Back to the map as it's checked out. */
+  closeBranch: () => void;
+  /** Fetch the remotes, so others' branches (and agents' pushed elsewhere) are listed. */
+  fetchBranches: () => void;
   agentAction: (id: string, action: "stop" | "pr" | "merge" | "rebase") => void;
   isFile: (p: string) => boolean;
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
@@ -179,6 +194,7 @@ export type AppActions = Omit<
   | "focusWider"
   | "focusNarrower"
   | "focusOnly"
+  | "fetchBranches"
 > & {
   addNote: (path: string, text: string) => void;
   /** A local path, or on a server that keeps GitHub repos, owner/name. */
