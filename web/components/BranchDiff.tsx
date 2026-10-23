@@ -287,6 +287,8 @@ export function BranchMapBar({
   onCodeDiff,
   onExplain,
   onClose,
+  changedOnly,
+  onChangedOnly,
 }: {
   sum: Summary | null;
   error: string;
@@ -299,6 +301,9 @@ export function BranchMapBar({
   onCodeDiff: () => void;
   onExplain: () => void;
   onClose: () => void;
+  /** The map shows only the files the branch changed. */
+  changedOnly: boolean;
+  onChangedOnly: (on: boolean) => void;
 }) {
   const [showCommits, setShowCommits] = useState(false);
   // The file chips sit over the map; on a tablet or a narrow window they start folded away.
@@ -328,6 +333,14 @@ export function BranchMapBar({
         <div className="ml-auto flex items-center gap-1.5 text-[13px]">
           {sum && (
             <>
+              <button
+                onClick={() => onChangedOnly(!changedOnly)}
+                aria-pressed={changedOnly}
+                className={`rounded px-2 py-0.5 hover:bg-white/5 ${changedOnly ? "bg-course/15 text-course" : "text-muted hover:text-text"}`}
+                title="Show only the files it changed, or the whole map"
+              >
+                Only changed
+              </button>
               <button onClick={() => setShowCommits((s) => !s)} aria-expanded={showCommits} className={`rounded px-2 py-0.5 hover:bg-white/5 ${showCommits ? "text-text" : "text-muted hover:text-text"}`}>
                 Commits
               </button>

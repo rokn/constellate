@@ -65,7 +65,7 @@ export type Model = {
   /** The branch checked out: the map shows it when no other branch is on. */
   checkedOut?: string;
   /** The branch on the map, lit against its base (an agent's: where it started); `loading` while its maps build. */
-  branch: { name: string; base?: string; agent?: string; commits: number; files: number; add: number; del: number; loading: boolean; error?: string } | null;
+  branch: { name: string; base?: string; agent?: string; commits: number; files: number; add: number; del: number; loading: boolean; error?: string; changedOnly: boolean } | null;
   /** The repo's branches, fetched while the menu is open; `fetching` while the remotes are being fetched. */
   branches: { base: string; list: BranchRow[]; fetching: boolean; error?: string } | null;
   story: { story: Story; beat: number; ms: number; playing: boolean; stage: Stage } | null;
@@ -185,6 +185,8 @@ export type Actions = {
   showBranch: (name: string, base?: string) => void;
   /** Back to the map as it's checked out. */
   closeBranch: () => void;
+  /** Show only the files the branch on the map changed, or the whole map again. */
+  setChangedOnly: (on: boolean) => void;
   /** Fetch the remotes, so others' branches (and agents' pushed elsewhere) are listed. */
   fetchBranches: () => void;
   agentAction: (id: string, action: "stop" | "pr" | "merge" | "rebase") => void;

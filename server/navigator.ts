@@ -76,6 +76,7 @@ const FLIGHT_TOOLS = [
   "read_at",
   "show_diff",
   "set_time_range",
+  "changed_only",
   "set_overview",
 ];
 const mcpName = (t: string) => `mcp__flight__${t}`;
@@ -740,6 +741,15 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
           return ok("Range lit on the map.");
         },
       ),
+      tool(
+        "changed_only",
+        "While a branch or a span of history is on the reader's map: `on` shows only the files it changed (everything else steps off the map); off brings the whole map back. Use it when they ask for just the changes, or for the whole map again.",
+        { on: z.boolean() },
+        async (a) => {
+          pushCommand({ cmd: "changed_only", on: a.on });
+          return ok(a.on ? "Only the changed files are on the map." : "The whole map is back.");
+        },
+      ),
     );
   }
 
@@ -1033,6 +1043,9 @@ async function branchNote(b?: ScreenContext["branch"]): Promise<string> {
       d.agent
         ? `They're looking at what the coding agent "${d.agent.title}" changed: its branch ${d.branch}, compared with the commit it started from (${d.mergeBase.slice(0, 10)}), tip ${tip}${d.agent.live ? ", which includes edits it hasn't committed yet" : ""}. The map shows the code as the agent has it, with what it changed lit.`
         : `They're looking at the branch ${d.branch} compared with ${d.base}, since they forked (merge base ${d.mergeBase.slice(0, 10)}, tip ${tip}). The map shows the code as it is at the branch tip, with what it changed lit.`,
+      b.changedOnly
+        ? "Only the files it changed are on the map right now; changed_only with on: false brings the whole map back."
+        : "changed_only shows just the files it changed, when they want only the changes.",
       d.checkedOut
         ? "It's checked out, so Read, Grep, outline and deps see the branch."
         : `It isn't checked out: Read, Grep, outline and deps see ${session.state.repo?.branch ?? "the checked-out branch"}, not this branch. Read the branch's version of a file with read_at (rev ${tip}); its diffs with show_diff.`,

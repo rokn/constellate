@@ -416,6 +416,8 @@ export type UiCommand =
   | { cmd: "show_branch"; branch: string; base?: string; agent?: string }
   /** Back to the map as it's checked out. */
   | { cmd: "close_branch" }
+  /** While a branch or a span of history is on the map: show only the files it changed, or the whole map again. */
+  | { cmd: "changed_only"; on: boolean }
   /** Files moved; what the page keeps by path (its filter) follows them. */
   | { cmd: "renamed"; renames: Renames }
   /** Turn Tune knobs: the map's and the headset's (by key). */
@@ -572,7 +574,7 @@ export type RemoteStatus = {
 export type ScreenContext = {
   openFile?: { path: string; line?: number };
   /** The branch shown on the map (Branch view), compared with its base — or, an agent's, with where it started. */
-  branch?: { name: string; base?: string; agent?: string };
+  branch?: { name: string; base?: string; agent?: string; changedOnly?: boolean };
   frameId?: string;
   focusLabel?: string;
   selection?: string;
