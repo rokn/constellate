@@ -1147,6 +1147,8 @@ export function App() {
           return startPlay();
         case "show_branch":
           return showBranch(c.branch, c.base, c.agent);
+        case "close_branch":
+          return closeBranch();
         case "renamed": {
           // The server moved everything it keeps; this is what the page keeps.
           const to = renamer(c.renames);
@@ -1157,7 +1159,7 @@ export function App() {
         }
       }
     },
-    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch],
+    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch, closeBranch],
   );
   const runRef = useRef(run);
   runRef.current = run;
@@ -1476,6 +1478,22 @@ export function App() {
     const j = (await r.json().catch(() => ({}))) as { error?: string };
     setToast({ text: r.ok ? ok : j.error ?? "That didn't work." });
   };
+  /** The branch on the map, for the headset's dock and Branches tab. */
+  const xrBranch = useMemo((): XRFeed["model"]["branch"] => {
+    if (!branchMap) return null;
+    const files = branchSum?.files ?? [];
+    return {
+      name: branchMap.branch,
+      base: branchSum?.base ?? branchMap.base,
+      agent: branchSum?.agent?.title ?? state?.agents.find((a) => a.id === branchMap.agent)?.title,
+      commits: branchSum?.commits.length ?? 0,
+      files: files.length,
+      add: files.reduce((n, f) => n + f.add, 0),
+      del: files.reduce((n, f) => n + f.del, 0),
+      loading: !branchShown,
+      error: branchError || undefined,
+    };
+  }, [branchMap, branchSum, branchShown, branchError, state?.agents]);
   const recenterRef = useRef(recenter);
   recenterRef.current = recenter;
   const xr = useXR({
@@ -1507,6 +1525,8 @@ export function App() {
       stories,
       agents: state?.agents ?? NO_ACTIVITY,
       agentsOn: !!state?.agentsOn,
+      checkedOut: state?.repo?.branch,
+      branch: xrBranch,
       tuning,
       settings: xrSettings,
       mapFilter: filter,
@@ -1571,12 +1591,15 @@ export function App() {
       reanalyze: () => void post("/api/reanalyze"),
       startAgent: (task) =>
         void agentCall({ action: "start", task }, "The agent is on it. Its files light up as it works."),
-      focusAgent: (id) => {
+      // As the desktop's Agents panel does: its branch on the map, flown to what it changed.
+      showAgent: (id) => {
         const a = state?.agents.find((x) => x.id === id);
-        const paths = a?.files.filter((p) => onMap.has(p)) ?? [];
-        if (a && paths.length) focus(paths, a.title);
-        else setToast({ text: "It hasn't changed anything on the map yet." });
+        if (!a) return;
+        if (!a.commits && !a.files.length) return setToast({ text: "It hasn't changed anything yet." });
+        showBranch(a.branch, a.base === "HEAD" ? a.baseSha : a.base, a.id);
       },
+      showBranch: (name, base) => showBranch(name, base),
+      closeBranch,
       agentAction: (id, action) => void agentCall({ action, id }, { pr: "Pull request opened.", merge: "Merged.", rebase: "Rebased onto its base.", stop: "Stopped." }[action]),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
       isFile: (p) => onMap.has(p),
