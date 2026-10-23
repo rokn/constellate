@@ -6,7 +6,7 @@ import { Bloom } from "./bloom";
 import { type Ell, HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
 import { sfx } from "./sound";
-import { type SavedTable, type Table, Surface, disc, facing, loadTable, mainAxis, overTable, saveTable, tableFrom, tableIn, tableInto, v3, vec } from "./surface";
+import { type Plane, type SavedTable, type Table, Surface, disc, facing, loadSurfaces, loadTable, mainAxis, overTable, planeThrough, saveSurfaces, saveTable, tableFrom, tableIn, tableInto, v3, vec } from "./surface";
 import { C, Panel, Tag, roundRect } from "./ui";
 
 /**
@@ -61,8 +61,10 @@ export type EngineHandlers = {
   onInputs?: (i: Inputs) => void;
   /** The map is (or no longer is) on a real table. */
   onTable?: (on: boolean) => void;
-  /** Tracing the table by hand: how many corners so far, or null when done. */
-  onOutline?: (corners: number | null) => void;
+  /** Tracing the table (or a surface) by hand: how many corners so far, or null when done. */
+  onOutline?: (o: { kind: "table" | "surface"; corners: number } | null) => void;
+  /** How many surfaces of your own there are. */
+  onSurfaces?: (n: number) => void;
 };
 
 export type { Table };
@@ -71,8 +73,14 @@ export type { Table };
 type Wall = { m: THREE.Matrix4; x0: number; x1: number; z0: number; z1: number };
 /** A level surface the headset found (a horizontal plane): its pose, its outline in its own x and z, and its size. */
 type Flat = { m: THREE.Matrix4; poly: [number, number][]; sx: number; sz: number };
-/** Where a panel would land if let go now: flat on the table, or flush on a wall. */
-type Snap = { on: "table" | "wall"; pos: THREE.Vector3; quat: THREE.Quaternion };
+/** Where a panel would land if let go now: flat on the table, flush on a wall, or on one of your surfaces (by its id). */
+type Snap = { on: string; pos: THREE.Vector3; quat: THREE.Quaternion };
+/**
+ * A surface you traced: its plane, drawn like the table, and the headset's
+ * anchor at its middle (made with its pose, so it brings the whole pose back
+ * next session). Null `plane` until a restored anchor is found again.
+ */
+type Custom = { id: string; plane: Plane | null; poly: [number, number][]; top: Surface; anchor: XRAnchor | null; uuid: string | null; wanted: boolean };
 /** How near a surface (m) a carried panel has to be let go for it to snap onto it. */
 const SNAP_REACH = 0.14;
 
@@ -201,7 +209,9 @@ export class Engine {
   /** Close a panel thrown away; false for one that can't be closed (it just drops). */
   closePanel: ((p: Panel) => boolean) | null = null;
   /** Panels lying on a real surface: on the table they move with it, and a fingertip presses them against it. */
-  private stuck = new Map<Panel, "table" | "wall">();
+  private stuck = new Map<Panel, string>();
+  /** The surfaces you traced, this session (kept by their anchors for the next). */
+  private customs: Custom[] = [];
   /** The walls the headset has found, looked at again every so often. */
   private walls: Wall[] = [];
   /** The level surfaces the headset has found: where a table is looked for. */
@@ -213,6 +223,8 @@ export class Engine {
   private lookFor: { saved: SavedTable; t0: number } | null = null;
   /** Corners touched so far while tracing the table by hand; null when not tracing. */
   private outline: THREE.Vector3[] | null = null;
+  /** What the outline being traced is for: the table, or a surface of your own. */
+  private outlineFor: "table" | "surface" = "table";
   private outlineLine: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   /** The outline of where a carried panel would snap to. */
   private ghost: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
@@ -374,6 +386,10 @@ export class Engine {
     this.surface.opacity = s.tableOpacity;
     // On a real table it is the table, and follows it as tracking corrects where that is.
     if (this.mode === "ar" && this.table) this.surface.setPose(this.table.center.clone().addScaledVector(Y, 0.002), this.table.toward);
+    for (const c of this.customs) {
+      c.top.mesh.visible = this.mode === "ar" && !!c.plane && s.tableOpacity > 0;
+      c.top.opacity = s.tableOpacity * 0.8;
+    }
     for (const m of this.models.controllers) m.visible = s.controllerModels;
     for (const m of this.models.hands) m.visible = s.handModels;
   }
@@ -450,6 +466,7 @@ export class Engine {
       const saved = loadTable();
       this.lookFor = saved?.plane ? { saved, t0: performance.now() } : null;
       void this.restoreAnchor(session);
+      void this.restoreSurfaces(session);
     }
     // Once the first poses are in, set the surface in front of you and frame what you were looking at (or the whole map).
     setTimeout(() => {
@@ -484,6 +501,7 @@ export class Engine {
       this.setTable(null);
     }
     if (this.outline) this.cancelOutline();
+    this.dropSurfaces();
     this.surfaceSet = false;
     this.applyRoom();
     this.recenterPanels();
@@ -929,7 +947,7 @@ export class Engine {
       if (this.outline.length < 64) this.outline.push(this.cornerAt(p));
       this.haptic(p, 0.5, 25);
       sfx.play("tick", this.cornerAt(p));
-      this.h.onOutline?.(this.outline.length);
+      this.h.onOutline?.({ kind: this.outlineFor, corners: this.outline.length });
       return;
     }
     if (p.hoverHandle) {
@@ -1301,6 +1319,7 @@ export class Engine {
       this.planesAt = now;
       this.findPlanes(frame, ref);
     }
+    this.trackSurfaces(frame, ref);
     if (this.anchorWanted) {
       const w = this.anchorWanted;
       this.anchorWanted = null;
@@ -1442,18 +1461,19 @@ export class Engine {
    * outline becomes the table. Three corners make a rectangle; more trace
    * any shape.
    */
-  startOutline() {
+  startOutline(kind: "table" | "surface" = "table") {
     if (this.mode !== "ar") return;
     this.placing = false;
     this.reticle.visible = false;
     this.outline = [];
-    this.h.onOutline?.(0);
+    this.outlineFor = kind;
+    this.h.onOutline?.({ kind, corners: 0 });
   }
 
   undoOutline() {
     if (!this.outline) return;
     this.outline.pop();
-    this.h.onOutline?.(this.outline.length);
+    this.h.onOutline?.({ kind: this.outlineFor, corners: this.outline.length });
   }
 
   cancelOutline() {
@@ -1465,6 +1485,10 @@ export class Engine {
   finishOutline() {
     const raw = this.outline;
     if (!raw || raw.length < 3) return;
+    if (this.outlineFor === "surface") {
+      this.cancelOutline();
+      return this.addSurface(raw);
+    }
     const y = raw.reduce((s, p) => s + p.y, 0) / raw.length;
     let pts = raw.map((p) => p.clone().setY(y));
     if (pts.length === 3) {
@@ -1488,6 +1512,117 @@ export class Engine {
     sfx.play("place", t.center);
     this.overview(900);
     this.h.onPlaced?.();
+  }
+
+  /* ------------------------------ your surfaces ------------------------------ */
+
+  /** A surface from traced corners: drawn now, anchored on the next frame, and kept for next time. */
+  private addSurface(pts: THREE.Vector3[]) {
+    const plane = planeThrough(pts, this.head().pos);
+    if (!plane) return;
+    const c = this.makeCustom(`s${Date.now().toString(36)}`, plane.poly);
+    c.plane = plane;
+    c.wanted = true;
+    this.placeCustom(c);
+    sfx.play("place", new THREE.Vector3().setFromMatrixPosition(plane.m));
+  }
+
+  private makeCustom(id: string, poly: [number, number][]): Custom {
+    const top = new Surface();
+    top.setShape(poly);
+    this.scene.add(top.mesh);
+    const c: Custom = { id, plane: null, poly, top, anchor: null, uuid: null, wanted: false };
+    this.customs.push(c);
+    this.h.onSurfaces?.(this.customs.length);
+    return c;
+  }
+
+  /** Draw a surface where its plane is, a hair out of it. */
+  private placeCustom(c: Custom) {
+    if (!c.plane) return;
+    const n = new THREE.Vector3().setFromMatrixColumn(c.plane.m, 1);
+    c.top.setMatrix(c.plane.m.clone().setPosition(new THREE.Vector3().setFromMatrixPosition(c.plane.m).addScaledVector(n, 0.002)));
+  }
+
+  /** Last session's surfaces, by their anchors: each comes back once the headset finds its anchor again. */
+  private async restoreSurfaces(session: XRSession) {
+    if (!session.restorePersistentAnchor) return;
+    const saved = loadSurfaces();
+    const kept: typeof saved = [];
+    for (const sv of saved) {
+      try {
+        const a = await session.restorePersistentAnchor(sv.uuid);
+        if (this.session !== session) return void a.delete();
+        const c = this.makeCustom(sv.uuid, sv.poly);
+        c.anchor = a;
+        c.uuid = sv.uuid;
+        kept.push(sv);
+      } catch {
+        // Gone with the room: forget it.
+      }
+    }
+    if (kept.length !== saved.length) saveSurfaces(kept);
+  }
+
+  /** Each frame: anchor new surfaces, and follow their anchors (taking the panels on them along). */
+  private trackSurfaces(frame: XRFrame, ref: XRReferenceSpace) {
+    for (const c of this.customs) {
+      if (c.wanted && c.plane) {
+        c.wanted = false;
+        const p = new THREE.Vector3();
+        const q = new THREE.Quaternion();
+        c.plane.m.decompose(p, q, new THREE.Vector3());
+        void frame
+          .createAnchor?.(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), ref)
+          ?.then((a) => {
+            if (this.mode !== "ar" || !this.customs.includes(c)) return a.delete();
+            c.anchor = a;
+            return a.requestPersistentHandle?.().then((uuid) => {
+              c.uuid = uuid;
+              saveSurfaces([...loadSurfaces().filter((x) => x.uuid !== uuid), { uuid, poly: c.poly }]);
+            });
+          })
+          .catch(() => {});
+      }
+      const a = c.anchor;
+      if (!a || !frame.trackedAnchors?.has(a)) continue;
+      const pose = frame.getPose(a.anchorSpace, ref);
+      if (!pose) continue;
+      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+      const was = c.plane ? new THREE.Vector3().setFromMatrixPosition(c.plane.m) : null;
+      const at = new THREE.Vector3().setFromMatrixPosition(m);
+      if (was && was.distanceToSquared(at) < 1e-6) continue;
+      if (was) for (const [p, on] of this.stuck) if (on === c.id) p.mesh.position.add(at.clone().sub(was));
+      const xs = c.poly.map((q) => q[0]);
+      const zs = c.poly.map((q) => q[1]);
+      c.plane = { m, poly: c.poly, halfX: (Math.max(...xs) - Math.min(...xs)) / 2, halfZ: (Math.max(...zs) - Math.min(...zs)) / 2 };
+      this.placeCustom(c);
+    }
+  }
+
+  /** Every surface of yours goes (the panels on them stay where they are, in the air). */
+  clearSurfaces() {
+    const session = this.session;
+    for (const c of this.customs) {
+      c.anchor?.delete();
+      if (c.uuid && session?.deletePersistentAnchor) void session.deletePersistentAnchor(c.uuid).catch(() => {});
+      this.scene.remove(c.top.mesh);
+      c.top.mesh.geometry.dispose();
+      for (const [p, on] of this.stuck) if (on === c.id) this.stuck.delete(p);
+    }
+    this.customs = [];
+    saveSurfaces([]);
+    this.h.onSurfaces?.(0);
+  }
+
+  /** This session's surfaces put away (the next session restores them). */
+  private dropSurfaces() {
+    for (const c of this.customs) {
+      this.scene.remove(c.top.mesh);
+      c.top.mesh.geometry.dispose();
+    }
+    if (this.customs.length) this.h.onSurfaces?.(0);
+    this.customs = [];
   }
 
   /** Where a pointer marks a corner: between a hand's pinching fingertips, or the controller's tip. */
@@ -1566,6 +1701,32 @@ export class Engine {
           best = { on: "table", pos, quat: flatOn(top), d: Math.max(0, up) };
         }
       }
+    }
+    // Your own surfaces: flat on one when it's held just off it.
+    for (const c of this.customs) {
+      const pl = c.plane;
+      if (!pl || this.mode !== "ar") continue;
+      const x = new THREE.Vector3().setFromMatrixColumn(pl.m, 0);
+      const n = new THREE.Vector3().setFromMatrixColumn(pl.m, 1);
+      const z = new THREE.Vector3().setFromMatrixColumn(pl.m, 2);
+      const rel = at.clone().sub(new THREE.Vector3().setFromMatrixPosition(pl.m));
+      const d = rel.dot(n);
+      if (d < -0.05 || d > SNAP_REACH || (best && Math.max(0, d) >= best.d)) continue;
+      const lx = rel.dot(x);
+      const lz = rel.dot(z);
+      if (Math.abs(lx) > pl.halfX + 0.1 || Math.abs(lz) > pl.halfZ + 0.1) continue;
+      // Its top edge: up, on an upright surface; away from you, on one lying down.
+      const top = Math.abs(n.y) < 0.7 ? Y.clone().projectOnPlane(n).normalize() : at.clone().sub(head).projectOnPlane(n).normalize();
+      const right = new THREE.Vector3().crossVectors(top, n).normalize();
+      // Kept on it, whichever way round the panel lies on it.
+      const across = Math.abs(right.dot(x)) > 0.5;
+      const w = across ? panel.widthM : panel.heightM;
+      const h = across ? panel.heightM : panel.widthM;
+      const cx = THREE.MathUtils.clamp(lx, -Math.max(0, pl.halfX - w / 2), Math.max(0, pl.halfX - w / 2));
+      const cz = THREE.MathUtils.clamp(lz, -Math.max(0, pl.halfZ - h / 2), Math.max(0, pl.halfZ - h / 2));
+      const pos = new THREE.Vector3().setFromMatrixPosition(pl.m).addScaledVector(x, cx).addScaledVector(z, cz).addScaledVector(n, LIFT);
+      const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, top, n));
+      best = { on: c.id, pos, quat, d: Math.max(0, d) };
     }
     for (const w of this.walls) {
       const inv = w.m.clone().invert();

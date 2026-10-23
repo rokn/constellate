@@ -202,6 +202,21 @@ export class MenuPanel extends Panel {
     super("menu", 0.78, 0.6);
   }
 
+  /** When Remove surfaces was pressed once, waiting for the second press; 0 when it isn't. */
+  private clearArmed = 0;
+  /** Removing your surfaces: the first press arms it, the second, a moment later, removes them. */
+  private pressClear() {
+    if (this.clearArmed && performance.now() - this.clearArmed < 400) return;
+    if (this.clearArmed) {
+      this.clearArmed = 0;
+      this.a.clearSurfaces();
+    } else {
+      this.clearArmed = performance.now();
+      window.setTimeout(() => ((this.clearArmed = 0), this.invalidate()), 4000);
+    }
+    this.invalidate();
+  }
+
   /** Reloading starts the page over: the first press arms it, the second, a moment later, reloads. */
   private pressReload() {
     const since = performance.now() - this.reloadArmed;
@@ -217,7 +232,7 @@ export class MenuPanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story", "placing", "outlining"] as const).some((k) => p[k] !== m[k])) this.invalidate();
+    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story", "placing", "outlining", "surfaces"] as const).some((k) => p[k] !== m[k])) this.invalidate();
   }
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
@@ -364,7 +379,12 @@ export class MenuPanel extends Panel {
     if (m.mode !== "vr" && m.canVR) add("vr", "Enter VR", () => a.enter("vr"), { accent: C.course });
     if (m.mode !== "ar" && m.canAR) add("ar", "Passthrough (AR)", () => a.enter("ar"), { accent: C.course });
     if (m.mode === "ar") add("place", "Place on a surface", a.placeMap, { active: m.placing });
-    if (m.mode === "ar") add("outline", "Trace the table", a.outlineTable, { active: m.outlining !== null });
+    if (m.mode === "ar") add("outline", "Trace the table", a.outlineTable, { active: m.outlining?.kind === "table" });
+    if (m.mode === "ar") add("surface", "Add a surface", a.addSurface, { active: m.outlining?.kind === "surface" });
+    if (m.mode === "ar" && m.surfaces) {
+      const armed = !!this.clearArmed;
+      add("clearsurfaces", armed ? "Sure? Remove them" : `Remove surfaces (${m.surfaces})`, () => this.pressClear(), { active: armed, accent: C.bad });
+    }
     add("recenter", "Recenter panels", a.recenterPanels);
     add("tune", "Tune…", a.toggleTune);
     add("hints", "Controls", a.toggleHints);
@@ -1030,7 +1050,7 @@ export class Panels {
     else e.hide(this.hints);
     if (m.filterOpen) e.show(this.filter, "filter");
     else e.hide(this.filter);
-    if (m.outlining !== null) e.show(this.outline, "outline");
+    if (m.outlining) e.show(this.outline, "outline");
     else e.hide(this.outline);
     if (m.focus) e.show(this.focusBar, "focusbar");
     else e.hide(this.focusBar);
