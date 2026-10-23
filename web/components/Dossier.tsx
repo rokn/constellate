@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Activity, Frame, GroupOverlay, View } from "../../shared/types";
+import type { Activity, AgentRun, Frame, GroupOverlay, View } from "../../shared/types";
+import { post } from "../lib/api";
 import { CodeBlock } from "./CodeBlock";
 import { CustomView } from "./CustomView";
 import { DiagramView } from "./DiagramView";
@@ -27,6 +28,7 @@ export function Dossier({
   markers,
   onMarkers,
   onFlyMarker,
+  agents,
 }: {
   frames: Frame[];
   frameId: string;
@@ -40,6 +42,8 @@ export function Dossier({
   markers: GroupOverlay[];
   onMarkers: (action: "hide" | "show" | "delete") => void;
   onFlyMarker: (g: GroupOverlay) => void;
+  /** The coding agents, for an answer that asks to confirm a merge. */
+  agents: AgentRun[];
 }) {
   const i = frames.findIndex((f) => f.id === frameId);
   const frame = frames[i];
@@ -96,6 +100,8 @@ export function Dossier({
           <p className="text-[14px] text-muted">{latest?.detail ?? "Setting a course…"}</p>
         ) : null}
 
+        {frame.confirm?.action === "merge" && <ConfirmMerge agent={agents.find((a) => a.id === frame.confirm!.agentId)} />}
+
         {markers.length > 0 && (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted">
             <span>Marked on the map:</span>
@@ -139,6 +145,56 @@ export function Dossier({
         )}
       </div>
     </aside>
+  );
+}
+
+/**
+ * A merge asked for in Ask, waiting for its yes. Merging to main deploys, so
+ * the navigator never merges on a typed request: this button is the yes.
+ */
+function ConfirmMerge({ agent: a }: { agent?: AgentRun }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+  if (!a) return <p className="text-[13px] text-muted">The agent this merge was for has been discarded.</p>;
+  if (a.pr?.state === "merged") {
+    return (
+      <p className="text-[13px] text-good">
+        Merged: PR #{a.pr.number} into {a.pr.base}.
+      </p>
+    );
+  }
+  const running = a.status === "working" || a.status === "starting";
+  const what = a.pr ? `PR #${a.pr.number} “${a.title}” into ${a.pr.base}` : `“${a.title}” (its branch is pushed and a PR opened first)`;
+
+  return (
+    <div className="rounded-md border border-good/40 bg-good/10 px-3 py-2 text-[13.5px]">
+      <p>
+        Merge {what}? Merging to main deploys.
+      </p>
+      <div className="mt-2 flex items-center gap-1.5">
+        <button
+          onClick={async () => {
+            setBusy(true);
+            const r = await post("/api/agents", { action: "merge", id: a.id });
+            const j = r.ok ? null : ((await r.json().catch(() => ({}))) as { error?: string });
+            setError(j ? j.error ?? "That didn't work." : "");
+            setBusy(false);
+          }}
+          disabled={busy || running}
+          className="glass rounded-md px-2.5 py-0.5 text-good hover:text-text disabled:opacity-40"
+          title="Rebase-merge its pull request on GitHub"
+        >
+          {busy ? "Merging…" : "Merge"}
+        </button>
+        <button onClick={() => setDismissed(true)} disabled={busy} className="rounded-md px-2 py-0.5 text-muted hover:text-text disabled:opacity-40">
+          Not now
+        </button>
+        {running && <span className="text-[12px] text-muted">It's still working; merge once it finishes.</span>}
+      </div>
+      {error && <p className="mt-1 text-[12px] text-bad">{error}</p>}
+    </div>
   );
 }
 

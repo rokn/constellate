@@ -285,6 +285,11 @@ export type Frame = {
   /** Files this frame is about — the camera's constellation. */
   focus: string[];
   error?: string;
+  /**
+   * Something typed that waits for a yes: merging an agent's PR deploys, so
+   * the answer carries a Merge button and nothing merges until it's pressed.
+   */
+  confirm?: { action: "merge"; agentId: string };
   createdAt: number;
 };
 
