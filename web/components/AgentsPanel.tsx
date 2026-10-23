@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AgentRun } from "../../shared/types";
 import { post } from "../lib/api";
 
@@ -53,7 +53,7 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
         {a.pr && (
           <a href={a.pr.url} target="_blank" rel="noreferrer" className="ml-1.5 text-course hover:underline">
             PR #{a.pr.number}
-            {a.pr.state === "merged" ? " merged" : ""}
+            {a.pr.state === "open" ? "" : ` ${a.pr.state}`}
           </a>
         )}
       </p>
@@ -109,12 +109,12 @@ function Agent({ a, onShow }: { a: AgentRun; onShow: (a: AgentRun) => void }) {
                 {busy === "rebase" ? "Rebasing…" : "Rebase"}
               </button>
             )}
-            {!running && a.commits > 0 && !a.pr && (
+            {!running && a.commits > 0 && (!a.pr || a.pr.state === "closed") && (
               <button
                 onClick={() => void run({ action: "pr" })}
                 disabled={!!busy}
                 className="glass rounded-md px-2 py-0.5 text-course hover:text-text disabled:opacity-40"
-                title="Push its branch and open a pull request on GitHub"
+                title={a.pr ? `PR #${a.pr.number} was closed: push its branch and open a new pull request on GitHub` : "Push its branch and open a pull request on GitHub"}
               >
                 {busy === "pr" ? "Opening…" : "Open PR"}
               </button>
@@ -153,6 +153,8 @@ export function AgentsPanel({ agents, onShow, onClose }: { agents: AgentRun[]; o
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   const newest = [...agents].reverse();
+  // Their PRs as GitHub has them now, merged or closed there or not.
+  useEffect(() => void act({ action: "sync" }), []);
 
   return (
     <div className="glass rise pointer-events-auto flex max-h-[min(75vh,680px)] w-[min(420px,calc(100vw-2rem))] flex-col rounded-xl p-3.5">
