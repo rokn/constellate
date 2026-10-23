@@ -339,19 +339,23 @@ export class MenuPanel extends Panel {
         const running = ag.status === "working" || ag.status === "starting";
         const extra: Row["extra"] = [];
         if (running) extra.push({ label: "Stop", onClick: () => a.agentAction(ag.id, "stop") });
-        else if (ag.pr?.state === "open") {
-          // Merging deploys: the first press arms it, the second merges.
-          const armed = this.armed === ag.id;
-          extra.push({
-            label: armed ? "Sure?" : "Merge",
-            active: armed,
-            onClick: () => {
-              if (armed) a.agentAction(ag.id, "merge");
-              this.armed = armed ? null : ag.id;
-              this.invalidate();
-            },
-          });
-        } else if (ag.commits > 0 && !ag.pr) extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
+        else {
+          // Up to date with its base before it's opened or merged.
+          if (ag.commits > 0 && ag.pr?.state !== "merged") extra.push({ label: "Rebase", onClick: () => a.agentAction(ag.id, "rebase") });
+          if (ag.pr?.state === "open") {
+            // Merging deploys: the first press arms it, the second merges.
+            const armed = this.armed === ag.id;
+            extra.push({
+              label: armed ? "Sure?" : "Merge",
+              active: armed,
+              onClick: () => {
+                if (armed) a.agentAction(ag.id, "merge");
+                this.armed = armed ? null : ag.id;
+                this.invalidate();
+              },
+            });
+          } else if (ag.commits > 0 && !ag.pr) extra.push({ label: "PR", onClick: () => a.agentAction(ag.id, "pr") });
+        }
         const what = running ? ag.activity ?? "working…" : ag.error ?? ag.summary ?? ag.status;
         return {
           id: ag.id,

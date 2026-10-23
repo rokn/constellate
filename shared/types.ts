@@ -501,7 +501,7 @@ export type AgentRun = {
   status: AgentStatus;
   /** Its branch, e.g. agent/add-logging-x1y2. */
   branch: string;
-  /** The branch (or HEAD) it started from, and that commit. */
+  /** The branch (or HEAD) it started from, and the commit its work sits on (moved by a rebase). */
   base: string;
   baseSha: string;
   worktree: string;

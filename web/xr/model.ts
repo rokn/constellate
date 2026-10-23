@@ -145,7 +145,7 @@ export type Actions = {
   focusPaths: (paths: string[], label: string) => void;
   /** Light up an agent's files and fly there. */
   focusAgent: (id: string) => void;
-  agentAction: (id: string, action: "stop" | "pr" | "merge") => void;
+  agentAction: (id: string, action: "stop" | "pr" | "merge" | "rebase") => void;
   isFile: (p: string) => boolean;
 };
 
