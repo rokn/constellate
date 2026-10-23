@@ -137,6 +137,12 @@ export class Engine {
   readonly hud = new THREE.Group();
   /** Drawn over the (bloomed) map: panels, hands, rays, tags. */
   readonly overlay = new THREE.Scene();
+  /** Panels the map stands in front of: drawn before the map, so it covers them. */
+  readonly under = new THREE.Scene();
+  private behind = new Set<Panel>();
+  private sortedAt = 0;
+  /** The scene's background while a frame is drawn in parts. */
+  private sky: THREE.Scene["background"] = null;
   mode: Mode = "flat";
   settings: XRSettings = DEFAULT_XR;
 
@@ -429,7 +435,7 @@ export class Engine {
     this.panels.push(p);
     this.hud.add(p.mesh);
     // A handle under every panel: point at it and hold the trigger (or the grip) to carry the panel.
-    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthWrite: false, toneMapped: false, opacity: 0.6 }));
+    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthTest: false, depthWrite: false, toneMapped: false, opacity: 0.6 }));
     h.position.set(0, -p.heightM / 2 - 0.028, 0);
     h.renderOrder = 11;
     h.userData.handleOf = p;
@@ -1537,6 +1543,7 @@ export class Engine {
     this.world.updateMatrixWorld();
     const eyeLocal = this.map.root.worldToLocal(head.pos.clone());
     this.map.update(eyeLocal, now, 1 / this.world.scale.x);
+    this.sortPanels(eyeLocal, now);
 
     this.h.onFrame?.();
     for (const panel of this.panels) panel.render();
@@ -1550,21 +1557,116 @@ export class Engine {
     this.draw(target);
   };
 
-  /** The map (bloomed, if bloom is on) and the overlay over it. */
+  /**
+   * Which open panels the map stands in front of. One goes behind the map
+   * once a few of the lit bodies over it are nearer you than it is, and comes
+   * back in front once (almost) none are, so one body passing by doesn't make
+   * it flicker. A panel in your hand is always in front: you're using it.
+   * Worked in the map's own space, where the bodies are.
+   */
+  private sortPanels(eye: THREE.Vector3, now: number) {
+    if (now - this.sortedAt < 150) return;
+    this.sortedAt = now;
+    const toMap = new THREE.Matrix4().copy(this.map.root.matrixWorld).invert();
+    const held = new Set([...this.pointers.values()].map((o) => o.carry?.panel));
+    const m = new THREE.Matrix4();
+    const c = new THREE.Vector3();
+    const r = new THREE.Vector3();
+    const u = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    for (const p of this.panels) {
+      let back = false;
+      if (p.open && !held.has(p)) {
+        p.mesh.updateMatrixWorld();
+        m.multiplyMatrices(toMap, p.mesh.matrixWorld);
+        c.setFromMatrixPosition(m);
+        // The panel's own axes, a metre long in its own units.
+        r.setFromMatrixColumn(m, 0);
+        u.setFromMatrixColumn(m, 1);
+        n.crossVectors(r, u);
+        const r2 = r.lengthSq();
+        const u2 = u.lengthSq();
+        const hw = p.widthM / 2;
+        const hh = p.heightM / 2;
+        const cn = (c.x - eye.x) * n.x + (c.y - eye.y) * n.y + (c.z - eye.z) * n.z;
+        let over = 0;
+        let nearer = 0;
+        this.map.litBodies((x, y, z) => {
+          const bx = x - eye.x, by = y - eye.y, bz = z - eye.z;
+          const bn = bx * n.x + by * n.y + bz * n.z;
+          // Where the line from your eye to the body crosses the panel's plane: t of the way there.
+          const t = cn / bn;
+          if (!(t > 0) || !Number.isFinite(t)) return;
+          const px = eye.x + bx * t - c.x, py = eye.y + by * t - c.y, pz = eye.z + bz * t - c.z;
+          if (Math.abs((px * r.x + py * r.y + pz * r.z) / r2) > hw || Math.abs((px * u.x + py * u.y + pz * u.z) / u2) > hh) return;
+          over++;
+          // Past the body before reaching the panel: the body is nearer.
+          if (t > 1) nearer++;
+        });
+        back = this.behind.has(p) ? nearer > Math.max(1, over * 0.05) : nearer >= Math.max(3, over * 0.1);
+      }
+      if (back === this.behind.has(p)) continue;
+      if (back) this.behind.add(p);
+      else this.behind.delete(p);
+      (back ? this.under : this.hud).add(p.mesh);
+    }
+  }
+
+  /** The room (sky, floor, table) without the map, or the map without the room. */
+  private only(part: "room" | "map") {
+    const room = part === "room";
+    this.world.visible = !room;
+    for (const o of [this.backdrop, this.floor, this.surface, this.stars]) o.userData.shown ??= o.visible;
+    for (const o of [this.backdrop, this.floor, this.surface, this.stars]) o.visible = room && (o.userData.shown as boolean);
+    this.scene.background = room ? this.sky : null;
+  }
+
+  /** Back to the whole scene, as the rest of the engine knows it. */
+  private whole() {
+    this.world.visible = true;
+    for (const o of [this.backdrop, this.floor, this.surface, this.stars]) {
+      o.visible = o.userData.shown as boolean;
+      delete o.userData.shown;
+    }
+    this.scene.background = this.sky;
+  }
+
+  /**
+   * In order: the room, the panels the map is in front of, the map (bloomed,
+   * if bloom is on) over them, and the overlay (the rest of the panels,
+   * hands, rays) over everything.
+   */
   private draw(target: THREE.WebGLRenderTarget | null) {
     const tu = this.map.tuning;
     const bloom = this.settings.bloom && !!tu && tu.bloomStrength > 0;
     this.map.setGlow(this.settings.bodyGlow, bloom);
+    const r = this.renderer;
+    this.sky = this.scene.background;
+    const under = () => {
+      r.setRenderTarget(target);
+      this.only("room");
+      r.render(this.scene, this.camera);
+      r.autoClear = false;
+      if (this.under.children.length) r.render(this.under, this.camera);
+      this.only("map");
+    };
+    const over = () => {
+      r.setRenderTarget(target);
+      r.autoClear = false;
+      r.clearDepth();
+      r.render(this.overlay, this.camera);
+      r.autoClear = true;
+    };
     if (bloom) {
-      this.bloom ??= new Bloom(this.renderer);
-      this.bloom.render(this.renderer, this.scene, this.overlay, this.camera, target, { strength: tu.bloomStrength, radius: tu.bloomRadius, threshold: tu.bloomThreshold });
-      return;
+      this.bloom ??= new Bloom(r);
+      this.only("map");
+      this.bloom.render(r, this.scene, this.camera, target, { strength: tu.bloomStrength, radius: tu.bloomRadius, threshold: tu.bloomThreshold }, under);
+    } else {
+      under();
+      r.render(this.scene, this.camera);
     }
-    this.renderer.setRenderTarget(target);
-    this.renderer.render(this.scene, this.camera);
-    this.renderer.autoClear = false;
-    this.renderer.render(this.overlay, this.camera);
-    this.renderer.autoClear = true;
+    this.whole();
+    over();
   }
 
   /**
