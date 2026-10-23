@@ -82,6 +82,8 @@ export type Model = {
   viewsOpen: boolean;
   /** On a real table (passthrough, placed): its menu and shelf are out. */
   table: boolean;
+  /** Tracing the table by hand: the corners touched so far; null when not. */
+  outlining: number | null;
   /** What you're holding: the controls page lists what these can do. */
   inputs: { hands: boolean; controllers: boolean };
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
@@ -127,6 +129,11 @@ export type Actions = {
   /** Reload the page, and go back into the headset after if the browser allows it. */
   reload: () => void;
   placeMap: () => void;
+  /** Trace the table's outline by hand, corner by corner (passthrough). */
+  outlineTable: () => void;
+  undoOutline: () => void;
+  finishOutline: () => void;
+  cancelOutline: () => void;
   recenterPanels: () => void;
   toggleTune: () => void;
   toggleHints: () => void;
@@ -170,7 +177,7 @@ export type Actions = {
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs">;
+export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs" | "outlining">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
@@ -185,6 +192,10 @@ export type AppActions = Omit<
   | "exitXR"
   | "reload"
   | "placeMap"
+  | "outlineTable"
+  | "undoOutline"
+  | "finishOutline"
+  | "cancelOutline"
   | "recenterPanels"
   | "toggleTune"
   | "toggleHints"

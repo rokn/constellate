@@ -6,6 +6,7 @@ import { Bloom } from "./bloom";
 import { type Ell, HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
 import { sfx } from "./sound";
+import { type SavedTable, type Table, Surface, disc, facing, loadTable, mainAxis, overTable, saveTable, tableFrom, tableIn, tableInto, v3, vec } from "./surface";
 import { C, Panel, Tag, roundRect } from "./ui";
 
 /**
@@ -30,7 +31,7 @@ import { C, Panel, Tag, roundRect } from "./ui";
 
 export type Mode = "flat" | "vr" | "ar";
 export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
-export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf" | "views";
+export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf" | "views" | "outline";
 /** The slots that lie on the table when the map is on one: the strip along the front, the shelf on the right, the saved views on the left. */
 const TABLE_SLOTS: Slot[] = ["table", "shelf", "views"];
 /** Which kinds of hands are in: what the controls page lists. */
@@ -60,17 +61,16 @@ export type EngineHandlers = {
   onInputs?: (i: Inputs) => void;
   /** The map is (or no longer is) on a real table. */
   onTable?: (on: boolean) => void;
+  /** Tracing the table by hand: how many corners so far, or null when done. */
+  onOutline?: (corners: number | null) => void;
 };
 
-/**
- * The real table the map sits on, from the detected planes (or a guess).
- * `toward` runs from its middle to the edge nearest you, `right` along that
- * edge to your right; the half sizes are along those.
- */
-export type Table = { center: THREE.Vector3; toward: THREE.Vector3; right: THREE.Vector3; halfW: number; halfD: number };
+export type { Table };
 
 /** A wall the headset found (a vertical plane): its pose, and its extent in its own x and z. */
 type Wall = { m: THREE.Matrix4; x0: number; x1: number; z0: number; z1: number };
+/** A level surface the headset found (a horizontal plane): its pose, its outline in its own x and z, and its size. */
+type Flat = { m: THREE.Matrix4; poly: [number, number][]; sx: number; sz: number };
 /** Where a panel would land if let go now: flat on the table, or flush on a wall. */
 type Snap = { on: "table" | "wall"; pos: THREE.Vector3; quat: THREE.Quaternion };
 /** How near a surface (m) a carried panel has to be let go for it to snap onto it. */
@@ -111,7 +111,7 @@ type Pointer = {
   press: Press | null;
   squeezing: boolean;
   /** A panel held with the grip: it follows the hand. */
-  carry: { panel: Panel; offset: THREE.Matrix4 } | null;
+  carry: { panel: Panel; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[] } | null;
   buttons: boolean[];
   /** Thumbstick turned past the snap threshold, waiting for it to come back. */
   snapped: boolean;
@@ -162,7 +162,7 @@ export class Engine {
    * Where the map is set down, in the room: it holds still while you move the
    * map, and the overview puts the map back on it. Placed by `placeSurface`.
    */
-  private surface: THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial>;
+  private surface = new Surface();
   private surfaceSet = false;
   /** In passthrough, the night drawn over your room as much as you ask for. */
   private backdrop: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
@@ -198,11 +198,22 @@ export class Engine {
   /** Panels set by the room: the one on your wrist, and the shelf a dragged body can be dropped on. */
   wrist: Panel | null = null;
   shelf: Panel | null = null;
+  /** Close a panel thrown away; false for one that can't be closed (it just drops). */
+  closePanel: ((p: Panel) => boolean) | null = null;
   /** Panels lying on a real surface: on the table they move with it, and a fingertip presses them against it. */
   private stuck = new Map<Panel, "table" | "wall">();
   /** The walls the headset has found, looked at again every so often. */
   private walls: Wall[] = [];
-  private wallsAt = 0;
+  /** The level surfaces the headset has found: where a table is looked for. */
+  private flats: Flat[] = [];
+  private planesAt = 0;
+  /** The anchor's pose this session, once tracked: the table is kept relative to it. */
+  private anchorPose: THREE.Matrix4 | null = null;
+  /** Coming back in without the anchor: last time's table, looked for among the planes for a while. */
+  private lookFor: { saved: SavedTable; t0: number } | null = null;
+  /** Corners touched so far while tracing the table by hand; null when not tracing. */
+  private outline: THREE.Vector3[] | null = null;
+  private outlineLine: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   /** The outline of where a carried panel would snap to. */
   private ghost: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   /** The snap the carried panel had last frame, to tick when one comes into reach. */
@@ -213,6 +224,8 @@ export class Engine {
   private inputs: Inputs = { hands: false, controllers: false };
   private mouse = { x: 0, y: 0, down: -1, lastX: 0, lastY: 0, moved: false, keys: new Set<string>() };
   private dockYaw = 0;
+  /** The drawn controllers and hands, shown or not by the settings. */
+  private models: { controllers: THREE.Object3D[]; hands: THREE.Object3D[] } = { controllers: [], hands: [] };
   /** When the user last moved the map themselves; automatic refits made before that are dropped. */
   userMovedAt = 0;
 
@@ -263,8 +276,7 @@ export class Engine {
     this.floor = makeFloor();
     this.scene.add(this.floor);
     // Only drawn, never pointed at: rays, grabs and panels go straight through it.
-    this.surface = makeSurface();
-    this.scene.add(this.surface);
+    this.scene.add(this.surface.mesh);
 
     // A far starfield, so there is something to fly past. It belongs to the
     // room, not the map: it holds still while the map moves, which keeps the
@@ -299,6 +311,14 @@ export class Engine {
     this.ghost.renderOrder = 31;
     this.ghost.visible = false;
     this.overlay.add(this.ghost);
+
+    // The table's outline as it's traced by hand.
+    const outlineGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(66 * 3), 3));
+    this.outlineLine = new THREE.Line(outlineGeo, new THREE.LineBasicMaterial({ color: C.good, transparent: true, opacity: 0.95, depthTest: false, toneMapped: false }));
+    this.outlineLine.frustumCulled = false;
+    this.outlineLine.renderOrder = 31;
+    this.outlineLine.visible = false;
+    this.overlay.add(this.outlineLine);
 
     // Now and then a body on the map chimes: one at random, in its top folder's note.
     sfx.chimeSource = () => {
@@ -350,8 +370,12 @@ export class Engine {
     this.floor.scale.setScalar(s.floorSize / 2);
     this.floor.material.uniforms.uOpacity.value = s.floorOpacity;
     // While you're choosing a surface, the reticle says where; the old table would only confuse it.
-    this.surface.visible = this.surfaceSet && this.mode !== "flat" && !this.placing && s.table && s.tableOpacity > 0;
-    this.surface.material.uniforms.uOpacity.value = s.tableOpacity;
+    this.surface.mesh.visible = this.surfaceSet && this.mode !== "flat" && !this.placing && !this.outline && s.table && s.tableOpacity > 0;
+    this.surface.opacity = s.tableOpacity;
+    // On a real table it is the table, and follows it as tracking corrects where that is.
+    if (this.mode === "ar" && this.table) this.surface.setPose(this.table.center.clone().addScaledVector(Y, 0.002), this.table.toward);
+    for (const m of this.models.controllers) m.visible = s.controllerModels;
+    for (const m of this.models.hands) m.visible = s.handModels;
   }
 
   /**
@@ -360,14 +384,14 @@ export class Engine {
    */
   private placeSurface() {
     const f = this.overviewFrame();
-    // On the real table when one was found under the anchor, else at the anchor.
-    if (this.mode === "ar" && (this.table || this.anchor)) this.surface.position.copy(this.table?.center ?? this.anchor!);
-    else {
-      const { pos, yaw } = this.head();
-      this.surface.position.set(pos.x - Math.sin(yaw) * f.dist, Math.max(0.05, pos.y + f.dy - f.radiusM), pos.z - Math.cos(yaw) * f.dist);
-    }
-    this.surface.scale.setScalar(f.radiusM * 1.25);
     this.surfaceSet = true;
+    // On the real table when one was found under the anchor: its own shape (see setTable).
+    if (this.mode === "ar" && this.table) return this.surface.setShape(this.table.poly);
+    // Else a disc at the anchor, or under the overview's framing in front of you.
+    this.surface.setShape(disc(f.radiusM * 1.25));
+    const { pos, yaw } = this.head();
+    const at = this.mode === "ar" && this.anchor ? this.anchor.clone() : new THREE.Vector3(pos.x - Math.sin(yaw) * f.dist, Math.max(0.05, pos.y + f.dy - f.radiusM), pos.z - Math.cos(yaw) * f.dist);
+    this.surface.setPose(at, new THREE.Vector3(0, 0, 1));
   }
 
 
@@ -422,7 +446,11 @@ export class Engine {
     this.stuck.clear();
     this.setMode(mode);
     sfx.play("enter");
-    if (mode === "ar") void this.restoreAnchor(session);
+    if (mode === "ar") {
+      const saved = loadTable();
+      this.lookFor = saved?.plane ? { saved, t0: performance.now() } : null;
+      void this.restoreAnchor(session);
+    }
     // Once the first poses are in, set the surface in front of you and frame what you were looking at (or the whole map).
     setTimeout(() => {
       this.placeSurface();
@@ -449,9 +477,13 @@ export class Engine {
       this.anchorLast = null;
       this.anchorWanted = null;
       this.tableFrom = null;
+      this.lookFor = null;
+      this.anchorPose = null;
       this.walls = [];
+      this.flats = [];
       this.setTable(null);
     }
+    if (this.outline) this.cancelOutline();
     this.surfaceSet = false;
     this.applyRoom();
     this.recenterPanels();
@@ -555,6 +587,7 @@ export class Engine {
       table: { yaw: 0, dist: 0.7, dy: -0.45, tilt: 0.9 },
       shelf: { yaw: -0.5, dist: 0.8, dy: -0.4, tilt: 0.7 },
       views: { yaw: 0.5, dist: 0.85, dy: -0.3, tilt: 0.4 },
+      outline: { yaw: 0, dist: 1.0, dy: 0.05, tilt: 0 },
     }[slot];
     // A desktop window sees a much narrower cone than a headset: the preview
     // sets the same panels further out and closer to the middle.
@@ -695,8 +728,12 @@ export class Engine {
       const ray = this.renderer.xr.getController(i);
       const grip = this.renderer.xr.getControllerGrip(i);
       const hand = this.renderer.xr.getHand(i);
-      grip.add(controllerModels.createControllerModel(grip));
-      hand.add(handModels.createHandModel(hand, "mesh"));
+      const cm = controllerModels.createControllerModel(grip);
+      const hm = handModels.createHandModel(hand, "mesh");
+      grip.add(cm);
+      hand.add(hm);
+      this.models.controllers.push(cm);
+      this.models.hands.push(hm);
       this.overlay.add(ray, grip, hand);
       const { line, dot } = this.makeRayVisual();
       ray.add(line);
@@ -887,6 +924,14 @@ export class Engine {
       this.placeAt(this.reticle.position.clone());
       return;
     }
+    // Tracing the table: anywhere but a panel, the press marks a corner.
+    if (this.outline && !p.hoverPanel && !p.hoverHandle) {
+      if (this.outline.length < 64) this.outline.push(this.cornerAt(p));
+      this.haptic(p, 0.5, 25);
+      sfx.play("tick", this.cornerAt(p));
+      this.h.onOutline?.(this.outline.length);
+      return;
+    }
     if (p.hoverHandle) {
       p.press = { kind: "handle" };
       this.pickUp(p, p.hoverHandle);
@@ -993,7 +1038,7 @@ export class Engine {
     }
     p.ray.updateMatrixWorld();
     panel.mesh.updateMatrixWorld();
-    p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
+    p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone(), trail: [] };
     this.placed.add(panel);
     this.stuck.delete(panel);
     this.snapWas = null;
@@ -1009,6 +1054,18 @@ export class Engine {
     if (!c) return;
     this.ghost.visible = false;
     this.snapWas = null;
+    // Thrown away, not set down: it closes (those that can).
+    const tr = c.trail;
+    const first = tr.find((x) => performance.now() - x.t < 120) ?? tr[0];
+    const last = tr.at(-1);
+    const speed = first && last && last.t > first.t ? last.at.distanceTo(first.at) / ((last.t - first.t) / 1000) : 0;
+    if (this.settings.flickPanels && speed > this.settings.flickSpeed && this.closePanel?.(c.panel)) {
+      this.haptic(p, 0.8, 60);
+      sfx.play("fling", c.panel.mesh.position);
+      // Next time it opens in its usual place, not mid-air where it was let go.
+      this.placed.delete(c.panel);
+      return;
+    }
     const snap = this.snapFor(c.panel);
     if (!snap) return void sfx.play("drop", c.panel.mesh.position);
     c.panel.mesh.position.copy(snap.pos);
@@ -1172,9 +1229,12 @@ export class Engine {
     this.reticle.visible = false;
     this.hitSource?.cancel();
     this.hitSource = null;
-    // Anchored on the next frame (anchors are made from a frame), and the table under it looked for.
+    // Anchored on the next frame (anchors are made from a frame), and the table under it looked for:
+    // unless it's set down again on a table you traced by hand, which stays as you drew it.
     this.anchorWanted = at.clone();
-    this.tableFrom = { at: at.clone(), t0: performance.now() };
+    this.lookFor = null;
+    if (this.table?.manual && overTable(this.table, at)) this.tableFrom = null;
+    else this.tableFrom = { at: at.clone(), t0: performance.now() };
     sfx.play("place", at);
     this.overview(900);
     this.h.onPlaced?.();
@@ -1197,7 +1257,7 @@ export class Engine {
       this.xrAnchor = a;
       this.anchorLast = null;
     } catch {
-      // Gone (the room was reset, or another app's space): forget it.
+      // Gone (the room was reset, or another app's space): forget it. The plane may still find the table.
       try {
         localStorage.removeItem(ANCHOR_KEY);
       } catch {
@@ -1212,6 +1272,7 @@ export class Engine {
     this.xrAnchor?.delete();
     this.xrAnchor = a;
     this.anchorLast = null;
+    this.anchorPose = null;
     let old: string | null = null;
     try {
       old = localStorage.getItem(ANCHOR_KEY);
@@ -1226,10 +1287,20 @@ export class Engine {
       .catch(() => {});
   }
 
-  /** Once a frame in passthrough: make the wanted anchor, follow the anchor as tracking corrects it, find the table. */
+  /**
+   * Once a frame in passthrough: make the wanted anchor, follow the anchor as
+   * tracking corrects it, find the table. Coming back in, the map goes back on
+   * last time's table: by the headset's anchor when it kept it, or else by
+   * finding the same plane again (the same size, at the same height).
+   */
   private trackTable(frame: XRFrame) {
     const ref = this.renderer.xr.getReferenceSpace();
     if (!ref) return;
+    const now = performance.now();
+    if (now - this.planesAt > 1000) {
+      this.planesAt = now;
+      this.findPlanes(frame, ref);
+    }
     if (this.anchorWanted) {
       const w = this.anchorWanted;
       this.anchorWanted = null;
@@ -1242,12 +1313,17 @@ export class Engine {
     if (a && frame.trackedAnchors?.has(a)) {
       const pose = frame.getPose(a.anchorSpace, ref);
       if (pose) {
-        const at = new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+        const first = !this.anchorPose;
+        this.anchorPose = new THREE.Matrix4().fromArray(pose.transform.matrix);
+        const at = new THREE.Vector3().setFromMatrixPosition(this.anchorPose);
         if (!this.anchor) {
-          // Restored from last time: the map goes back on that table.
+          // Restored from last time: the map goes back on that table, as it was.
           this.anchor = at.clone();
           this.anchorLast = at.clone();
-          this.tableFrom = { at: at.clone(), t0: performance.now() };
+          this.lookFor = null;
+          const saved = loadTable();
+          if (saved?.anchor) this.setTable(facing(tableIn(this.anchorPose, saved.anchor, saved.poly, saved.manual), this.head().pos));
+          else this.tableFrom = { at: at.clone(), t0: now };
           this.overview(900);
           this.h.onPlaced?.();
         } else if (!this.anchorLast) this.anchorLast = at.clone();
@@ -1264,64 +1340,60 @@ export class Engine {
             for (const [p, on] of this.stuck) if (on === "table") p.mesh.position.add(d);
           }
         }
+        // A new anchor's first pose: the table is kept against it.
+        if (first) this.persistTable();
       }
     }
-    if (performance.now() - this.wallsAt > 1000) {
-      this.wallsAt = performance.now();
-      this.walls = this.findWalls(frame, ref);
+    // No anchor came back: look for last time's plane, for a while.
+    const lf = this.lookFor;
+    if (lf && !this.anchor && now - lf.t0 > 2500) {
+      if (now - lf.t0 > 20000) this.lookFor = null;
+      else this.findSavedPlane(lf.saved);
     }
     if (this.tableFrom) {
-      const t = this.fitTable(frame, ref, this.tableFrom.at);
+      const t = this.fitTable(this.tableFrom.at);
       if (t) this.setTable(t);
-      else if (performance.now() - this.tableFrom.t0 > 1500) this.setTable(this.guessTable(this.tableFrom.at));
+      else if (now - this.tableFrom.t0 > 1500) this.setTable(this.guessTable(this.tableFrom.at));
       if (this.table) this.tableFrom = null;
     }
   }
 
-  /** The detected horizontal plane under a spot, as a table: its edges squared to the plane's own axes. */
-  private fitTable(frame: XRFrame, ref: XRReferenceSpace, at: THREE.Vector3): Table | null {
-    let planes: XRPlaneSet | undefined;
-    try {
-      planes = frame.detectedPlanes;
-    } catch {
-      return null;
-    }
-    if (!planes) return null;
-    const head = this.head().pos;
-    for (const plane of planes) {
-      if (plane.orientation !== "horizontal" || plane.polygon.length < 3) continue;
-      const pose = frame.getPose(plane.planeSpace, ref);
-      if (!pose) continue;
-      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
-      const local = at.clone().applyMatrix4(m.clone().invert());
-      if (Math.abs(local.y) > 0.05) continue;
-      const poly = plane.polygon.map((q) => [q.x, q.z] as [number, number]);
-      if (!inside(local.x, local.z, poly)) continue;
-      const xs = poly.map((q) => q[0]);
-      const zs = poly.map((q) => q[1]);
-      const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
-      const center = new THREE.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2).applyMatrix4(m);
-      const ax = new THREE.Vector3(1, 0, 0).transformDirection(m).setY(0).normalize();
-      const az = new THREE.Vector3(0, 0, 1).transformDirection(m).setY(0).normalize();
-      // The edge nearest you is the front: whichever of the four faces you most.
-      const you = head.clone().sub(center).setY(0).normalize();
-      const sides = [
-        { dir: ax, half: (x1 - x0) / 2, across: (z1 - z0) / 2 },
-        { dir: ax.clone().negate(), half: (x1 - x0) / 2, across: (z1 - z0) / 2 },
-        { dir: az, half: (z1 - z0) / 2, across: (x1 - x0) / 2 },
-        { dir: az.clone().negate(), half: (z1 - z0) / 2, across: (x1 - x0) / 2 },
-      ];
-      const front = sides.reduce((a, b) => (b.dir.dot(you) > a.dir.dot(you) ? b : a));
-      const toward = front.dir.clone();
-      return {
-        center,
-        toward,
-        right: new THREE.Vector3().crossVectors(Y, toward).normalize(),
-        halfD: THREE.MathUtils.clamp(front.half, 0.2, 1.5),
-        halfW: THREE.MathUtils.clamp(front.across, 0.25, 1.5),
-      };
+  /** Last time's plane among those found now, by its size and height: the map goes back on it. */
+  private findSavedPlane(saved: SavedTable) {
+    const sp = saved.plane;
+    if (!sp) return void (this.lookFor = null);
+    const match = this.flats.find((f) => {
+      const y = new THREE.Vector3().setFromMatrixPosition(f.m).y;
+      return Math.abs(y - sp.y) < 0.05 && Math.abs(f.sx - sp.sx) < 0.08 && Math.abs(f.sz - sp.sz) < 0.08;
+    });
+    if (!match) return;
+    this.lookFor = null;
+    const spot = vec(sp.spot).applyMatrix4(match.m);
+    this.anchor = spot;
+    this.anchorWanted = spot.clone();
+    this.setTable(facing(tableIn(match.m, sp, saved.poly, saved.manual), this.head().pos));
+    this.overview(900);
+    this.h.onPlaced?.();
+  }
+
+  /** The detected level surface under a spot, if any: the plane itself, a little above or below it. */
+  private flatUnder(at: THREE.Vector3): Flat | null {
+    for (const f of this.flats) {
+      const local = at.clone().applyMatrix4(f.m.clone().invert());
+      if (Math.abs(local.y) < 0.06 && inside(local.x, local.z, f.poly)) return f;
     }
     return null;
+  }
+
+  /** The detected horizontal plane under a spot, as a table: its own outline, its front the side nearest you. */
+  private fitTable(at: THREE.Vector3): Table | null {
+    const f = this.flatUnder(at);
+    if (!f) return null;
+    // The floor (or something as big): no table to fit; a mat round the spot instead.
+    if (f.sx > 2.6 || f.sz > 2.6) return this.guessTable(at);
+    const pts = f.poly.map(([x, z]) => new THREE.Vector3(x, 0, z).applyMatrix4(f.m));
+    const y = new THREE.Vector3().setFromMatrixPosition(f.m).y;
+    return facing(tableFrom(pts, new THREE.Vector3(0, 0, 1).transformDirection(f.m), y), this.head().pos);
   }
 
   /** No planes to go by: a table a little wider than deep, square to you, around the spot. */
@@ -1329,7 +1401,9 @@ export class Engine {
     const toward = this.head().pos.sub(at).setY(0);
     if (toward.lengthSq() < 1e-4) toward.set(0, 0, 1);
     toward.normalize();
-    return { center: at.clone(), toward, right: new THREE.Vector3().crossVectors(Y, toward).normalize(), halfW: 0.45, halfD: 0.3 };
+    const right = new THREE.Vector3().crossVectors(Y, toward).normalize();
+    const corner = (x: number, z: number) => at.clone().addScaledVector(right, x).addScaledVector(toward, z);
+    return tableFrom([corner(-0.45, -0.3), corner(0.45, -0.3), corner(0.45, 0.3), corner(-0.45, 0.3)], toward, at.y);
   }
 
   private setTable(t: Table | null) {
@@ -1338,7 +1412,105 @@ export class Engine {
     // The table's panels go on it (back to their edges, when it's a new table).
     for (const [p, slot] of this.slots) if (p.open && TABLE_SLOTS.includes(slot)) this.place(p, slot);
     if (!t) for (const [p, on] of this.stuck) if (on === "table") this.stuck.delete(p);
+    if (t) {
+      this.surface.setShape(t.poly);
+      this.surfaceSet = true;
+      this.persistTable();
+    }
     if (had !== !!t || t) this.h.onTable?.(!!t);
+  }
+
+  /** The table as it is now, kept for next time: against the anchor, and against the plane it lies on. */
+  private persistTable() {
+    const t = this.table;
+    if (!t || this.mode !== "ar") return;
+    const saved: SavedTable = { poly: t.poly, manual: t.manual };
+    if (this.anchorPose) saved.anchor = tableInto(this.anchorPose.clone().invert(), t);
+    const f = this.flatUnder(t.center);
+    if (f && this.anchor) {
+      const inv = f.m.clone().invert();
+      saved.plane = { sx: f.sx, sz: f.sz, y: new THREE.Vector3().setFromMatrixPosition(f.m).y, spot: v3(this.anchor.clone().applyMatrix4(inv)), ...tableInto(inv, t) };
+    }
+    saveTable(saved);
+  }
+
+  /* ------------------------- tracing the table by hand ------------------------- */
+
+  /**
+   * When the headset doesn't know the table (or knows it wrong): touch its
+   * corners one by one, pinching (or pulling the trigger) at each, and the
+   * outline becomes the table. Three corners make a rectangle; more trace
+   * any shape.
+   */
+  startOutline() {
+    if (this.mode !== "ar") return;
+    this.placing = false;
+    this.reticle.visible = false;
+    this.outline = [];
+    this.h.onOutline?.(0);
+  }
+
+  undoOutline() {
+    if (!this.outline) return;
+    this.outline.pop();
+    this.h.onOutline?.(this.outline.length);
+  }
+
+  cancelOutline() {
+    this.outline = null;
+    this.outlineLine.visible = false;
+    this.h.onOutline?.(null);
+  }
+
+  finishOutline() {
+    const raw = this.outline;
+    if (!raw || raw.length < 3) return;
+    const y = raw.reduce((s, p) => s + p.y, 0) / raw.length;
+    let pts = raw.map((p) => p.clone().setY(y));
+    if (pts.length === 3) {
+      // Three corners in a row: the fourth is where they square off.
+      const [a, b, c] = pts;
+      const ab = b.clone().sub(a);
+      const bc = c.clone().sub(b);
+      bc.sub(ab.clone().multiplyScalar(bc.dot(ab) / Math.max(1e-6, ab.lengthSq())));
+      pts = [a, b, b.clone().add(bc), a.clone().add(bc)];
+    }
+    this.cancelOutline();
+    const t = facing(tableFrom(pts, mainAxis(pts), y, true), this.head().pos);
+    // The map goes on it, unless it's already there.
+    if (!this.anchor || !overTable(t, this.anchor)) {
+      this.anchor = t.center.clone();
+      this.anchorWanted = t.center.clone();
+    }
+    this.tableFrom = null;
+    this.lookFor = null;
+    this.setTable(t);
+    sfx.play("place", t.center);
+    this.overview(900);
+    this.h.onPlaced?.();
+  }
+
+  /** Where a pointer marks a corner: between a hand's pinching fingertips, or the controller's tip. */
+  private cornerAt(p: Pointer) {
+    if (p.kind === "hand") return p.gest?.pinchPoint() ?? p.origin.clone();
+    if (p.kind === "mouse") return p.origin.clone().addScaledVector(p.dir, 1);
+    return p.origin.clone();
+  }
+
+  /** The outline so far, and a line from its last corner to where you'd put the next. */
+  private drawOutline() {
+    const pts = this.outline;
+    if (!pts) return;
+    const ptr = [...this.pointers.values()].filter((x) => x.kind !== "mouse" || this.mode === "flat");
+    const p = ptr.find((x) => x.handedness === "right") ?? ptr[0];
+    const all = p ? [...pts, this.cornerAt(p)] : pts;
+    if (pts.length >= 2) all.push(pts[0]);
+    const attr = this.outlineLine.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const n = Math.min(all.length, attr.count);
+    for (let i = 0; i < n; i++) attr.setXYZ(i, all[i].x, all[i].y, all[i].z);
+    attr.needsUpdate = true;
+    this.outlineLine.geometry.setDrawRange(0, n);
+    this.outlineLine.visible = n >= 2;
   }
 
   /**
@@ -1419,24 +1591,29 @@ export class Engine {
     return best;
   }
 
-  /** The walls the headset knows about: vertical planes, with their extents. */
-  private findWalls(frame: XRFrame, ref: XRReferenceSpace): Wall[] {
+  /** The planes the headset knows about: the walls (vertical), with their extents, and the level surfaces (horizontal), with their outlines. */
+  private findPlanes(frame: XRFrame, ref: XRReferenceSpace) {
     let planes: XRPlaneSet | undefined;
     try {
       planes = frame.detectedPlanes;
     } catch {
-      return [];
+      return;
     }
-    const out: Wall[] = [];
+    const walls: Wall[] = [];
+    const flats: Flat[] = [];
     for (const plane of planes ?? []) {
-      if (plane.orientation !== "vertical" || plane.polygon.length < 3) continue;
+      if (plane.polygon.length < 3) continue;
       const pose = frame.getPose(plane.planeSpace, ref);
       if (!pose) continue;
+      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
       const xs = plane.polygon.map((q) => q.x);
       const zs = plane.polygon.map((q) => q.z);
-      out.push({ m: new THREE.Matrix4().fromArray(pose.transform.matrix), x0: Math.min(...xs), x1: Math.max(...xs), z0: Math.min(...zs), z1: Math.max(...zs) });
+      const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+      if (plane.orientation === "vertical") walls.push({ m, x0, x1, z0, z1 });
+      else flats.push({ m, poly: plane.polygon.map((q) => [q.x, q.z]), sx: x1 - x0, sz: z1 - z0 });
     }
-    return out;
+    this.walls = walls;
+    this.flats = flats;
   }
 
   /** While a panel is carried: its landing spot outlined, and a tick when one comes into reach. */
@@ -1717,6 +1894,9 @@ export class Engine {
       const m = p.ray.matrixWorld.clone().multiply(p.carry.offset);
       p.carry.panel.mesh.position.setFromMatrixPosition(m);
       p.carry.panel.mesh.lookAt(head.pos);
+      const tr = p.carry.trail;
+      tr.push({ t: now, at: p.carry.panel.mesh.position.clone() });
+      while (tr.length > 2 && now - tr[0].t > 200) tr.shift();
     }
     const carrier = [...this.pointers.values()].find((p) => p.carry);
     if (carrier) this.showSnap(carrier);
@@ -1733,6 +1913,7 @@ export class Engine {
 
     // The table: its anchor followed, and its edges found.
     if (xrFrame && this.mode === "ar") this.trackTable(xrFrame);
+    this.drawOutline();
 
     // AR placement: the reticle sits where the ray meets a real surface.
     if (this.placing && xrFrame && this.hitSource) {
@@ -1827,15 +2008,15 @@ export class Engine {
   private only(part: "room" | "map") {
     const room = part === "room";
     this.world.visible = !room;
-    for (const o of [this.backdrop, this.floor, this.surface, this.stars]) o.userData.shown ??= o.visible;
-    for (const o of [this.backdrop, this.floor, this.surface, this.stars]) o.visible = room && (o.userData.shown as boolean);
+    for (const o of [this.backdrop, this.floor, this.surface.mesh, this.stars]) o.userData.shown ??= o.visible;
+    for (const o of [this.backdrop, this.floor, this.surface.mesh, this.stars]) o.visible = room && (o.userData.shown as boolean);
     this.scene.background = room ? this.sky : null;
   }
 
   /** Back to the whole scene, as the rest of the engine knows it. */
   private whole() {
     this.world.visible = true;
-    for (const o of [this.backdrop, this.floor, this.surface, this.stars]) {
+    for (const o of [this.backdrop, this.floor, this.surface.mesh, this.stars]) {
       o.visible = o.userData.shown as boolean;
       delete o.userData.shown;
     }
@@ -2200,50 +2381,6 @@ function makeFloor() {
   floor.renderOrder = -4;
   floor.visible = false;
   return floor;
-}
-
-/**
- * The table top the map sits on: a faint glassy disc with a brighter rim, so
- * the surface reads in the headset without hiding anything under it (it
- * writes no depth, and the map draws over it).
- */
-function makeSurface() {
-  const mat = new THREE.ShaderMaterial({
-    uniforms: { uOpacity: { value: 0.6 }, uColor: { value: new THREE.Color(C.static).multiplyScalar(0.6) } },
-    vertexShader: /* glsl */ `
-      varying vec2 vR;
-      void main() {
-        vR = position.xz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      uniform float uOpacity;
-      uniform vec3 uColor;
-      varying vec2 vR;
-      float ring(float r, float at, float w) {
-        return 1.0 - smoothstep(w, w + fwidth(r) * 1.5, abs(r - at));
-      }
-      void main() {
-        float r = length(vR);
-        // The top: a faint fill, a touch brighter in the middle where the map stands.
-        float top = (0.07 + 0.08 * (1.0 - smoothstep(0.0, 0.9, r))) * (1.0 - smoothstep(0.95, 0.97, r));
-        float rim = ring(r, 0.97, 0.008);
-        float inner = ring(r, 0.62, 0.002) * 0.3;
-        float alpha = (top + rim * 0.75 + inner) * uOpacity;
-        gl_FragColor = vec4(uColor * (0.5 + rim * 0.7), alpha);
-        #include <colorspace_fragment>
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const surface = new THREE.Mesh(new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2), mat);
-  // Over the floor grid, under the map.
-  surface.renderOrder = -3;
-  surface.visible = false;
-  return surface;
 }
 
 /** The pill under each panel that carries it. */

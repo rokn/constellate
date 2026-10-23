@@ -73,6 +73,7 @@ export function useXR(feed: XRFeed) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(false);
   const [table, setTable] = useState(false);
+  const [outlining, setOutlining] = useState<number | null>(null);
   const [inputs, setInputs] = useState({ hands: false, controllers: false });
   /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
   const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
@@ -168,6 +169,14 @@ export function useXR(feed: XRFeed) {
       roomRef.current?.engine.startPlacing();
     },
     recenterPanels: () => roomRef.current?.engine.recenterPanels(),
+    outlineTable: () => {
+      setMenuOpen(false);
+      setPlacing(false);
+      roomRef.current?.engine.startOutline();
+    },
+    undoOutline: () => roomRef.current?.engine.undoOutline(),
+    finishOutline: () => roomRef.current?.engine.finishOutline(),
+    cancelOutline: () => roomRef.current?.engine.cancelOutline(),
     toggleTune: () => {
       setMenuOpen(false);
       setTuneOpen((o) => !o);
@@ -317,6 +326,7 @@ export function useXR(feed: XRFeed) {
               onSelect: (paths, how) => feedRef.current.actions.focusPaths(paths, `${paths.length} file${paths.length > 1 ? "s" : ""} ${how === "lasso" ? "you looped" : "you framed"}`),
               onInputs: setInputs,
               onTable: setTable,
+              onOutline: setOutlining,
               // In you go: to what you were looking at on the desktop, or the whole map.
               onEntered: () => feedRef.current.actions.frameSelection(),
             },
@@ -390,7 +400,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

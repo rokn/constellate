@@ -25,7 +25,7 @@ type AnyKnob = Knob | XRKnob;
 export class TunePanel extends Panel {
   m: Model | null = null;
   tab: Tab = "map";
-  private expanded: Record<string, boolean> = { glow: true, bodies: true, sight: true, passthrough: true, floor: true, comfort: true, sound: true };
+  private expanded: Record<string, boolean> = { glow: true, bodies: true, sight: true, passthrough: true, floor: true, comfort: true, hands: true, sound: true };
   /** Values being dragged, not yet (all) sent. */
   private drafts = new Map<string, number>();
   private sentAt = 0;
@@ -237,6 +237,7 @@ const HINTS: HintGroup[] = [
       ["Grip on a panel, or trigger on its handle", "Carry the panel"],
       ["Stick while carrying a panel", "Push it away, pull it closer"],
       ["Other grip on a carried code, answers or story panel", "Pull apart or together to resize it"],
+      ["Throw a carried panel away and let go", "Close it"],
     ],
   },
   {
@@ -278,6 +279,7 @@ const HINTS: HintGroup[] = [
       ["Left palm up", "Wrist menu; touch it with your right hand"],
       ["Both hands in an L, framing", "Light up what's in the frame (all of it: the whole map)"],
       ["Trigger on a panel's handle", "Pinch it to carry the panel"],
+      ["Throw a carried panel away and let go", "Close it"],
     ],
   },
   {
@@ -293,6 +295,7 @@ const HINTS: HintGroup[] = [
       ["Drop a dragged body on the shelf", "Take it off the map"],
       ["Menu → Recenter panels", "Put the table's panels back on its edges"],
       ["Menu → Place on a surface", "Move the map to another table"],
+      ["Menu → Trace the table", "Touch its corners to give it its real shape"],
     ],
   },
 ];
