@@ -84,6 +84,7 @@ export function useXR(feed: XRFeed) {
   const [fileData, setFileData] = useState<FileData | null>(null);
   const [repos, setRepos] = useState<LibraryRepo[]>([]);
   const [branches, setBranches] = useState<Model["branches"]>(null);
+  const [fileDiff, setFileDiff] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [entering, setEntering] = useState(false);
   const feedRef = useRef(feed);
@@ -400,6 +401,23 @@ export function useXR(feed: XRFeed) {
       live = false;
     };
   }, [presenting, path]);
+  // A changed file opens on its diff, as on the desktop.
+  const change = feed.model.fileChange;
+  const diffUrl = change && path ? change.diffUrl ?? `/api/diff?path=${encodeURIComponent(path)}&from=${change.from}&to=${change.to}` : null;
+  const diffKey = diffUrl && `${diffUrl}|${change!.from}|${change!.to}`;
+  useEffect(() => {
+    if (!presenting || !diffUrl) return setFileDiff(undefined);
+    let live = true;
+    setFileDiff(undefined);
+    void fetch(diffUrl)
+      .then((r) => (r.ok ? r.json() : { diff: null }))
+      .then((b: { diff: string | null }) => live && setFileDiff(b.diff))
+      .catch(() => live && setFileDiff(null));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenting, diffKey]);
   useEffect(() => {
     if (presenting && menuOpen && feed.model.library) void fetch("/api/repos").then((r) => (r.ok ? r.json() : [])).then(setRepos).catch(() => {});
   }, [presenting, menuOpen, feed.model.library]);
@@ -411,7 +429,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, fileDiff, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */
