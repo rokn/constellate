@@ -99,6 +99,10 @@ const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.
 const SILENT = new Set(["show_agent", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
+/** The least time between two instruction updates. */
+const SYNC_MIN_MS = 2000;
+/** How long after they stop talking to wait for the reply to their turn before asking for one. */
+const NUDGE_AFTER_SPEECH_MS = 1500;
 
 /* ---------------------------- instructions ---------------------------- */
 
@@ -209,6 +213,15 @@ function instructions(screen: ScreenContext): string {
 type VoiceSettings = { voiceId: string; speed: number; eagerness: "low" | "medium" | "high"; interrupt: boolean; ttsModel: string };
 const DEFAULTS: VoiceSettings = { voiceId: "Sophie", speed: 1, eagerness: "medium", interrupt: true, ttsModel: "inworld-tts-2" };
 
+/**
+ * Only the instructions. Re-sending the audio config restarts Inworld's turn
+ * detection and speech, which chopped what they were saying into fragments
+ * and cut the voice off mid-sentence whenever the screen or an agent changed.
+ */
+function instructionsUpdate(text: string) {
+  return { type: "session.update", session: { type: "realtime", instructions: text } };
+}
+
 function sessionUpdate(text: string, v: VoiceSettings) {
   return {
     type: "session.update",
@@ -251,6 +264,10 @@ function bridge(client: WebSocket) {
   let followUp: ReturnType<typeof setTimeout> | undefined;
   let lastInstructions = "";
   let syncTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSync = 0;
+  let userSpeaking = false;
+  let nudgeAfterSpeech = false;
+  let pendingSync = false;
   let closed = false;
   let attempt = 0;
   const pending: string[] = [];
@@ -265,22 +282,50 @@ function bridge(client: WebSocket) {
     if (upstream?.readyState === WebSocket.OPEN) upstream.send(JSON.stringify(obj));
   };
 
-  /** Re-issue the session's instructions, but only when they actually changed. */
-  const sync = () => {
+  /** Send the instructions now if they changed. */
+  const flush = () => {
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => {
-      if (!ready) return;
-      const text = instructions(screen);
-      if (text === lastInstructions) return;
-      lastInstructions = text;
-      send(sessionUpdate(text, settings));
-    }, 250);
+    syncTimer = undefined;
+    if (!ready) return;
+    const text = instructions(screen);
+    if (text === lastInstructions) return;
+    lastInstructions = text;
+    lastSync = Date.now();
+    send(instructionsUpdate(text));
   };
 
-  /** Never start a response over one being spoken — it truncates mid-sentence. */
+  /**
+   * Re-issue the session's instructions when they changed — but never while
+   * they're talking or the voice is speaking, and at most every couple of
+   * seconds (a working agent changes them constantly). A held-back update
+   * goes out when the turn ends, or right before the voice is asked to speak.
+   */
+  const sync = () => {
+    if (syncTimer) return;
+    const wait = Math.max(250, SYNC_MIN_MS - (Date.now() - lastSync));
+    syncTimer = setTimeout(() => {
+      syncTimer = undefined;
+      if (userSpeaking || responseActive) pendingSync = true;
+      else flush();
+    }, wait);
+  };
+  const settle = () => {
+    if (!pendingSync || userSpeaking || responseActive) return;
+    pendingSync = false;
+    sync();
+  };
+
+  /**
+   * Never start a response over one being spoken — it truncates mid-sentence —
+   * nor while they're talking: the reply to their turn picks up the news.
+   */
   const respond = () => {
-    if (responseActive) followUpWhenIdle = true;
-    else send({ type: "response.create" });
+    if (userSpeaking) nudgeAfterSpeech = true;
+    else if (responseActive) followUpWhenIdle = true;
+    else {
+      flush();
+      send({ type: "response.create" });
+    }
   };
 
   /** A late result, injected as a new turn for the voice to say. */
@@ -500,8 +545,24 @@ function bridge(client: WebSocket) {
         return;
       }
 
-      if (msg.type === "response.created") {
+      if (msg.type === "input_audio_buffer.speech_started") {
+        userSpeaking = true;
+      } else if (msg.type === "input_audio_buffer.speech_stopped") {
+        userSpeaking = false;
+        if (nudgeAfterSpeech) {
+          // Their turn usually gets a reply of its own, which covers the news;
+          // if none comes, ask for one.
+          nudgeAfterSpeech = false;
+          clearTimeout(followUp);
+          followUp = setTimeout(() => {
+            followUp = undefined;
+            if (!responseActive && !userSpeaking) respond();
+          }, NUDGE_AFTER_SPEECH_MS);
+        }
+        settle();
+      } else if (msg.type === "response.created") {
         responseActive = true;
+        userSpeaking = false;
         // The model started on its own (semantic VAD does this); a queued
         // nudge would now collide with it.
         clearTimeout(followUp);
@@ -513,9 +574,10 @@ function bridge(client: WebSocket) {
           clearTimeout(followUp);
           followUp = setTimeout(() => {
             followUp = undefined;
-            if (!responseActive) send({ type: "response.create" });
+            if (!responseActive) respond();
           }, FOLLOW_UP_SETTLE_MS);
         }
+        settle();
       }
 
       switch (msg.type) {
@@ -560,6 +622,7 @@ function bridge(client: WebSocket) {
     ws.on("close", () => {
       if (closed) return;
       ready = false;
+      responseActive = userSpeaking = false;
       toClient({ type: "proxy.status", status: "reconnecting" });
       setTimeout(connect, Math.min(15_000, 500 * 2 ** attempt++));
     });
@@ -576,8 +639,10 @@ function bridge(client: WebSocket) {
     }
     if (msg.type === "proxy.settings") {
       settings = { ...DEFAULTS, ...(msg.settings ?? {}) };
-      lastInstructions = "";
-      sync();
+      if (ready) {
+        lastInstructions = instructions(screen);
+        send(sessionUpdate(lastInstructions, settings));
+      }
       return;
     }
     if (msg.type === "proxy.screen") {
