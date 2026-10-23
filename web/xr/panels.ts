@@ -277,6 +277,13 @@ export class MenuPanel extends Panel {
     if (b) {
       const size = b.error ?? (b.loading ? "building its map…" : `${b.commits} commits · ${b.files} files · +${b.add} −${b.del}`);
       rows.push({ id: "shown", label: `On the map: ${b.agent ?? b.name}`, detail: `${b.agent ? `${b.name} · ` : ""}${size}`, color: b.error ? C.bad : C.course, active: true, onClick: () => {} });
+      rows.push({
+        id: "only",
+        label: b.changedOnly ? "Show the whole map" : "Show only what it changed",
+        detail: b.changedOnly ? `Only its ${b.files} changed files are on the map` : "The files it didn't touch step off the map",
+        active: b.changedOnly,
+        onClick: () => a.setChangedOnly(!b.changedOnly),
+      });
       rows.push({ id: "present", label: `Back to ${here}`, detail: "The map as it's checked out now", onClick: a.closeBranch });
     }
     const list = m.branches;

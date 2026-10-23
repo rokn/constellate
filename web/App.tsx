@@ -505,7 +505,19 @@ export function App() {
 
   /* ------------------------------ map shape ------------------------------- */
 
-  const visible = useMemo(() => (mapGraph ? applyFilter(mapGraph.files, filter) : null), [mapGraph, filter]);
+  /**
+   * Only what changed: while a branch (or a span of history) is on the map,
+   * the files it didn't touch step off it. Kept across branches, so stepping
+   * from one to the next stays on just their changes.
+   */
+  const [changedOnly, setChangedOnly] = useState(false);
+  const changeHeat = branchMap ? branchHeat : range ? heat : null;
+  const visible = useMemo(() => {
+    if (!mapGraph) return null;
+    const kept = applyFilter(mapGraph.files, filter);
+    if (!changedOnly || !changeHeat?.size) return kept;
+    return new Set(mapGraph.files.map((f) => f.path).filter((p) => changeHeat.has(p) && (!kept || kept.has(p))));
+  }, [mapGraph, filter, changedOnly, changeHeat]);
 
   const grouping: Grouping | null = useMemo(() => {
     if (lensId === "modules" && overview) return { key: "modules", groups: overview.modules, edges: overview.edges };
@@ -871,7 +883,7 @@ export function App() {
       touring: tour !== null,
       lens: lensTitle,
       lensId,
-      branch: branchMap ? { name: branchMap.branch, base: branchMap.base, agent: branchMap.agent } : undefined,
+      branch: branchMap ? { name: branchMap.branch, base: branchMap.base, agent: branchMap.agent, changedOnly } : undefined,
       range: branchMap
         ? branchSum?.agent
           ? `what the agent "${branchSum.agent.title}" changed on ${branchSum.branch} since it started: ${branchSum.commits.length} commits, ${branchSum.files.length} files changed${branchSum.agent.live ? ", some not committed yet" : ""}`
@@ -892,7 +904,7 @@ export function App() {
             : undefined,
       tune: { map: changed("map", tuning), headset: changed("headset", xrSettings), mode: headsetMode === "flat" ? undefined : headsetMode },
     }),
-    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, story, storyAt, parked, lastStory, tuning, xrSettings, headsetMode],
+    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, changedOnly, story, storyAt, parked, lastStory, tuning, xrSettings, headsetMode],
   );
 
   /** Pause the open story and set it aside, so an answer can take the stage; Resume brings it back. */
@@ -1191,6 +1203,8 @@ export function App() {
           return showBranch(c.branch, c.base, c.agent);
         case "close_branch":
           return closeBranch();
+        case "changed_only":
+          return setChangedOnly(c.on);
         case "renamed": {
           // The server moved everything it keeps; this is what the page keeps.
           const to = renamer(c.renames);
@@ -1541,9 +1555,10 @@ export function App() {
       add: files.reduce((n, f) => n + f.add, 0),
       del: files.reduce((n, f) => n + f.del, 0),
       loading: !branchShown,
+      changedOnly,
       error: branchError || undefined,
     };
-  }, [branchMap, branchSum, branchShown, branchError, state?.agents]);
+  }, [branchMap, branchSum, branchShown, branchError, state?.agents, changedOnly]);
   const recenterRef = useRef(recenter);
   recenterRef.current = recenter;
   const xr = useXR({
@@ -1651,6 +1666,7 @@ export function App() {
         showBranch(a.branch, a.base === "HEAD" ? a.baseSha : a.base, a.id);
       },
       showBranch: (name, base) => showBranch(name, base),
+      setChangedOnly,
       closeBranch,
       agentAction: (id, action) => void agentCall({ action, id }, { pr: "Pull request opened.", merge: "Merged.", rebase: "Rebased onto its base.", stop: "Stopped." }[action]),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
@@ -2556,6 +2572,8 @@ export function App() {
             onCodeDiff={() => branchSum && setBranchDiff({ branch: branchSum.branch, base: branchSum.base, agent: branchSum.agent?.id })}
             onExplain={() => branchSum && void post("/api/stories/branch", { branch: branchSum.branch, base: branchSum.base, settings: "mine" })}
             onClose={closeBranch}
+            changedOnly={changedOnly}
+            onChangedOnly={setChangedOnly}
           />
         )}
         {historyOpen && gitHistory?.available && graph && (

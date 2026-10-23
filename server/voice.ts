@@ -76,6 +76,9 @@ const TOOLS = [
     branch: { type: "string", description: "The branch name; a close guess like 'login' is fine" },
   }, ["branch"]),
   fn("close_branch", "Back to the map as it's checked out: stop showing a branch."),
+  fn("changed_only", "While a branch (or history) is on the map: on, show only the files it changed, everything else steps off; off, the whole map again. Instant. Use it when they ask for just the changes, or for the whole map back.", {
+    on: { type: "boolean" },
+  }, ["on"]),
   fn("replay_history", "Play through the commits toward the present, one at a time: the map turns to each commit in turn."),
   fn("add_marker", "Put a marker on files by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a marker that needs the code read to choose its files, ask the navigator.", {
     label: { type: "string" },
@@ -105,7 +108,7 @@ const TUNE_TOOLS = TUNE_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.pr
 const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
 
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["show_agent", "show_branch", "close_branch", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
+const SILENT = new Set(["show_agent", "show_branch", "close_branch", "changed_only", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
 /** The least time between two instruction updates. */
@@ -199,7 +202,9 @@ function instructions(screen: ScreenContext, branches: Branches | null): string 
     branches?.names.length
       ? `Branches ahead of ${branches.base} (for show_branch), newest first: ${branches.names.slice(0, 30).join(", ")}${s.repo?.branch ? `. Checked out: ${s.repo.branch}` : ""}.`
       : "",
-    screen.branch ? `The map is showing the branch ${screen.branch.name}${screen.branch.base ? ` against ${screen.branch.base}` : ""}; close_branch goes back to the checked-out code.` : "",
+    screen.branch
+      ? `The map is showing the branch ${screen.branch.name}${screen.branch.base ? ` against ${screen.branch.base}` : ""}${screen.branch.changedOnly ? ", only the files it changed (changed_only off brings back the whole map)" : " (changed_only shows just the files it changed)"}; close_branch goes back to the checked-out code.`
+      : "",
     screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.lens ? `The map is organized by: ${screen.lens}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
@@ -522,6 +527,10 @@ function bridge(client: WebSocket) {
       }
       case "close_branch":
         command({ cmd: "close_branch" });
+        return { ok: true };
+      case "changed_only":
+        if (!screen.branch && !screen.range) return { ok: false, error: "No branch or history is on the map. Show one first." };
+        command({ cmd: "changed_only", on: args.on !== false });
         return { ok: true };
       case "replay_history":
         command({ cmd: "replay" });
