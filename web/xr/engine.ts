@@ -324,7 +324,7 @@ export class Engine {
     this.panels.push(p);
     this.hud.add(p.mesh);
     // A handle under every panel: point at it and hold the trigger (or the grip) to carry the panel.
-    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthTest: false, depthWrite: false, toneMapped: false, opacity: 0.6 }));
+    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthWrite: false, toneMapped: false, opacity: 0.6 }));
     h.position.set(0, -p.heightM / 2 - 0.028, 0);
     h.renderOrder = 11;
     h.userData.handleOf = p;
@@ -1041,7 +1041,7 @@ export class Engine {
       p.dir.set(0, 0, -1).transformDirection(p.ray.matrixWorld);
     }
 
-    // Panels first: they're in front of the map whenever they're in the way.
+    // Panels first, even one a body hides part of: pointing at a panel means using it.
     const rc = new THREE.Raycaster(p.origin, p.dir, 0.01, 20);
     const openPanels = this.panels.filter((x) => x.open && x !== p.carry?.panel);
     const open = openPanels.map((x) => x.mesh);
