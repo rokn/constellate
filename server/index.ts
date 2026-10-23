@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GroupOverlay, Lens, Note, NoteTarget, ScreenContext, StorySettings, ViewSettings } from "../shared/types";
+import type { GroupOverlay, Lens, Note, NoteTarget, ScreenContext, StorySettings, TunePreset, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro, stopNavigator } from "./navigator";
 import { REPOS_DIR, ensureClone, lastOpened, listRepos, markOpened, parseGitHub, removeClone, rootOf } from "./library";
 import { loadFile } from "./repo";
@@ -35,9 +35,12 @@ import {
   updateOverlay,
   loadStorySettings,
   setStorySettings,
+  loadTunePresets,
+  setTunePresets,
   getStory,
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
+import { cleanPreset } from "../shared/knobs";
 import { attachVoice } from "./voice";
 import { AGENTS_ON, agentDiff, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
@@ -548,6 +551,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       json(res, done && s?.state === "ready" ? 200 : done ? 500 : 202, { ok: s?.state === "ready", id: story.id, state: s?.state, error: s?.error, title: s?.title, url: link, diffUrl, story: s });
       return true;
     }
+    case "POST /api/tune-presets": {
+      const b = await body<{ presets?: unknown[] }>(req);
+      if (!Array.isArray(b.presets)) return json(res, 400, { error: "No presets." }), true;
+      const list = b.presets.map(cleanPreset).filter((p): p is TunePreset => !!p);
+      // One per name: the last one sent wins.
+      await setTunePresets([...new Map(list.map((p) => [p.name.toLowerCase(), p])).values()]);
+      json(res, 200, { ok: true });
+      return true;
+    }
     case "POST /api/story-settings": {
       const b = await body<{ settings?: Partial<StorySettings> }>(req);
       const s = b.settings ?? {};
@@ -657,6 +669,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
 async function main() {
   await loadEnv();
   await loadStorySettings();
+  await loadTunePresets();
   const server = createServer();
 
   let assets: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;

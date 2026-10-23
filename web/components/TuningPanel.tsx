@@ -1,26 +1,42 @@
 import { useState } from "react";
-import { DEFAULT_TUNING, FORCE_KNOBS, PRESETS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
+import { BUILT_IN, presetOn } from "../../shared/knobs";
+import type { TunePreset } from "../../shared/types";
+import { DEFAULT_TUNING, FORCE_KNOBS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
 
 /**
  * Every knob on the map. Changes apply live; knobs that rebuild the bodies
  * (sizes, labels) commit when you let go of the slider, so dragging stays
- * smooth on big repos.
+ * smooth on big repos. Presets: the built-in looks, and yours, saved under
+ * a name and kept on the server, so the headset has them too.
  */
 export function TuningPanel({
   tuning,
   onChange,
+  presets,
+  onSavePreset,
+  onApplyPreset,
+  onDeletePreset,
   onRelayout,
   onClose,
 }: {
   tuning: Tuning;
   onChange: (t: Tuning) => void;
+  presets: TunePreset[];
+  onSavePreset: (name: string) => void;
+  onApplyPreset: (p: TunePreset) => void;
+  onDeletePreset: (name: string) => void;
   onRelayout: () => void;
   onClose: () => void;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({ glow: true, layout: true });
+  /** The name being typed for a new preset; null when not saving one. */
+  const [naming, setNaming] = useState<string | null>(null);
   const set = (patch: Partial<Tuning>) => onChange({ ...tuning, ...patch });
-  const presetOn = (patch: Partial<Tuning>) =>
-    (Object.keys(DEFAULT_TUNING) as (keyof Tuning)[]).every((k) => tuning[k] === (patch[k] ?? DEFAULT_TUNING[k]));
+  const save = () => {
+    if (naming?.trim()) onSavePreset(naming);
+    setNaming(null);
+  };
+  const chip = (on: boolean) => `rounded-full px-2.5 py-0.5 text-[12.5px] ${on ? "bg-course/20 text-text ring-1 ring-course/60" : "border border-line text-muted hover:text-text"}`;
 
   return (
     <aside className="glass rise pointer-events-auto flex h-full w-full flex-col overflow-hidden rounded-xl shadow-[0_20px_60px_-20px_rgba(0,0,0,.7)]">
@@ -37,19 +53,41 @@ export function TuningPanel({
         </button>
       </header>
 
-      <div className="flex flex-wrap gap-1.5 border-b border-line px-4 py-2.5">
-        {PRESETS.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onChange({ ...DEFAULT_TUNING, ...p.patch })}
-            aria-pressed={presetOn(p.patch)}
-            className={`rounded-full px-2.5 py-0.5 text-[12.5px] ${
-              presetOn(p.patch) ? "bg-course/20 text-text ring-1 ring-course/60" : "border border-line text-muted hover:text-text"
-            }`}
-          >
-            {p.title}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-4 py-2.5">
+        {BUILT_IN.map((p) => (
+          <button key={p.name} onClick={() => onApplyPreset(p)} aria-pressed={presetOn(p, tuning)} className={chip(presetOn(p, tuning))}>
+            {p.name}
           </button>
         ))}
+        {presets.map((p) => (
+          <span key={`mine:${p.name}`} className={`${chip(presetOn(p, tuning))} flex items-center gap-1 pr-1`}>
+            <button onClick={() => onApplyPreset(p)} title={p.headset ? "Saved in the headset: it sets the headset's knobs too" : undefined}>
+              {p.name}
+              {p.headset ? " ◐" : ""}
+            </button>
+            <button onClick={() => onDeletePreset(p.name)} className="px-0.5 text-muted/70 hover:text-bad" aria-label={`Delete ${p.name}`} title="Delete">
+              ✕
+            </button>
+          </span>
+        ))}
+        {naming === null ? (
+          <button onClick={() => setNaming("")} className="rounded-full border border-dashed border-line px-2.5 py-0.5 text-[12.5px] text-muted hover:text-text" title="Keep the knobs as they are now, under a name">
+            + Save as…
+          </button>
+        ) : (
+          <input
+            autoFocus
+            value={naming}
+            placeholder="Preset name"
+            onChange={(e) => setNaming(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+              if (e.key === "Escape") setNaming(null);
+            }}
+            onBlur={save}
+            className="w-32 rounded-full border border-course/60 bg-transparent px-2.5 py-0.5 text-[12.5px] outline-none"
+          />
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">

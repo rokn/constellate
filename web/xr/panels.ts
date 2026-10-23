@@ -868,6 +868,8 @@ export class KeyboardPanel extends Panel {
               ? "Hide paths matching (comma-separated)"
               : this.mode === "view"
                 ? "Name this view (the same name replaces it)"
+              : this.mode === "preset"
+                ? "Name this Tune preset (the same name replaces it)"
               : this.target === "story"
                 ? "Write a story about…"
                 : "Ask the navigator, or jump to a file";
@@ -917,7 +919,7 @@ export class KeyboardPanel extends Panel {
     bx = this.button(ctx, "shift", bx, y, "⇧", () => ((this.shift = !this.shift), this.invalidate()), { w: keyW * 1.3, h: keyH, active: this.shift, size: 26 }) + 10;
     bx = this.button(ctx, "space", bx, y, "space", () => this.press(" "), { w: keyW * 5, h: keyH, size: 24 }) + 10;
     bx = this.button(ctx, "back", bx, y, "⌫", () => this.backspace(), { w: keyW * 1.3, h: keyH, size: 26 }) + 10;
-    const go = this.mode === "note" || this.mode === "view" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
+    const go = this.mode === "note" || this.mode === "view" || this.mode === "preset" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
     this.button(ctx, "enter", bx, y, go, () => this.submit(), { w: W - PAD - bx, h: keyH, size: 26, accent: C.course, active: !!this.text.trim() });
   }
   private press(s: string) {

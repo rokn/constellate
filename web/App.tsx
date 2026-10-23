@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
+import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, TunePreset, UiCommand, ViewSettings } from "../shared/types";
+import { changed, presetValues } from "../shared/knobs";
 import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type HeatEntry, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
@@ -43,6 +44,7 @@ type Stop =
 
 const TOUR_STEP_MS = 7000;
 const NO_ACTIVITY: never[] = [];
+const NO_PRESETS: TunePreset[] = [];
 
 export function App() {
   const { state } = useSession();
@@ -172,6 +174,30 @@ export function App() {
     saveXR(xrSettings);
     sound.volume = xrSettings.voiceVolume;
   }, [xrSettings]);
+  /** Whether the headset is on (and how), for the voice: it says what a preset saved now keeps. */
+  const [headsetMode, setHeadsetMode] = useState<"flat" | "vr" | "ar">("flat");
+  // Tune presets you saved, kept on the server for every device.
+  const tunePresets = state?.tunePresets ?? NO_PRESETS;
+  const presetsRef = useRef(tunePresets);
+  presetsRef.current = tunePresets;
+  const knobsRef = useRef({ tuning, xrSettings });
+  knobsRef.current = { tuning, xrSettings };
+  /** The knobs as they are now, under this name (replacing one of the same name); in the headset, its own knobs too. */
+  const saveTunePreset = useCallback((name: string, withHeadset: boolean) => {
+    const n = name.trim();
+    if (!n) return;
+    const { tuning: t, xrSettings: x } = knobsRef.current;
+    const p: TunePreset = { name: n, map: changed("map", t), ...(withHeadset ? { headset: changed("headset", x) } : {}) };
+    void post("/api/tune-presets", { presets: [...presetsRef.current.filter((q) => q.name.toLowerCase() !== n.toLowerCase()), p] });
+  }, []);
+  const deleteTunePreset = useCallback((name: string) => {
+    void post("/api/tune-presets", { presets: presetsRef.current.filter((q) => q.name !== name) });
+  }, []);
+  const applyTunePreset = useCallback((p: TunePreset) => {
+    const v = presetValues(p);
+    setTuning(v.map);
+    if (v.headset) setXRSettings((x) => ({ ...x, ...v.headset }));
+  }, []);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [storiesOpen, setStoriesOpen] = useState(false);
@@ -849,8 +875,9 @@ export function App() {
           : lastStory
             ? { id: lastStory.id, beat: lastStory.beat, playing: false, closed: true }
             : undefined,
+      tune: { map: changed("map", tuning), headset: changed("headset", xrSettings), mode: headsetMode === "flat" ? undefined : headsetMode },
     }),
-    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, story, storyAt, parked, lastStory],
+    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, story, storyAt, parked, lastStory, tuning, xrSettings, headsetMode],
   );
 
   /** Pause the open story and set it aside, so an answer can take the stage; Resume brings it back. */
@@ -1157,9 +1184,15 @@ export function App() {
           setFile((f) => (f && to(f.path) !== f.path ? { ...f, path: to(f.path) } : f));
           return setEmphasis((ps) => (ps.some((p) => to(p) !== p) ? [...new Set(ps.map(to))] : ps));
         }
+        case "tune":
+          if (c.map) setTuning((t) => ({ ...t, ...(c.map as Partial<Tuning>) }));
+          if (c.headset) setXRSettings((x) => ({ ...x, ...(c.headset as Partial<XRSettings>) }));
+          return;
+        case "apply_preset":
+          return applyTunePreset(c.preset);
       }
     },
-    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch, closeBranch],
+    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch, closeBranch, applyTunePreset],
   );
   const runRef = useRef(run);
   runRef.current = run;
@@ -1529,6 +1562,7 @@ export function App() {
       branch: xrBranch,
       tuning,
       settings: xrSettings,
+      tunePresets,
       mapFilter: filter,
       savedFilters,
       langs: xrLangs,
@@ -1605,6 +1639,9 @@ export function App() {
       isFile: (p) => onMap.has(p),
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),
       setXR: (patch) => setXRSettings((x) => ({ ...x, ...patch })),
+      saveTunePreset,
+      applyTunePreset,
+      deleteTunePreset,
       setMapFilter: (f) => setFilter(f),
       setSavedFilters: (list) => setSavedFilters(list),
       focusAround: (h, depth) => {
@@ -1701,6 +1738,7 @@ export function App() {
   // regroup either: a fling there would otherwise rebuild it underneath you.
   const deskVisible = useRef(visible);
   if (!xr.presenting) deskVisible.current = visible;
+  useEffect(() => setHeadsetMode(xr.mode), [xr.mode]);
   // In the headset, the desktop map stops drawing. Coming back out, it frames
   // whatever you were on in there, so the desktop picks up where you were.
   const wasPresenting = useRef(false);
@@ -2469,7 +2507,16 @@ export function App() {
 
       {!minimal && tuneOpen && (
         <div className="pointer-events-none absolute bottom-28 right-4 top-4 z-40 w-[min(360px,calc(100%-2rem))]">
-          <TuningPanel tuning={tuning} onChange={setTuning} onRelayout={() => space.current?.relayout()} onClose={() => setTuneOpen(false)} />
+          <TuningPanel
+            tuning={tuning}
+            onChange={setTuning}
+            presets={tunePresets}
+            onSavePreset={(name) => saveTunePreset(name, false)}
+            onApplyPreset={applyTunePreset}
+            onDeletePreset={deleteTunePreset}
+            onRelayout={() => space.current?.relayout()}
+            onClose={() => setTuneOpen(false)}
+          />
         </div>
       )}
 

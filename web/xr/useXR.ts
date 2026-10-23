@@ -139,6 +139,9 @@ export function useXR(feed: XRFeed) {
         const { mapFilter, savedFilters } = feedRef.current.model;
         const name = text.trim();
         if (name) a.setSavedFilters([...savedFilters.filter((v) => v.name !== name), { name, filter: mapFilter }]);
+      } else if (kb?.mode === "preset") {
+        // Saved in the headset, a preset keeps the headset's knobs as well as the map's.
+        if (text.trim()) a.saveTunePreset(text, true);
       } else if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
       else if (kb?.mode === "repo") a.openPath(text);
       else if (kb?.mode === "agent") a.startAgent(text);

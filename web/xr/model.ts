@@ -1,4 +1,4 @@
-import type { Activity, AgentRun, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story } from "../../shared/types";
+import type { Activity, AgentRun, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story, TunePreset } from "../../shared/types";
 import type { FileData } from "../lib/api";
 import type { Tuning } from "../lib/tuning";
 import type { XRSettings } from "../lib/xrSettings";
@@ -7,7 +7,7 @@ import type { VoiceState } from "../lib/useVoice";
 import type { Mode } from "./engine";
 import type { MapHit } from "./map";
 
-export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent" | "view";
+export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent" | "view" | "preset";
 
 /**
  * What the headset's panels show, in one object. The desktop app (App.tsx)
@@ -75,6 +75,8 @@ export type Model = {
   /** The desktop's map knobs, the same object its Tune panel edits. */
   tuning: Tuning;
   settings: XRSettings;
+  /** Tune presets you saved (the built-in ones are the panel's own). */
+  tunePresets: TunePreset[];
   tuneOpen: boolean;
   hintsOpen: boolean;
   filterOpen: boolean;
@@ -140,6 +142,10 @@ export type Actions = {
   /** Merged into the desktop's tuning (a whole Tuning replaces it: presets, reset). */
   setTuning: (patch: Partial<Tuning>) => void;
   setXR: (patch: Partial<XRSettings>) => void;
+  /** Keep the knobs as they are now under a name; `withHeadset`: the headset's own knobs too. */
+  saveTunePreset: (name: string, withHeadset: boolean) => void;
+  applyTunePreset: (p: TunePreset) => void;
+  deleteTunePreset: (name: string) => void;
   relayout: () => void;
   toggleFilter: () => void;
   /** Replace the whole filter. */
