@@ -175,8 +175,24 @@ export class MenuPanel extends Panel {
   tab: Tab = "map";
   /** The agent whose Merge was pressed once, waiting for the second press. */
   private armed: string | null = null;
+  /** When Reload was pressed once, waiting for the second press; 0 when it isn't. */
+  private reloadArmed = 0;
+  private disarm = 0;
   constructor(private a: Actions) {
     super("menu", 0.78, 0.6);
+  }
+
+  /** Reloading starts the page over: the first press arms it, the second, a moment later, reloads. */
+  private pressReload() {
+    const since = performance.now() - this.reloadArmed;
+    // A double pull of the trigger isn't a second thought.
+    if (this.reloadArmed && since < 400) return;
+    window.clearTimeout(this.disarm);
+    if (this.reloadArmed) return this.a.reload();
+    this.reloadArmed = performance.now();
+    // Not pressed again soon: back to rest, so a stray press later doesn't reload.
+    this.disarm = window.setTimeout(() => ((this.reloadArmed = 0), this.invalidate()), 4000);
+    this.invalidate();
   }
   update(m: Model) {
     const p = this.m;
@@ -273,7 +289,11 @@ export class MenuPanel extends Panel {
     x = this.button(ctx, "recenter", x, y, "Recenter panels", a.recenterPanels, { size: 24 }) + 10;
     x = this.button(ctx, "tune", x, y, "Tune…", a.toggleTune, { size: 24 }) + 10;
     x = this.button(ctx, "hints", x, y, "Controls", a.toggleHints, { size: 24 }) + 10;
-    if (m.mode !== "flat") x = this.button(ctx, "exit", x, y, "Exit", a.exitXR, { size: 24 }) + 10;
+    if (m.mode !== "flat") {
+      const armed = !!this.reloadArmed;
+      x = this.button(ctx, "reload", x, y, armed ? "Sure? Reload" : "↻ Reload", () => this.pressReload(), { size: 24, active: armed, accent: C.bad }) + 10;
+      x = this.button(ctx, "exit", x, y, "Exit", a.exitXR, { size: 24 }) + 10;
+    }
   }
 
   private listTab(ctx: CanvasRenderingContext2D, m: Model, top: number) {

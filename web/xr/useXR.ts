@@ -37,6 +37,26 @@ export type XRFeed = {
 
 export type XR = ReturnType<typeof useXR>;
 
+/**
+ * Reloaded from the headset's menu: the mode to go back into. Only where the
+ * browser grants a session across the reload without a fresh press (the
+ * Quest's can, for a same-site load); elsewhere you're on the flat page, a
+ * press of VR or Passthrough away.
+ */
+const RESUME = "constellate.xrResume";
+let resumeTo: "vr" | "ar" | null = null;
+let granted = false;
+let onGranted: (() => void) | null = null;
+try {
+  const m = sessionStorage.getItem(RESUME);
+  sessionStorage.removeItem(RESUME);
+  if (m === "vr" || m === "ar") resumeTo = m;
+} catch {
+  // No storage: nothing to resume.
+}
+// Listened for straight away: the grant can come before React has mounted.
+if (resumeTo) navigator.xr?.addEventListener("sessiongranted", () => ((granted = true), onGranted?.()), { once: true });
+
 /** The map's look, with the focus's inner rings marked so only links reaching in from it light. */
 function styled(style: MapStyle, f: { paths: string[]; core: string[] } | null): MapStyle {
   return f && style.emphasis === f.paths ? { ...style, core: f.core } : style;
@@ -126,6 +146,15 @@ export function useXR(feed: XRFeed) {
     },
     enter: (m) => void enter(m),
     exitXR: () => roomRef.current?.engine.exit(),
+    reload: () => {
+      const m = roomRef.current?.engine.mode;
+      try {
+        if (m === "vr" || m === "ar") sessionStorage.setItem(RESUME, m);
+      } catch {
+        // No storage: it reloads all the same, to the flat page.
+      }
+      location.reload();
+    },
     placeMap: () => {
       setMenuOpen(false);
       setPlacing(true);
@@ -278,6 +307,21 @@ export function useXR(feed: XRFeed) {
     },
     [actions],
   );
+
+  // Back in after a reload from the headset, once the browser grants it.
+  useEffect(() => {
+    if (!resumeTo) return;
+    const go = () => {
+      const m = resumeTo;
+      resumeTo = onGranted = null;
+      if (m) void enter(m);
+    };
+    if (granted) return go();
+    onGranted = go;
+    return () => {
+      onGranted = null;
+    };
+  }, [enter]);
 
   /* ---------------------------- feeding the room ---------------------------- */
 

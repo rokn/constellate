@@ -113,6 +113,8 @@ export type Actions = {
   toggleMenu: () => void;
   enter: (m: "vr" | "ar") => void;
   exitXR: () => void;
+  /** Reload the page, and go back into the headset after if the browser allows it. */
+  reload: () => void;
   placeMap: () => void;
   recenterPanels: () => void;
   toggleTune: () => void;
@@ -161,6 +163,7 @@ export type AppActions = Omit<
   | "jump"
   | "enter"
   | "exitXR"
+  | "reload"
   | "placeMap"
   | "recenterPanels"
   | "toggleTune"
