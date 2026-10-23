@@ -1146,6 +1146,8 @@ export function App() {
     clearTimeout(landing.current);
     landing.current = setTimeout(() => buzz([14, 60, 14]), tuning.flySeconds * 1000);
   }, [tuning.flySeconds]);
+  /** The headset's camera, once useXR (below) has made it: commands reach the room through it. */
+  const xrCamera = useRef<XR["camera"] | null>(null);
   const run = useCallback(
     (c: UiCommand) => {
       switch (c.cmd) {
@@ -1203,6 +1205,8 @@ export function App() {
           return showBranch(c.branch, c.base, c.agent);
         case "close_branch":
           return closeBranch();
+        case "leave_table":
+          return void xrCamera.current?.leaveTable();
         case "changed_only":
           return setChangedOnly(c.on);
         case "renamed": {
@@ -1767,6 +1771,7 @@ export function App() {
       return s && at ? { story: s, ...at } : null;
     },
   });
+  xrCamera.current = xr.camera;
   xrRef.current = xr;
   // While you're in the headset the desktop map doesn't draw, so it needn't
   // regroup either: a fling there would otherwise rebuild it underneath you.

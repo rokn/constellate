@@ -76,6 +76,7 @@ const TOOLS = [
     branch: { type: "string", description: "The branch name; a close guess like 'login' is fine" },
   }, ["branch"]),
   fn("close_branch", "Back to the map as it's checked out: stop showing a branch."),
+  fn("leave_table", "In the headset's passthrough: take the map off the real table it's set down on (table mode ends), back floating in front of them. The table is forgotten until they place it again."),
   fn("changed_only", "While a branch (or history) is on the map: on, show only the files it changed, everything else steps off; off, the whole map again. Instant. Use it when they ask for just the changes, or for the whole map back.", {
     on: { type: "boolean" },
   }, ["on"]),
@@ -527,6 +528,10 @@ function bridge(client: WebSocket) {
       }
       case "close_branch":
         command({ cmd: "close_branch" });
+        return { ok: true };
+      case "leave_table":
+        if (screen.tune?.mode !== "ar") return { ok: false, error: "They aren't in passthrough, so there's no table." };
+        command({ cmd: "leave_table" });
         return { ok: true };
       case "changed_only":
         if (!screen.branch && !screen.range) return { ok: false, error: "No branch or history is on the map. Show one first." };

@@ -40,6 +40,7 @@ export class TableMenu extends Panel {
       { id: "voice", label: v === "listening" ? "Listening" : v === "speaking" ? "Speaking" : "Voice", run: this.a.toggleVoice, active: v !== "idle" && v !== "error", accent: C.course, disabled: !m.voice.available },
       { id: "ask", label: "Ask", run: () => this.a.openKeyboard("ask") },
       { id: "hints", label: "?", run: this.a.toggleHints, active: m.hintsOpen },
+      { id: "lift", label: "Off table", run: this.a.leaveTable },
     ];
     const gap = 10;
     const h = this.H - PAD * 2;
