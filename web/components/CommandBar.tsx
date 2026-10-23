@@ -2,10 +2,11 @@ import { useCallback, useMemo, useRef, useState, type Ref } from "react";
 import type { Overview, RepoGraph } from "../../shared/types";
 
 /**
- * One box for both kinds of intent. Typing shows places you can jump to —
+ * One box for every kind of intent. Typing shows places you can jump to —
  * files, symbols, modules, topics, branches — and arrowing into one and pressing Enter
- * flies there instantly. Pressing Enter without picking one asks the
- * navigator, who reads and builds an answer.
+ * flies there instantly. Pressing Enter without picking one asks: a question
+ * gets the navigator's answer, and (when agents are on) a change to the code
+ * goes to a coding agent, routed the way the voice routes it.
  */
 
 export type Jump =
@@ -43,6 +44,7 @@ export function CommandBar({
   graph,
   overview,
   busy,
+  agentsOn,
   onAsk,
   onJump,
   onStop,
@@ -51,6 +53,8 @@ export function CommandBar({
   graph: RepoGraph | null;
   overview?: Overview;
   busy: boolean;
+  /** Asking can hand changes to coding agents. */
+  agentsOn?: boolean;
   onAsk: (text: string) => void;
   onJump: (j: Jump) => void;
   onStop: () => void;
@@ -152,7 +156,7 @@ export function CommandBar({
             </li>
           ))}
           <li className="border-t border-line px-3 pt-1.5 pb-1 text-[12px] text-muted">
-            {sel >= 0 ? "Enter to fly there" : "Enter asks the navigator · ↑↓ to pick a place"}
+            {sel >= 0 ? "Enter to fly there" : agentsOn ? "Enter asks — questions get answered, changes go to an agent · ↑↓ to pick a place" : "Enter asks the navigator · ↑↓ to pick a place"}
           </li>
         </ul>
       )}
@@ -194,9 +198,9 @@ export function CommandBar({
               local.current?.blur();
             }
           }}
-          placeholder="Ask the navigator, or type a file to fly there"
+          placeholder={agentsOn ? "Ask about the code, ask for a change, or type a file to fly there" : "Ask the navigator, or type a file to fly there"}
           className="min-w-0 flex-1 bg-transparent py-1 text-[15px] text-text placeholder:text-muted/70 focus:outline-none"
-          aria-label="Ask the navigator or jump to a file"
+          aria-label={agentsOn ? "Ask a question, ask for a change, or jump to a file" : "Ask the navigator or jump to a file"}
         />
         {busy ? (
           <button onClick={onStop} className="shrink-0 rounded-md px-2 py-1 text-[13px] text-muted hover:bg-white/5 hover:text-text">

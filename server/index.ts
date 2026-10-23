@@ -317,8 +317,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       const b = await body<{ request?: string; topicId?: string; screen?: ScreenContext }>(req);
       if (!b.request?.trim() && !b.topicId) return json(res, 400, { error: "Ask something." }), true;
       // Not awaited: the answer streams into its frame, and the page is
-      // already watching the stream.
-      const done = ask(b.request?.trim() ?? "", { topicId: b.topicId, screen: b.screen });
+      // already watching the stream. Typed, so it can hand a change to a
+      // coding agent the way the voice can.
+      const done = ask(b.request?.trim() ?? "", { topicId: b.topicId, screen: b.screen, typed: true });
       void done.catch((err) => console.error("[ask]", err));
       json(res, 202, { ok: true });
       return true;

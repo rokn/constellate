@@ -11,6 +11,8 @@ import { WORKTREE, diffFile, loadHistory } from "./history";
 import { digest, findPath, neighbourhood } from "./scan";
 import { agentDiff } from "./agents";
 import { branchDiff, fileAt } from "./branch";
+import { AGENTS_ON } from "./agents";
+import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
 import {
   afterRescan,
   addLens,
@@ -41,6 +43,10 @@ import {
  * visualization, move the camera. It is the only thing in the app that
  * generates anything; the voice only navigates, and hands every request that
  * needs reading or writing to here.
+ *
+ * A typed request also brings the coding-agent tools the voice has (see
+ * actions.ts), so Ask can hand a change to an agent the way speaking does.
+ * The navigator still writes nothing itself.
  */
 
 const MODEL = process.env.CODEFLIGHT_MODEL ?? "claude-opus-5-5";
@@ -185,7 +191,43 @@ export function graphTools(): SdkMcpToolDefinition<any>[] {
 /** What a placement run may use: enough to see where a file belongs, and to put it there. */
 const PLACE_TOOLS = ["deps", "outline", "get_lens", "revise_lens"];
 
-function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
+/**
+ * The coding-agent tools, for a typed request: the voice's own (actions.ts),
+ * in the SDK's shape. Late news goes to the activity; a merge waits for the
+ * Merge button this puts on the answer.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool has its own schema
+function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinition<any>[] {
+  return AGENT_ACTIONS.map((a) =>
+    tool(
+      a.name,
+      describe(a, "typed"),
+      Object.fromEntries(
+        Object.entries(a.properties).map(([k, p]) => {
+          const s = p.description ? z.string().describe(p.description) : z.string();
+          return [k, a.required.includes(k) ? s : s.optional()];
+        }),
+      ),
+      async (args) => {
+        let out: Record<string, unknown> | null;
+        try {
+          out = runAction(a.name, args, {
+            surface: "typed",
+            screen,
+            command: pushCommand,
+            report: (news, good) => pushActivity({ kind: good ? "tool" : "error", detail: news }),
+            confirmMerge: (agent) => patchFrame(frameId, { confirm: { action: "merge", agentId: agent.id } }),
+          });
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+        return out?.ok === false ? fail(JSON.stringify(out)) : ok(JSON.stringify(out));
+      },
+    ),
+  );
+}
+
+function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", actions?: ScreenContext) {
   const needFrame = () => {
     if (!frameId) throw new Error("Views can only be shown while answering a request.");
     return frameId;
@@ -768,6 +810,8 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place") {
     );
   }
 
+  if (mode === "ask" && actions && frameId) tools.push(...agentTools(frameId, actions));
+
   const offered = mode === "place" ? tools.filter((t) => PLACE_TOOLS.includes(t.name)) : tools;
   return createSdkMcpServer({ name: "flight", version: "1.0.0", tools: offered, alwaysLoad: true });
 }
@@ -1025,6 +1069,26 @@ function screenNote(screen?: ScreenContext): string {
   return bits.length ? `\n\n[What's on their screen]\n${bits.join("\n")}` : "";
 }
 
+/**
+ * For a typed request: Ask hands changes to coding agents, as the voice does.
+ * The routing is the voice's — questions answered here, changes to an agent,
+ * a merge only on their say-so — and so are the tools.
+ */
+function agentsNote(): string {
+  const lines = agentLines();
+  return [
+    "",
+    "",
+    "[Coding agents]",
+    "This was typed into Ask, which also hands work to coding agents, the way the voice does. A question about the code is yours to answer as always: read, show, explain.",
+    "But when they ask for the code to be written, fixed or changed, don't explain how you'd do it and don't read around first — the agent reads for itself. Call start_agent with the task in their words (plus anything from this conversation it needs), then say in a sentence that it's on it.",
+    "A correction or follow-up for an agent goes to message_agent. open_pr when they ask to open a PR, land, ship or submit one; show_agent to see what one changed; stop_agent and discard_agent only when they ask.",
+    "merge_pr when they ask to merge: from here it never merges, it puts a Merge button on this answer for them to press, because merging to main deploys. Say what would be merged and that they can confirm it there.",
+    "When it's unclear whether they want an answer or a change, answer, and offer to start an agent.",
+    lines.length ? `Agents (for message_agent, stop_agent, show_agent, open_pr, merge_pr, discard_agent):\n${lines.join("\n")}` : "No agents yet.",
+  ].join("\n");
+}
+
 /* ------------------------------- running ------------------------------- */
 
 /** Turns the agent's tool calls into activity, so a wait reads as work — and lights up the files being read. */
@@ -1096,6 +1160,18 @@ function narrate(msg: SDKMessage, root: string) {
       case "focus":
         pushActivity({ kind: "tool", detail: `Steering to ${String(input.label ?? "the files")}` });
         break;
+      case "start_agent":
+        pushActivity({ kind: "tool", detail: `Starting a coding agent${input.title ? `: ${String(input.title)}` : ""}` });
+        break;
+      case "message_agent":
+        pushActivity({ kind: "tool", detail: "Telling the agent more" });
+        break;
+      case "open_pr":
+        pushActivity({ kind: "tool", detail: "Opening a pull request" });
+        break;
+      case "merge_pr":
+        pushActivity({ kind: "tool", detail: "Asking you to confirm the merge" });
+        break;
     }
   }
 }
@@ -1108,10 +1184,14 @@ async function run(opts: {
   mode: "intro" | "ask" | "place";
   effort: Effort;
   signal: AbortController;
+  /** A typed request: the agent tools too, with what's on their screen. */
+  actions?: ScreenContext;
 }): Promise<RunResult> {
   const root = idx().graph.root;
-  const tools =
-    opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview");
+  const tools = [
+    ...(opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview")),
+    ...(opts.mode === "ask" && opts.actions ? AGENT_ACTIONS.map((a) => a.name) : []),
+  ];
   let live = "";
   let answer = "";
 
@@ -1130,7 +1210,7 @@ async function run(opts: {
       // The opened repo's own .claude settings could carry hooks; this is a
       // read-only explorer and must not run them.
       settingSources: [],
-      mcpServers: { flight: flightServer(opts.frameId, opts.mode) },
+      mcpServers: { flight: flightServer(opts.frameId, opts.mode, opts.actions) },
       // A placement is housekeeping on the side: it doesn't join the conversation.
       resume: opts.mode === "place" ? undefined : session.agentSessionId,
       includePartialMessages: true,
@@ -1294,10 +1374,12 @@ async function placeNewFiles(): Promise<void> {
 /**
  * Answers a request by building a new frame. A new request supersedes one in
  * flight — on a voice call, asking for something else means "stop, do this".
+ * A typed request (`typed`) may also start, message, land or ask to merge a
+ * coding agent; the voice has those tools itself, so its requests don't.
  */
 export async function ask(
   request: string,
-  opts: { topicId?: string; screen?: ScreenContext; title?: string } = {},
+  opts: { topicId?: string; screen?: ScreenContext; title?: string; typed?: boolean } = {},
 ): Promise<{ frameId: string; answer: string; error?: string }> {
   if (intro) await intro.catch(() => {});
   if (current) {
@@ -1323,13 +1405,17 @@ export async function ask(
         .join("\n")
     : request;
 
+  // A topic's deep dive is a tour, not a request that could be a task.
+  const actions = opts.typed && AGENTS_ON && !topic;
+
   try {
     const res = await run({
-      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)),
+      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : ""),
       frameId: frame.id,
       mode: "ask",
       effort: ASK_EFFORT,
       signal: controller,
+      actions: actions ? opts.screen ?? {} : undefined,
     });
     if (controller.signal.aborted) return { frameId: frame.id, answer: res.answer, error: "superseded" };
     patchFrame(frame.id, {

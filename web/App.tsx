@@ -2352,6 +2352,7 @@ export function App() {
             markers={overlays.filter((o) => o.frameId === activeFrame.id)}
             onMarkers={(action) => markersOf(activeFrame.id, action)}
             onFlyMarker={(g) => focus(visible ? g.paths.filter((p) => visible.has(p)) : g.paths, g.label)}
+            agents={state.agents}
           />
         </div>
       )}
@@ -2537,6 +2538,7 @@ export function App() {
             graph={graph}
             overview={overview}
             busy={state.busy}
+            agentsOn={!!state.agentsOn}
             onAsk={(t) => askNavigator(t)}
             onJump={onJump}
             onStop={() => void post("/api/interrupt")}

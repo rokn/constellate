@@ -35,8 +35,8 @@ It has no login of its own, so put it behind an authenticating proxy before expo
 
 ## Agents
 
-Constellate can also change the code. Ask the voice ("add retries to the uploader"), or
-type a task in **Agents**, and a coding agent (Claude Code, through the Agent SDK) starts
+Constellate can also change the code. Ask for it ("add retries to the uploader") by voice
+or in the Ask box, or type a task in **Agents**, and a coding agent (Claude Code, through the Agent SDK) starts
 on it in its own git worktree, on a branch of its own (`agent/<name>-<id>`) off the commit
 you're looking at. Several can work at once. The files each one touches light up under
 a marker as it goes, and when it finishes the voice tells you what it did. **Show on map**
@@ -47,11 +47,14 @@ What it changed is committed to its branch when it stops. With `GIT_TOKEN` set, 
 branch is then pushed and a pull request opened into the branch it started from (a
 fine-grained token needs Contents and Pull requests read and write); follow-ups you send
 it go to the same PR. **Merge** in the panel (or "merge it" to the voice, which asks
-first) rebase-merges the PR on GitHub. Without a token, nothing leaves the box. When its
-base has moved on, **Rebase** (or "rebase it") fetches the base branch and replays the
-agent's commits on top of it, pushing to its PR if it has one; if they conflict, the
-branch is left as it was and you're told which files. In the headset, the menu's
-**Agents** tab lists them, starts new ones, rebases them, and merges them (press Merge twice).
+first, or typed in Ask, which puts a Merge button on the answer to press) rebase-merges
+the PR on GitHub. Typed or spoken, questions still go to the navigator; the Ask box and
+the voice share one set of agent tools (`server/actions.ts`). Without a token, nothing
+leaves the box. When its base has moved on, **Rebase** (or "rebase it") fetches the base
+branch and replays the agent's commits on top of it, pushing to its PR if it has one; if
+they conflict, the branch is left as it was and you're told which files. In the headset,
+the menu's **Agents** tab lists them, starts new ones, rebases them, and merges them
+(press Merge twice).
 
 An agent can read and edit files only inside its worktree, and has no
 shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
@@ -108,7 +111,7 @@ History, branch view and custom views stay on the desktop for now.
 
 | Key | |
 | --- | --- |
-| `/` or `⌘K` | Ask the navigator, or jump to a file, symbol or module |
+| `/` or `⌘K` | Ask about the code or for a change, or jump to a file, symbol or module |
 | `Space` | Frame the selection: the file, then the file with its connections |
 | `Esc` | Close the top thing, and last of all undo "show only" (modules you hid stay hidden) |
 | `o` | Overview |

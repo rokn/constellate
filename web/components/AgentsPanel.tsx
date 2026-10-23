@@ -193,7 +193,7 @@ export function AgentsPanel({ agents, onShow, onClose }: { agents: AgentRun[]; o
         {starting && <p className="mt-1 text-[12px] text-muted">Making it a worktree…</p>}
       </form>
       {newest.length === 0 ? (
-        <p className="text-[12.5px] text-muted">No agents yet. Start one here, or ask the voice to change something.</p>
+        <p className="text-[12.5px] text-muted">No agents yet. Start one here, or ask for a change in the Ask box or by voice.</p>
       ) : (
         <ul className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
           {newest.map((a) => (
