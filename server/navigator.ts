@@ -9,6 +9,7 @@ import type { Lens, LogicalEdge, Overview, ScreenContext, View } from "../shared
 import { loadFile, slice } from "./repo";
 import { WORKTREE, diffFile, loadHistory } from "./history";
 import { digest, findPath, neighbourhood } from "./scan";
+import { agentDiff } from "./agents";
 import { branchDiff, fileAt } from "./branch";
 import {
   afterRescan,
@@ -975,7 +976,7 @@ async function branchNote(b?: ScreenContext["branch"]): Promise<string> {
   branchOnly = [];
   if (!b) return "";
   try {
-    const d = await branchDiff(idx().graph.root, b.name, b.base);
+    const d = b.agent ? await agentDiff(b.agent) : await branchDiff(idx().graph.root, b.name, b.base);
     branchOnly = d.files.filter((f) => f.status !== "D" && !idx().byPath.has(f.path)).map((f) => f.path);
     const tip = d.head.slice(0, 10);
     const MAX_FILES = 250;
@@ -983,7 +984,9 @@ async function branchNote(b?: ScreenContext["branch"]): Promise<string> {
       "",
       "",
       "[The branch on their map]",
-      `They're looking at the branch ${d.branch} compared with ${d.base}, since they forked (merge base ${d.mergeBase.slice(0, 10)}, tip ${tip}). The map shows the code as it is at the branch tip, with what it changed lit.`,
+      d.agent
+        ? `They're looking at what the coding agent "${d.agent.title}" changed: its branch ${d.branch}, compared with the commit it started from (${d.mergeBase.slice(0, 10)}), tip ${tip}${d.agent.live ? ", which includes edits it hasn't committed yet" : ""}. The map shows the code as the agent has it, with what it changed lit.`
+        : `They're looking at the branch ${d.branch} compared with ${d.base}, since they forked (merge base ${d.mergeBase.slice(0, 10)}, tip ${tip}). The map shows the code as it is at the branch tip, with what it changed lit.`,
       d.checkedOut
         ? "It's checked out, so Read, Grep, outline and deps see the branch."
         : `It isn't checked out: Read, Grep, outline and deps see ${session.state.repo?.branch ?? "the checked-out branch"}, not this branch. Read the branch's version of a file with read_at (rev ${tip}); its diffs with show_diff.`,

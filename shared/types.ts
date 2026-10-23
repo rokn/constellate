@@ -407,8 +407,8 @@ export type UiCommand =
   | { cmd: "clear_range" }
   /** Fly through the commits in the current range, one by one. */
   | { cmd: "replay" }
-  /** Put a branch on the map, lit against where it forked from `base`. */
-  | { cmd: "show_branch"; branch: string; base?: string }
+  /** Put a branch on the map, lit against where it forked from `base` (an agent's: where it started). */
+  | { cmd: "show_branch"; branch: string; base?: string; agent?: string }
   /** Files moved; what the page keeps by path (its filter) follows them. */
   | { cmd: "renamed"; renames: Renames };
 
@@ -552,8 +552,8 @@ export type RemoteStatus = {
 /** What the browser reports about itself, so the voice knows what is on screen. */
 export type ScreenContext = {
   openFile?: { path: string; line?: number };
-  /** The branch shown on the map (Branch view), compared with its base. */
-  branch?: { name: string; base?: string };
+  /** The branch shown on the map (Branch view), compared with its base — or, an agent's, with where it started. */
+  branch?: { name: string; base?: string; agent?: string };
   frameId?: string;
   focusLabel?: string;
   selection?: string;

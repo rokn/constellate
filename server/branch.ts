@@ -117,20 +117,28 @@ export type BranchDiff = {
   head: string;
   /** Whether the branch is what's checked out — then the working tree is the branch. */
   checkedOut: boolean;
+  /** A coding agent's branch: its id, and whether the tip holds work it hasn't committed yet. */
+  agent?: { id: string; title: string; live: boolean };
   commits: { sha: string; subject: string; author: string; at: number }[];
   /** `git diff --stat` of the whole branch. */
   stat: string;
   files: { path: string; status: string; add: number; del: number }[];
 };
 
-export async function branchDiff(root: string, branch: string, base?: string): Promise<BranchDiff> {
+/**
+ * `at` pins the ends instead of reading them from the names: `start` is where
+ * the branch began (an agent's starting commit, rather than wherever `base`
+ * has since got to), `tip` a commit to read as the branch's tip (an agent's
+ * snapshot of work it hasn't committed yet).
+ */
+export async function branchDiff(root: string, branch: string, base?: string, at: { start?: string; tip?: string } = {}): Promise<BranchDiff> {
   const br = safeRef(branch);
   const b = base ? safeRef(base) : await defaultBase(root);
-  const head = (await git(root, ["rev-parse", "--verify", `${br}^{commit}`]).catch(() => {
+  const head = (await git(root, ["rev-parse", "--verify", `${at.tip ? safeRef(at.tip) : br}^{commit}`]).catch(() => {
     throw new Error(`No branch "${branch}".`);
   })).trim();
-  const mergeBase = (await git(root, ["merge-base", b, head]).catch(() => {
-    throw new Error(`"${branch}" shares no history with ${b}.`);
+  const mergeBase = (await git(root, ["merge-base", at.start ? safeRef(at.start) : b, head]).catch(() => {
+    throw new Error(`"${branch}" shares no history with ${at.start?.slice(0, 7) ?? b}.`);
   })).trim();
   const current = (await git(root, ["rev-parse", "HEAD"]).catch(() => "")).trim();
   const log = await git(root, ["log", "--no-merges", "--format=%H%x09%at%x09%an%x09%s", `${mergeBase}..${head}`]);

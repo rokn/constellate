@@ -186,16 +186,17 @@ export function App() {
   const [lastStory, setLastStory] = useState<{ id: string; beat: number } | null>(null);
   const storyCtl = useRef<StoryControl | null>(null);
   /** A branch's code diff against its base, open over everything. */
-  const [branchDiff, setBranchDiff] = useState<{ branch: string; base?: string } | null>(null);
+  const [branchDiff, setBranchDiff] = useState<{ branch: string; base?: string; agent?: string } | null>(null);
   /**
    * A branch on the map, the way History shows a commit: the map is the code
    * at the branch's tip, lit against where it forked. A link opens it:
-   * /?diff=<branch>&base=<base>.
+   * /?diff=<branch>&base=<base>. An agent's branch is lit against the commit
+   * it started on instead, with what it hasn't committed yet: &agent=<id>.
    */
-  const [branchMap, setBranchMap] = useState<{ branch: string; base?: string } | null>(() => {
+  const [branchMap, setBranchMap] = useState<{ branch: string; base?: string; agent?: string } | null>(() => {
     const q = new URLSearchParams(location.search);
     const branch = q.get("diff");
-    return branch ? { branch, base: q.get("base") || undefined } : null;
+    return branch ? { branch, base: q.get("base") || undefined, agent: q.get("agent") || undefined } : null;
   });
   /** The "what changed since the chart" list under the re-chart prompt. */
   const [changesOpen, setChangesOpen] = useState(false);
@@ -401,23 +402,34 @@ export function App() {
   // forked. The branch needn't be checked out; both maps come from git.
   const [branchSum, setBranchSum] = useState<BranchSummary | null>(null);
   const [branchError, setBranchError] = useState("");
+  // An agent still at work is read again as it goes: each step it takes (the
+  // edit before has landed by then), and when it stops and commits.
+  const watched = branchMap?.agent ? state?.agents.find((a) => a.id === branchMap.agent) : undefined;
+  const agentStep = watched ? `${watched.status}|${watched.commits}|${watched.files.join(",")}|${watched.status === "working" ? watched.activity ?? "" : ""}` : "";
   useEffect(() => {
     setBranchSum(null);
     setBranchError("");
+  }, [branchMap]);
+  useEffect(() => {
     if (!branchMap || status === "idle" || status === "scanning") return;
     let live = true;
-    const q = new URLSearchParams({ branch: branchMap.branch, ...(branchMap.base ? { base: branchMap.base } : {}) });
+    const q = new URLSearchParams(
+      branchMap.agent ? { agent: branchMap.agent } : { branch: branchMap.branch, ...(branchMap.base ? { base: branchMap.base } : {}) },
+    );
     void fetch(`/api/branch-diff?${q}`)
       .then(async (r) => {
         const b = await r.json();
         if (!r.ok) throw new Error(b.error);
-        if (live) setBranchSum(b as BranchSummary);
+        if (live) {
+          setBranchSum(b as BranchSummary);
+          setBranchError("");
+        }
       })
       .catch((e) => live && setBranchError(String(e instanceof Error ? e.message : e)));
     return () => {
       live = false;
     };
-  }, [branchMap, status, state?.graphVersion]);
+  }, [branchMap, status, state?.graphVersion, agentStep]);
   const branchMaps = useGraphsAt(branchSum ? [branchSum.head, branchSum.mergeBase] : []);
   const branchTime = useMemo(() => {
     if (!branchSum) return null;
@@ -425,6 +437,11 @@ export function App() {
     const before = branchMaps.get(branchSum.mergeBase);
     return after && before ? mapAcross(after, before) : null;
   }, [branchSum, branchMaps]);
+  // While an agent's newer work is mapped, its last map stays up.
+  const lastBranchTime = useRef<{ of: string; time: NonNullable<typeof branchTime> } | null>(null);
+  const branchKey = branchMap ? `${branchMap.branch}|${branchMap.agent ?? ""}` : "";
+  if (branchTime && branchSum) lastBranchTime.current = { of: `${branchSum.branch}|${branchSum.agent?.id ?? ""}`, time: branchTime };
+  const branchShown = branchTime ?? (lastBranchTime.current?.of === branchKey ? lastBranchTime.current.time : null);
   /** The branch's churn, per file, in the shape History's heat takes. */
   const branchHeat = useMemo(
     () =>
@@ -436,7 +453,7 @@ export function App() {
     [branchSum],
   );
 
-  const shownTime = branchMap ? branchTime : range ? (timeMap ?? lastTimeMap.current) : null;
+  const shownTime = branchMap ? branchShown : range ? (timeMap ?? lastTimeMap.current) : null;
   const mapGraph = shownTime?.graph ?? graph;
 
   const onMap = useMemo(() => new Set(mapGraph?.files.map((f) => f.path) ?? []), [mapGraph]);
@@ -813,11 +830,13 @@ export function App() {
       touring: tour !== null,
       lens: lensTitle,
       lensId,
-      branch: branchMap ? { name: branchMap.branch, base: branchMap.base } : undefined,
+      branch: branchMap ? { name: branchMap.branch, base: branchMap.base, agent: branchMap.agent } : undefined,
       range: branchMap
-        ? branchSum
-          ? `the branch ${branchSum.branch} compared with ${branchSum.base} (since they forked): ${branchSum.commits.length} commits, ${branchSum.files.length} files changed`
-          : `the branch ${branchMap.branch}`
+        ? branchSum?.agent
+          ? `what the agent "${branchSum.agent.title}" changed on ${branchSum.branch} since it started: ${branchSum.commits.length} commits, ${branchSum.files.length} files changed${branchSum.agent.live ? ", some not committed yet" : ""}`
+          : branchSum
+            ? `the branch ${branchSum.branch} compared with ${branchSum.base} (since they forked): ${branchSum.commits.length} commits, ${branchSum.files.length} files changed`
+            : `the branch ${branchMap.branch}`
         : range
           ? describeRange(range, rangeCommits)
           : undefined,
@@ -907,22 +926,27 @@ export function App() {
   );
 
   // A branch's map arriving flies to what the branch changed, as Follow does for a commit.
+  // An agent's, read again as it works, moves the camera only the first time.
+  const flownTo = useRef("");
   useEffect(() => {
     if (!branchTime || !branchSum) return;
+    if (branchSum.agent && flownTo.current === branchKey) return;
+    flownTo.current = branchKey;
     const ends = [...branchTime.delta.addedEdges, ...branchTime.delta.removedEdges].flatMap((k) => k.split(">"));
     const changed = [...new Set([...branchSum.files.map((f) => f.path), ...ends])].filter((p) => (visible ?? onMap).has(p));
-    if (changed.length) focus(changed, `${branchSum.branch} vs ${branchSum.base}`);
+    if (changed.length) focus(changed, branchSum.agent ? `Agent: ${branchSum.agent.title}` : `${branchSum.branch} vs ${branchSum.base}`);
     // Only the branch's map arriving moves the camera.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchTime]);
 
   /** Put a branch on the map (History steps aside: one span of change at a time). */
-  const showBranch = useCallback((branch: string, base?: string) => {
+  const showBranch = useCallback((branch: string, base?: string, agent?: string) => {
     setIntroDone(true);
     setHistoryOpen(false);
     setRange(null);
     setPlaying(false);
-    setBranchMap({ branch, base });
+    flownTo.current = "";
+    setBranchMap({ branch, base, agent });
   }, []);
   const closeBranch = useCallback(() => {
     setBranchMap(null);
@@ -1122,7 +1146,7 @@ export function App() {
         case "replay":
           return startPlay();
         case "show_branch":
-          return showBranch(c.branch, c.base);
+          return showBranch(c.branch, c.base, c.agent);
         case "renamed": {
           // The server moved everything it keeps; this is what the page keeps.
           const to = renamer(c.renames);
@@ -2089,7 +2113,7 @@ export function App() {
             agents={state.agents}
             onShow={(a) => {
               setAgentsOpen(false);
-              showBranch(a.branch, a.base === "HEAD" ? a.baseSha : a.base);
+              showBranch(a.branch, a.base === "HEAD" ? a.baseSha : a.base, a.id);
             }}
             onClose={() => setAgentsOpen(false)}
           />
@@ -2401,6 +2425,7 @@ export function App() {
         <BranchDiff
           branch={branchDiff.branch}
           base={branchDiff.base}
+          agent={branchDiff.agent}
           onLight={(paths, label) => {
             setBranchDiff(null);
             focus(paths, label);
@@ -2439,9 +2464,10 @@ export function App() {
             sum={branchSum}
             error={branchError}
             loading={!!branchSum && !branchTime}
+            working={watched?.status === "working" || watched?.status === "starting"}
             onMapPaths={visible ?? onMap}
             onFly={(p) => focus([p], p.split("/").pop())}
-            onCodeDiff={() => branchSum && setBranchDiff({ branch: branchSum.branch, base: branchSum.base })}
+            onCodeDiff={() => branchSum && setBranchDiff({ branch: branchSum.branch, base: branchSum.base, agent: branchSum.agent?.id })}
             onExplain={() => branchSum && void post("/api/stories/branch", { branch: branchSum.branch, base: branchSum.base, settings: "mine" })}
             onClose={closeBranch}
           />

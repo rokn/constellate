@@ -1,10 +1,12 @@
 import { query, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { AgentRun } from "../shared/types";
+import { branchDiff, type BranchDiff } from "./branch";
 import { CACHE_DIR, addOverlay, emit, removeOverlay, session } from "./session";
 import { parseGitHub } from "./library";
 
@@ -149,6 +151,51 @@ async function commit(a: AgentRun, message: string) {
   if (!dirty) return;
   await git(a.worktree, ["add", "-A"]);
   await git(a.worktree, [...IDENTITY, "commit", "--no-verify", "-q", "-m", message]);
+}
+
+/**
+ * The agent's work as it stands, as a commit: its branch's tip, or, while it
+ * has edits it hasn't committed, a commit of its worktree on top of that —
+ * made through a scratch index, so neither its branch nor its own index moves.
+ * Worktrees share the repo's objects, so the map can be read at it like any commit.
+ */
+async function snapshot(a: AgentRun): Promise<{ sha: string; live: boolean }> {
+  const head = await git(a.worktree, ["rev-parse", "HEAD"]);
+  const dirty = await git(a.worktree, ["status", "--porcelain", "--untracked-files=all"]).catch(() => "");
+  if (!dirty) return { sha: head, live: false };
+  const scratch = path.join(tmpdir(), `constellate-snap-${a.id}-${Date.now().toString(36)}`);
+  // Dated as its parent, so the same work makes the same commit, and the map
+  // already built for it is used again.
+  const date = `@${await git(a.worktree, ["log", "-1", "--format=%ct", "HEAD"])} +0000`;
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_INDEX_FILE: scratch, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
+  const g = (args: string[]) => run("git", args, { cwd: a.worktree, maxBuffer: 64 * 1024 * 1024, env }).then((r) => r.stdout.trim());
+  try {
+    // Starting from a copy of its index spares hashing every file again.
+    const index = await git(a.worktree, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).catch(() => "");
+    const copied = index ? await copyFile(index, scratch).then(() => true, () => false) : false;
+    if (!copied) await g(["read-tree", "HEAD"]);
+    await g(["add", "-A"]);
+    const tree = await g(["write-tree"]);
+    const sha = await g([...IDENTITY, "commit-tree", tree, "-p", head, "-m", `${a.title} (work in progress)`]);
+    return { sha, live: true };
+  } finally {
+    await rm(scratch, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * What an agent changed, as a branch diff: from the commit it started on (not
+ * wherever its base branch has got to since) to its work as it stands now.
+ */
+export async function agentDiff(id: string): Promise<BranchDiff> {
+  const a = getAgent(id);
+  if (!a) throw new Error("No such agent.");
+  const root = session.state.repo?.root;
+  if (!root) throw new Error("No repository is open.");
+  const tip = await snapshot(a).catch(() => ({ sha: undefined, live: false }));
+  const d = await branchDiff(root, a.branch, a.base === "HEAD" ? a.baseSha : a.base, { start: a.baseSha, tip: tip.sha });
+  // The snapshot isn't one of its commits: it's what it hasn't committed yet.
+  return { ...d, commits: d.commits.filter((c) => c.sha !== tip.sha || !tip.live), agent: { id: a.id, title: a.title, live: tip.live } };
 }
 
 async function refresh(id: string) {
