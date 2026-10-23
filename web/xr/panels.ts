@@ -560,7 +560,7 @@ export class FilePanel extends ScrollPanel {
       const what = c.status === "A" ? "Added" : c.status === "D" ? "Deleted" : "Changed";
       this.blocks.push(new Heading(`${what}${c.label ? ` on ${c.label}` : ""} · +${c.add} −${c.del}`, { size: 24, color: C.course }));
       const diff = m.fileDiff;
-      if (diff) this.blocks.push(new DiffBlock(diff));
+      if (diff) this.blocks.push(new DiffBlock(diff, d?.lang ?? f.path.split(".").pop() ?? "text", () => this.invalidate()));
       else this.blocks.push(new RichText(diff === undefined ? "_Reading the diff…_" : diff === null ? "The diff couldn't be read." : "_No changes to this file._", null, { color: C.muted }));
       this.blocks.push(new Gap(14));
     }
