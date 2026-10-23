@@ -9,9 +9,29 @@ type Summary = {
   mergeBase: string;
   head: string;
   checkedOut: boolean;
+  /** A coding agent's branch, read from where it started; `live`: the tip holds work it hasn't committed yet. */
+  agent?: { id: string; title: string; live: boolean };
   commits: { sha: string; subject: string; author: string; at: number }[];
   files: ChangedFile[];
 };
+
+/** What a branch is compared with: its base, or for an agent, the commit it started on. */
+function Against({ sum, base, className }: { sum: Summary | null; base?: string; className: string }) {
+  if (sum?.agent) {
+    return (
+      <>
+        <span className="mx-2 text-muted">since it started at</span>
+        <span className={`font-mono ${className}`}>{sum.mergeBase.slice(0, 7)}</span>
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="mx-2 text-muted">vs</span>
+      <span className={`font-mono ${className}`}>{sum?.base ?? base ?? "…"}</span>
+    </>
+  );
+}
 
 const STATUS: Record<string, { label: string; tone: string }> = {
   A: { label: "A", tone: "text-good" },
@@ -33,12 +53,15 @@ const ago = (at: number) => {
 export function BranchDiff({
   branch,
   base,
+  agent,
   onLight,
   onExplain,
   onClose,
 }: {
   branch: string;
   base?: string;
+  /** An agent's branch: compared with where it started, uncommitted work included. */
+  agent?: string;
   /** Light the changed files that are on the map. */
   onLight: (paths: string[], label: string) => void;
   /** Ask for a story of this branch. */
@@ -54,7 +77,7 @@ export function BranchDiff({
   const list = useRef<HTMLUListElement>(null);
 
   const q = (extra: Record<string, string> = {}) =>
-    new URLSearchParams({ branch, ...(base ? { base } : {}), ...extra }).toString();
+    new URLSearchParams({ ...(agent ? { agent } : { branch, ...(base ? { base } : {}) }), ...extra }).toString();
 
   useEffect(() => {
     setSum(null);
@@ -71,7 +94,7 @@ export function BranchDiff({
       })
       .catch((e) => setError(String(e instanceof Error ? e.message : e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branch, base]);
+  }, [branch, base, agent]);
 
   // Each file's diff is fetched once, when it's first looked at.
   useEffect(() => {
@@ -116,14 +139,20 @@ export function BranchDiff({
         <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5">
           <h2 className="min-w-0 font-cond text-[19px] font-semibold">
             <span className="font-mono text-[15px] text-course">{branch}</span>
-            <span className="mx-2 text-muted">vs</span>
-            <span className="font-mono text-[15px]">{sum?.base ?? base ?? "…"}</span>
+            <Against sum={sum} base={base} className="text-[15px]" />
           </h2>
           {sum && (
             <span className="text-[12.5px] text-muted">
               {sum.commits.length} commit{sum.commits.length === 1 ? "" : "s"} · {sum.files.length} file{sum.files.length === 1 ? "" : "s"} ·{" "}
-              <span className="text-good">+{totals.add}</span> <span className="text-bad">−{totals.del}</span> · forked at{" "}
-              <span className="font-mono">{sum.mergeBase.slice(0, 7)}</span>
+              <span className="text-good">+{totals.add}</span> <span className="text-bad">−{totals.del}</span>
+              {sum.agent ? (
+                sum.agent.live ? " · with what it hasn't committed yet" : ""
+              ) : (
+                <>
+                  {" "}
+                  · forked at <span className="font-mono">{sum.mergeBase.slice(0, 7)}</span>
+                </>
+              )}
               {sum.checkedOut ? " · checked out" : ""}
             </span>
           )}
@@ -158,7 +187,7 @@ export function BranchDiff({
           <div className="working-bar h-px bg-line" />
         ) : !sum.files.length ? (
           <p className="p-4 text-[14px] text-muted">
-            {branch} has no changes relative to {sum.base}.
+            {branch} has no changes {sum.agent ? "since it started" : `relative to ${sum.base}`}.
           </p>
         ) : (
           <div className="flex min-h-0 flex-1">
@@ -252,6 +281,7 @@ export function BranchMapBar({
   sum,
   error,
   loading,
+  working,
   onMapPaths,
   onFly,
   onCodeDiff,
@@ -262,6 +292,8 @@ export function BranchMapBar({
   error: string;
   /** The maps at the tip and the fork are still being built. */
   loading: boolean;
+  /** An agent's branch, and the agent is still at it: the map follows its edits. */
+  working?: boolean;
   onMapPaths: Set<string>;
   onFly: (path: string) => void;
   onCodeDiff: () => void;
@@ -276,20 +308,23 @@ export function BranchMapBar({
   return (
     <div className="glass rise pointer-events-auto w-full max-w-[980px] rounded-xl px-3 py-2 sm:px-4 sm:py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="rounded border border-course/50 px-1.5 font-cond text-[11.5px] font-medium tracking-wide text-course">Branch</span>
+        <span className="rounded border border-course/50 px-1.5 font-cond text-[11.5px] font-medium tracking-wide text-course">{sum?.agent ? "Agent" : "Branch"}</span>
         <h2 className="min-w-0 font-cond text-[18px] font-semibold">
+          {sum?.agent && <span className="mr-2">{sum.agent.title}</span>}
           <span className="font-mono text-[14.5px] text-course">{sum?.branch ?? "…"}</span>
-          <span className="mx-2 text-muted">vs</span>
-          <span className="font-mono text-[14.5px]">{sum?.base ?? "…"}</span>
+          {!sum?.agent && <Against sum={sum} className="text-[14.5px]" />}
         </h2>
         {sum && (
           <span className="hidden text-[12.5px] text-muted md:inline">
             {sum.commits.length} commit{sum.commits.length === 1 ? "" : "s"} · {sum.files.length} file{sum.files.length === 1 ? "" : "s"} ·{" "}
             <span className="text-good">+{totals.add}</span> <span className="text-bad">−{totals.del}</span> · since{" "}
+            {sum.agent ? "it started at " : ""}
             <span className="font-mono">{sum.mergeBase.slice(0, 7)}</span>
+            {sum.agent?.live ? " · with what it hasn't committed yet" : ""}
           </span>
         )}
-        {loading && !error && <span className="text-[12.5px] text-course/90">Building the branch's map…</span>}
+        {loading && !error && <span className="text-[12.5px] text-course/90">{sum?.agent && working ? "Mapping its latest edits…" : "Building the branch's map…"}</span>}
+        {working && !loading && !error && <span className="text-[12.5px] text-runtime">Still working: the map follows its edits</span>}
         <div className="ml-auto flex items-center gap-1.5 text-[13px]">
           {sum && (
             <>

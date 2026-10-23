@@ -39,7 +39,7 @@ import {
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { attachVoice } from "./voice";
-import { AGENTS_ON, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents } from "./agents";
+import { AGENTS_ON, agentDiff, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
 import { branchDiff, branchFileDiff, fetchRemotes, listBranches } from "./branch";
@@ -469,11 +469,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       return true;
     case "GET /api/branch-diff": {
       // A branch against its base: commits and changed files. With `path`, that file's diff.
+      // With `agent`, that agent's branch from the commit it started on, uncommitted work included.
       if (!session.idx) return json(res, 404, { error: "No repository open." }), true;
       const q = url.searchParams;
       try {
         const root = session.idx.graph.root;
-        const d = await branchDiff(root, q.get("branch") ?? "", q.get("base") || undefined);
+        const agent = q.get("agent");
+        const d = agent ? await agentDiff(agent) : await branchDiff(root, q.get("branch") ?? "", q.get("base") || undefined);
         const file = q.get("path");
         if (file) {
           const diff = await branchFileDiff(root, d, file);

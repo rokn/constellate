@@ -513,7 +513,7 @@ function bridge(client: WebSocket) {
         const a = findAgent(str("agent"));
         if (!a) return { ok: false, error: `No agent "${str("agent")}".` };
         if (!a.commits && !a.files.length) return { ok: false, error: "It hasn't changed anything yet." };
-        command({ cmd: "show_branch", branch: a.branch, base: a.base === "HEAD" ? a.baseSha : a.base });
+        command({ cmd: "show_branch", branch: a.branch, base: a.base === "HEAD" ? a.baseSha : a.base, agent: a.id });
         return { ok: true, files: a.files };
       }
       case "rebase_agent": {
