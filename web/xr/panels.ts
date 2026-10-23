@@ -571,8 +571,9 @@ export class FilePanel extends ScrollPanel {
     }
     const row = (p: string, names?: string[], line?: number) => ({
       id: `go:${p}`,
-      label: p.split("/").pop()!,
-      detail: names?.length ? `${names.slice(0, 6).join(", ")}${names.length > 6 ? " …" : ""}` : p,
+      label: p,
+      path: true,
+      detail: names?.length ? `${names.slice(0, 6).join(", ")}${names.length > 6 ? " …" : ""}` : undefined,
       onClick: () => this.a.openFile(p, line),
     });
     const imports = (d.importLinks ?? d.imports.map((p) => ({ path: p, names: [] as string[], line: undefined }))).map((l) => row(l.path, l.names, undefined));

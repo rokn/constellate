@@ -4,7 +4,7 @@ import { fetchFile, post, type FileData } from "../lib/api";
 import type { Mode } from "./engine";
 import type { MapHit, MapInput, MapStyle } from "./map";
 import { splitList } from "../../shared/filter";
-import type { Actions, AppActions, AppModel, BranchRow, Model } from "./model";
+import type { Actions, AppActions, AppModel, BranchRow, FocusDir, Model } from "./model";
 import type { Room, StorySource } from "./room";
 import { suggest } from "./suggest";
 
@@ -58,8 +58,8 @@ try {
 if (resumeTo) navigator.xr?.addEventListener("sessiongranted", () => ((granted = true), onGranted?.()), { once: true });
 
 /** The map's look, with the focus's inner rings marked so only links reaching in from it light. */
-function styled(style: MapStyle, f: { paths: string[]; core: string[] } | null): MapStyle {
-  return f && style.emphasis === f.paths ? { ...style, core: f.core } : style;
+function styled(style: MapStyle, f: { paths: string[]; core: string[]; dir: FocusDir } | null): MapStyle {
+  return f && style.emphasis === f.paths ? { ...style, core: f.core, coreDir: f.dir === "both" ? undefined : f.dir } : style;
 }
 
 export function useXR(feed: XRFeed) {
@@ -77,7 +77,9 @@ export function useXR(feed: XRFeed) {
   const [surfaces, setSurfaces] = useState(0);
   const [inputs, setInputs] = useState({ hands: false, controllers: false });
   /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
-  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
+  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; dir: FocusDir; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
+  /** Which way focuses go: kept from one focus to the next. */
+  const focusDir = useRef<FocusDir>("both");
   const focusRef = useRef(focusAt);
   focusRef.current = focusAt;
   const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
@@ -217,6 +219,12 @@ export function useXR(feed: XRFeed) {
       const f = focusRef.current;
       if (f && f.depth > 0) focusOn(f.hit, f.depth - 1);
     },
+    focusDirection: (dir) => {
+      focusDir.current = dir;
+      const f = focusRef.current;
+      // Just the body itself has no direction: one way or the other means its first ring.
+      if (f) focusOn(f.hit, dir === "both" ? f.depth : Math.max(1, f.depth));
+    },
     focusOnly: () => {
       const f = focusRef.current;
       const { mapFilter } = feedRef.current.model;
@@ -269,8 +277,9 @@ export function useXR(feed: XRFeed) {
   const beforeOnly = useRef<AppModel["mapFilter"] | null>(null);
   /** Focus on a body with `depth` rings of its connections. */
   const focusOn = (hit: MapHit, depth: number) => {
-    const r = feedRef.current.actions.focusAround(hit, depth);
-    setFocusAt(r.count ? { hit, depth, ...r } : null);
+    const dir = focusDir.current;
+    const r = feedRef.current.actions.focusAround(hit, depth, dir);
+    setFocusAt(r.count ? { hit, depth, dir, ...r } : null);
   };
   // Focused some other way since (a pick, the menu, back): the bar goes.
   const emphasis = feed.style.emphasis;
@@ -433,7 +442,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, fileDiff, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, fileDiff, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths, dir: focusAt.dir } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */
@@ -447,6 +456,7 @@ export function useXR(feed: XRFeed) {
       overview: () => live() && roomRef.current!.engine.overview(),
       pulse: (p: string) => live() && roomRef.current!.engine.map.pulse(p),
       leaveTable: () => live() && roomRef.current!.engine.leaveTable(),
+      focusDirection: (dir: FocusDir) => own.current.focusDirection!(dir),
     }),
     [],
   );

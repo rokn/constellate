@@ -95,8 +95,11 @@ export type Model = {
   /** What you're holding: the controls page lists what these can do. */
   inputs: { hands: boolean; controllers: boolean };
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
-  focus: { label: string; depth: number; count: number; more: boolean; only: boolean } | null;
+  focus: { label: string; depth: number; count: number; more: boolean; only: boolean; dir: FocusDir } | null;
 };
+
+/** Which of a focus's connections light: what imports it (in), what it imports (out), or both. */
+export type FocusDir = "in" | "out" | "both";
 
 export type Jump = { kind: "file" | "module" | "symbol"; label: string; detail?: string; path?: string; id?: string; line?: number };
 
@@ -169,9 +172,11 @@ export type Actions = {
    * its import neighbours; fly there. Says what it lit, and whether there's a
    * further ring.
    */
-  focusAround: (hit: MapHit, depth: number) => { label: string; count: number; more: boolean; paths: string[]; core: string[] };
+  focusAround: (hit: MapHit, depth: number, dir?: FocusDir) => { label: string; count: number; more: boolean; paths: string[]; core: string[] };
   focusWider: () => void;
   focusNarrower: () => void;
+  /** Light the focus's inbound connections, its outbound ones, or both (from the first ring on). */
+  focusDirection: (dir: FocusDir) => void;
   /** Show only what the focus lights, or, when that's on, the map as it was. */
   focusOnly: () => void;
   /** Throw something off the map (a fling): it's hidden, with an undo. */
@@ -226,6 +231,7 @@ export type AppActions = Omit<
   | "toggleViews"
   | "focusWider"
   | "focusNarrower"
+  | "focusDirection"
   | "focusOnly"
   | "fetchBranches"
 > & {

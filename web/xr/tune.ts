@@ -293,6 +293,7 @@ const HINTS: HintGroup[] = [
       ["A", "Menu"],
       ["B", "Back"],
       ["Stick click on a body", "Focus on it; again for a ring more of its connections"],
+      ["The bar over the dock", "Inbound, Outbound or Both; Only these to isolate it"],
       ["Stick click on open sky", "Frame the selection"],
     ],
   },

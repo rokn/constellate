@@ -697,6 +697,18 @@ export function App() {
     }
     return m;
   }, [graph]);
+  // The same, one way: what each file imports, and what imports it.
+  const [importsOf, importersOf] = useMemo(() => {
+    const out = new Map<string, Set<string>>();
+    const into = new Map<string, Set<string>>();
+    for (const e of graph?.imports ?? []) {
+      if (!out.has(e.from)) out.set(e.from, new Set());
+      if (!into.has(e.to)) into.set(e.to, new Set());
+      out.get(e.from)!.add(e.to);
+      into.get(e.to)!.add(e.from);
+    }
+    return [out, into];
+  }, [graph]);
 
   const openFile = useCallback(
     (path: string, line?: number, endLine?: number, fly = true) => {
@@ -1207,6 +1219,8 @@ export function App() {
           return closeBranch();
         case "leave_table":
           return void xrCamera.current?.leaveTable();
+        case "focus_direction":
+          return void xrCamera.current?.focusDirection(c.dir);
         case "changed_only":
           return setChangedOnly(c.on);
         case "renamed": {
@@ -1682,23 +1696,26 @@ export function App() {
       deleteTunePreset,
       setMapFilter: (f) => setFilter(f),
       setSavedFilters: (list) => setSavedFilters(list),
-      focusAround: (h, depth) => {
+      focusAround: (h, depth, dir = "both") => {
         const { paths, label } = filesOfHit(h);
         const shown = (p: string) => (visible ? visible.has(p) : onMap.has(p));
         const lit = new Set(paths.filter(shown));
+        // Which way the rings go: what it imports (out), what imports it (in), or both.
+        const step = dir === "out" ? importsOf : dir === "in" ? importersOf : neighbours;
         // Ring by ring out along the imports.
         let ring = [...lit];
         for (let d = 0; d < depth && ring.length; d++) {
           const next: string[] = [];
-          for (const p of ring) for (const n of neighbours.get(p) ?? []) if (!lit.has(n) && shown(n)) lit.add(n), next.push(n);
+          for (const p of ring) for (const n of step.get(p) ?? []) if (!lit.has(n) && shown(n)) lit.add(n), next.push(n);
           ring = next;
         }
-        const more = ring.some((p) => [...(neighbours.get(p) ?? [])].some((n) => !lit.has(n) && shown(n)));
+        const more = ring.some((p) => [...(step.get(p) ?? [])].some((n) => !lit.has(n) && shown(n)));
         const out = [...lit];
         // The links worth lighting reach in from the last ring, not across it.
         const outer = new Set(depth ? ring : []);
         const core = out.filter((p) => !outer.has(p));
-        if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}` : label);
+        const way = dir === "both" ? "" : dir === "in" ? " in" : " out";
+        if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}${way}` : label);
         return { label, count: out.length, more, paths: out, core };
       },
       focusPaths: (paths, label) => focus(paths, label),

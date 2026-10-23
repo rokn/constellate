@@ -77,6 +77,9 @@ const TOOLS = [
   }, ["branch"]),
   fn("close_branch", "Back to the map as it's checked out: stop showing a branch."),
   fn("leave_table", "In the headset's passthrough: take the map off the real table it's set down on (table mode ends), back floating in front of them. The table is forgotten until they place it again."),
+  fn("connection_direction", "In the headset, with a body focused with its rings of connections (the right stick): light only its inbound connections (the files that import it), only its outbound ones (the files it imports), or both. Kept for the next focus too. Instant.", {
+    dir: { type: "string", enum: ["in", "out", "both"] },
+  }, ["dir"]),
   fn("changed_only", "While a branch (or history) is on the map: on, show only the files it changed, everything else steps off; off, the whole map again. Instant. Use it when they ask for just the changes, or for the whole map back.", {
     on: { type: "boolean" },
   }, ["on"]),
@@ -109,7 +112,7 @@ const TUNE_TOOLS = TUNE_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.pr
 const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
 
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["show_agent", "show_branch", "close_branch", "changed_only", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
+const SILENT = new Set(["show_agent", "show_branch", "close_branch", "changed_only", "connection_direction", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
 /** The least time between two instruction updates. */
@@ -533,6 +536,12 @@ function bridge(client: WebSocket) {
         if (screen.tune?.mode !== "ar") return { ok: false, error: "They aren't in passthrough, so there's no table." };
         command({ cmd: "leave_table" });
         return { ok: true };
+      case "connection_direction": {
+        if (!screen.tune?.mode) return { ok: false, error: "They aren't in the headset; the direction is for a focus made there." };
+        const dir = args.dir === "in" || args.dir === "out" ? args.dir : "both";
+        command({ cmd: "focus_direction", dir });
+        return { ok: true };
+      }
       case "changed_only":
         if (!screen.branch && !screen.range) return { ok: false, error: "No branch or history is on the map. Show one first." };
         command({ cmd: "changed_only", on: args.on !== false });
