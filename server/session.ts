@@ -16,6 +16,7 @@ import type {
   Story,
   StorySettings,
   ViewSettings,
+  TunePreset,
   UiCommand,
   View,
 } from "../shared/types";
@@ -64,6 +65,7 @@ export const session: Session = {
     frames: [],
     stories: [],
     storySettings: DEFAULT_STORY_SETTINGS,
+    tunePresets: [],
     activity: [],
     commands: [],
     busy: false,
@@ -313,6 +315,26 @@ export async function setStorySettings(patch: Partial<StorySettings>) {
   await writeFile(SETTINGS_FILE, JSON.stringify(session.state.storySettings, null, 2));
 }
 
+/** Tune presets are yours too: one file beside the story settings. */
+const PRESETS_FILE = path.join(CACHE_DIR, "tune-presets.json");
+
+export async function loadTunePresets() {
+  try {
+    const saved = JSON.parse(await readFile(PRESETS_FILE, "utf8")) as TunePreset[];
+    if (Array.isArray(saved)) session.state.tunePresets = saved;
+    emit();
+  } catch {
+    /* none saved yet */
+  }
+}
+
+export async function setTunePresets(list: TunePreset[]) {
+  session.state.tunePresets = list;
+  emit();
+  await mkdir(CACHE_DIR, { recursive: true });
+  await writeFile(PRESETS_FILE, JSON.stringify(list, null, 2));
+}
+
 let viewSeq = 0;
 /** Ids are assigned here — asking a model for unique ids invites collisions. */
 const VIEW_PREFIX: Record<View["kind"], string> = { text: "t", code: "c", diagram: "d", diff: "f", custom: "x" };
@@ -362,6 +384,7 @@ export function resetSession(abs: string, name: string) {
     frames: [],
     stories: [],
     storySettings: session.state.storySettings,
+    tunePresets: session.state.tunePresets,
     activity: [],
     commands: [],
     busy: false,

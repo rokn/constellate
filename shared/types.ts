@@ -417,7 +417,11 @@ export type UiCommand =
   /** Back to the map as it's checked out. */
   | { cmd: "close_branch" }
   /** Files moved; what the page keeps by path (its filter) follows them. */
-  | { cmd: "renamed"; renames: Renames };
+  | { cmd: "renamed"; renames: Renames }
+  /** Turn Tune knobs: the map's and the headset's (by key). */
+  | { cmd: "tune"; map?: Record<string, number | boolean>; headset?: Record<string, number | boolean> }
+  /** Switch to a preset: its knobs over the defaults (the headset's only when it keeps them). */
+  | { cmd: "apply_preset"; preset: TunePreset };
 
 export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons" | "notes";
 
@@ -436,6 +440,12 @@ export type ViewSettings = {
 };
 
 export type SavedFilter = { name: string; filter: MapFilter };
+
+/**
+ * Tune settings saved under a name: the map's knobs, and (saved in the
+ * headset) the headset's own, each as what differs from the defaults.
+ */
+export type TunePreset = { name: string; map: Record<string, number | boolean>; headset?: Record<string, number | boolean> };
 
 /**
  * One thing the map is isolated to. A folder is matched by prefix, so files
@@ -468,6 +478,8 @@ export type SessionState = {
   /** Narrated walkthroughs, the intro's three among them. */
   stories: Story[];
   storySettings: StorySettings;
+  /** Tune presets you saved: yours, not the repo's, kept on the server so every device has them. */
+  tunePresets: TunePreset[];
   activity: Activity[];
   commands: { id: number; cmd: UiCommand }[];
   /** True while the navigator is working on something. */
@@ -578,4 +590,6 @@ export type ScreenContext = {
    * closed — the last one they watched.
    */
   story?: { id: string; beat: number; playing: boolean; parked?: boolean; closed?: boolean };
+  /** The Tune knobs that differ from their defaults, and whether they're in the headset (vr or ar) right now. */
+  tune?: { map: Record<string, number | boolean>; headset: Record<string, number | boolean>; mode?: "vr" | "ar" };
 };
