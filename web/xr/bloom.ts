@@ -13,9 +13,10 @@ import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
  *     filter: cheap enough for a Quest's GPU), each eye's half kept apart so
  *     one eye's glow never bleeds into the other's;
  *  3. map and glow are composited into the headset's framebuffer, keeping
- *     alpha so the glow lights the room in passthrough;
+ *     alpha so the glow lights the room in passthrough, and the map's depth
+ *     with them;
  *  4. the overlay (panels, hands, rays, tags) is drawn over that, unbloomed,
- *     so text stays crisp.
+ *     so text stays crisp, but behind the bodies that are in front of it.
  *
  * The knobs are the desktop's: strength, spread (radius) and threshold.
  */
@@ -102,6 +103,7 @@ const UP = /* glsl */ `
 const COMPOSITE = /* glsl */ `
   uniform sampler2D tScene;
   uniform sampler2D tBloom;
+  uniform sampler2D tDepth;
   uniform float uStrength;
   varying vec2 vUv;
   void main() {
@@ -110,6 +112,8 @@ const COMPOSITE = /* glsl */ `
     // The scene is premultiplied (it was blended onto a clear, transparent
     // target); the glow adds light, and in passthrough its own coverage.
     gl_FragColor = vec4(s.rgb + b, clamp(s.a + max(b.r, max(b.g, b.b)), 0.0, 1.0));
+    // The map's depth, so the overlay drawn next is hidden by bodies in front of it.
+    gl_FragDepth = texture2D(tDepth, vUv).r;
     #include <colorspace_fragment>
   }
 `;
@@ -132,14 +136,22 @@ export class Bloom {
     uK: { value: 1 },
     uStereo: { value: 0 },
   });
-  private composite = shader(COMPOSITE, { tScene: { value: null }, tBloom: { value: null }, uStrength: { value: 1 } });
+  // Writes every pixel's depth: GL only writes depth with the test on, so it's on and always passes.
+  private composite = new THREE.ShaderMaterial({
+    vertexShader: VS,
+    fragmentShader: COMPOSITE,
+    uniforms: { tScene: { value: null }, tBloom: { value: null }, tDepth: { value: null }, uStrength: { value: 1 } },
+    depthFunc: THREE.AlwaysDepth,
+    blending: THREE.NoBlending,
+  });
   private size = new THREE.Vector2();
 
   constructor(renderer: THREE.WebGLRenderer) {
     // Half floats keep the dark end of the glow from banding; not every GPU can render to them.
     const ext = renderer.extensions;
     const type = ext.has("EXT_color_buffer_float") || ext.has("EXT_color_buffer_half_float") ? THREE.HalfFloatType : THREE.UnsignedByteType;
-    this.scene = new THREE.WebGLRenderTarget(1, 1, { type, samples: 4, depthBuffer: true });
+    // Its depth as a texture, so the composite can hand it on to the overlay.
+    this.scene = new THREE.WebGLRenderTarget(1, 1, { type, samples: 4, depthBuffer: true, depthTexture: new THREE.DepthTexture(1, 1) });
     for (let i = 0; i < LEVELS; i++) {
       const o = { type, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
       this.down.push(new THREE.WebGLRenderTarget(1, 1, o));
@@ -226,14 +238,14 @@ export class Bloom {
     // 3. Map and glow into the headset's framebuffer.
     this.composite.uniforms.tScene.value = this.scene.texture;
     this.composite.uniforms.tBloom.value = low.texture;
+    this.composite.uniforms.tDepth.value = this.scene.depthTexture;
     // Matched by eye to the desktop pass at its default knobs.
     this.composite.uniforms.uStrength.value = p.strength * 2;
     this.pass(renderer, this.composite, target);
     renderer.xr.enabled = xrOn;
 
-    // 4. Panels, hands and rays on top, crisp.
+    // 4. Panels, hands and rays on top, crisp, against the map's depth (not cleared).
     renderer.setRenderTarget(target);
-    renderer.clearDepth();
     renderer.render(overlay, camera);
     renderer.autoClear = autoClear;
   }

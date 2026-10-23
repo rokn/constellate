@@ -87,9 +87,10 @@ export abstract class Panel {
     this.texture = this.makeTexture();
     this.mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(widthM, heightM),
-      // Panels are read, not flown through: they draw over the map even where
-      // bodies pass in front of them, the way headset UI stays legible.
-      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
+      // Panels sit in the room like anything else: a body in front of one hides
+      // it, and one in front of the map hides what's behind it. The clear
+      // margins (alpha test) don't, so rounded corners don't cut holes.
+      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, alphaTest: 0.02, toneMapped: false }),
     );
     this.mesh.name = name;
     this.mesh.userData.panel = this;
