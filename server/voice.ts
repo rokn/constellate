@@ -9,6 +9,7 @@ import { addOverlay, changeOverlays, findView, session, subscribe } from "./sess
 import { AGENTS_ON, onAgentFinished } from "./agents";
 import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
 import { listBranches } from "./branch";
+import { TUNE_ACTIONS, runTune, tuneNote } from "./tune";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -97,6 +98,9 @@ const TOOLS = [
   fn("stop_navigator", "Cancel what the navigator is working on, when they change their mind."),
 ];
 
+/** The Tune panel's knobs and presets. Shared with typed Ask (see tune.ts). */
+const TUNE_TOOLS = TUNE_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
+
 /** Coding agents: only offered when the server allows them. Shared with typed Ask (see actions.ts). */
 const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
 
@@ -165,6 +169,7 @@ function instructions(screen: ScreenContext, branches: Branches | null): string 
     "",
     "You have NOT read this code. You only know what is written below. The moment they want to understand something, see something, or ask about code not shown here, call ask_navigator (or focus_topic for a suggested topic). Say a short line first ('let me pull that up'), then stop; when the result arrives, say it in your own words. Never invent how something is wired.",
     "If they just want to go somewhere — 'take me to the auth code', 'open the server' — that's navigation: use fly_to or focus_module yourself, no navigator needed.",
+    "Settings are yours too: tune turns any knob of the Tune panel (how the map looks and moves, and the headset's own settings), reset_tune puts them back, use_preset / save_preset / delete_preset work the presets. Do it straight away and say what you changed in a few words.",
     "",
     AGENTS_ON
       ? "You can also start coding agents (start_agent) when they want the code changed: each works on its own branch, and they review what it did on the map (show_agent). A finished agent's work opens as a pull request on its own; merge_pr merges it, only after they confirm. Questions still go to the navigator."
@@ -216,6 +221,7 @@ function instructions(screen: ScreenContext, branches: Branches | null): string 
       ? "A story is open, and it pauses while they talk to you. Answer a quick question about it from its script yourself; for anything that needs the code read or something drawn, ask the navigator, and the story waits while the answer is on screen."
       : "",
     storyNote(screen.story),
+    tuneNote({ screen }),
     screen.selection ? `They selected this — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 1500)}\n"""` : "",
   ]
     .filter(Boolean)
@@ -251,7 +257,7 @@ function sessionUpdate(text: string, v: VoiceSettings) {
         },
         output: { model: v.ttsModel, voice: v.voiceId, ...(v.speed !== 1 ? { speed: v.speed } : {}) },
       },
-      tools: AGENTS_ON ? [...TOOLS, ...AGENT_TOOLS] : TOOLS,
+      tools: AGENTS_ON ? [...TOOLS, ...TUNE_TOOLS, ...AGENT_TOOLS] : [...TOOLS, ...TUNE_TOOLS],
       providerData: { stt: { voice_profile: false } },
     },
   };
@@ -554,17 +560,18 @@ function bridge(client: WebSocket) {
       case "stop_navigator":
         return { ok: interrupt() };
       default:
-        // The coding agents, shared with typed Ask. The voice has its yes for
-        // a merge out loud before it calls merge_pr, so it merges.
+        // The Tune panel, then the coding agents, both shared with typed Ask.
+        // The voice has its yes for a merge out loud before it calls merge_pr, so it merges.
         return (
-          (AGENTS_ON &&
+          runTune(name, args, { surface: "voice", screen, command, report: () => {} }) ??
+          ((AGENTS_ON &&
             runAction(name, args, {
               surface: "voice",
               screen,
               command,
               report: (news, ok) => deliver(`${news} ${ok ? "Tell them in a line." : "Tell them briefly."}`),
               changed: sync,
-            })) || { ok: false, error: `Unknown tool ${name}` }
+            })) || { ok: false, error: `Unknown tool ${name}` })
         );
     }
   };

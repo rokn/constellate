@@ -12,7 +12,8 @@ import { digest, findPath, neighbourhood } from "./scan";
 import { agentDiff } from "./agents";
 import { branchDiff, fileAt } from "./branch";
 import { AGENTS_ON } from "./agents";
-import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
+import { AGENT_ACTIONS, agentLines, describe, type Action } from "./actions";
+import { TUNE_ACTIONS, tuneNote } from "./tune";
 import {
   afterRescan,
   addLens,
@@ -192,13 +193,13 @@ export function graphTools(): SdkMcpToolDefinition<any>[] {
 const PLACE_TOOLS = ["deps", "outline", "get_lens", "revise_lens"];
 
 /**
- * The coding-agent tools, for a typed request: the voice's own (actions.ts),
- * in the SDK's shape. Late news goes to the activity; a merge waits for the
- * Merge button this puts on the answer.
+ * The voice's own tools for a typed request (the coding agents, actions.ts;
+ * the Tune panel, tune.ts), in the SDK's shape. Late news goes to the
+ * activity; a merge waits for the Merge button this puts on the answer.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool has its own schema
-function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinition<any>[] {
-  return AGENT_ACTIONS.map((a) =>
+function actionTools(list: Action[], frameId: string, screen: ScreenContext): SdkMcpToolDefinition<any>[] {
+  return list.map((a) =>
     tool(
       a.name,
       describe(a, "typed"),
@@ -211,7 +212,7 @@ function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinitio
       async (args) => {
         let out: Record<string, unknown> | null;
         try {
-          out = runAction(a.name, args, {
+          out = a.run(args, {
             surface: "typed",
             screen,
             command: pushCommand,
@@ -227,7 +228,7 @@ function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinitio
   );
 }
 
-function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", actions?: ScreenContext) {
+function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", actions?: ScreenContext, tune?: ScreenContext) {
   const needFrame = () => {
     if (!frameId) throw new Error("Views can only be shown while answering a request.");
     return frameId;
@@ -810,7 +811,8 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
     );
   }
 
-  if (mode === "ask" && actions && frameId) tools.push(...agentTools(frameId, actions));
+  if (mode === "ask" && actions && frameId) tools.push(...actionTools(AGENT_ACTIONS, frameId, actions));
+  if (mode === "ask" && tune && frameId) tools.push(...actionTools(TUNE_ACTIONS, frameId, tune));
 
   const offered = mode === "place" ? tools.filter((t) => PLACE_TOOLS.includes(t.name)) : tools;
   return createSdkMcpServer({ name: "flight", version: "1.0.0", tools: offered, alwaysLoad: true });
@@ -1186,11 +1188,14 @@ async function run(opts: {
   signal: AbortController;
   /** A typed request: the agent tools too, with what's on their screen. */
   actions?: ScreenContext;
+  /** A typed request: the Tune panel's knobs and presets too, with what's on their screen. */
+  tune?: ScreenContext;
 }): Promise<RunResult> {
   const root = idx().graph.root;
   const tools = [
     ...(opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview")),
     ...(opts.mode === "ask" && opts.actions ? AGENT_ACTIONS.map((a) => a.name) : []),
+    ...(opts.mode === "ask" && opts.tune ? TUNE_ACTIONS.map((a) => a.name) : []),
   ];
   let live = "";
   let answer = "";
@@ -1210,7 +1215,7 @@ async function run(opts: {
       // The opened repo's own .claude settings could carry hooks; this is a
       // read-only explorer and must not run them.
       settingSources: [],
-      mcpServers: { flight: flightServer(opts.frameId, opts.mode, opts.actions) },
+      mcpServers: { flight: flightServer(opts.frameId, opts.mode, opts.actions, opts.tune) },
       // A placement is housekeeping on the side: it doesn't join the conversation.
       resume: opts.mode === "place" ? undefined : session.agentSessionId,
       includePartialMessages: true,
@@ -1407,15 +1412,17 @@ export async function ask(
 
   // A topic's deep dive is a tour, not a request that could be a task.
   const actions = opts.typed && AGENTS_ON && !topic;
+  const typed = !!opts.typed && !topic;
 
   try {
     const res = await run({
-      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : ""),
+      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : "") + (typed ? `\n\n${tuneNote({ screen: opts.screen ?? {} })}\nIf they ask to change a setting (how the map looks or moves, the headset's settings) or to use, save or delete a preset, do it with tune, reset_tune and the preset tools.` : ""),
       frameId: frame.id,
       mode: "ask",
       effort: ASK_EFFORT,
       signal: controller,
       actions: actions ? opts.screen ?? {} : undefined,
+      tune: typed ? opts.screen ?? {} : undefined,
     });
     if (controller.signal.aborted) return { frameId: frame.id, answer: res.answer, error: "superseded" };
     patchFrame(frame.id, {
