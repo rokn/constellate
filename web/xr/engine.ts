@@ -238,6 +238,8 @@ export class Engine {
   private dockYaw = 0;
   /** The drawn controllers and hands, shown or not by the settings. */
   private models: { controllers: THREE.Object3D[]; hands: THREE.Object3D[] } = { controllers: [], hands: [] };
+  /** Controllers you've put down: still tracked, drawn where they lie, but no longer pointing. */
+  private resting: { grip: THREE.Group; source: XRInputSource | null }[] = [];
   /** When the user last moved the map themselves; automatic refits made before that are dropped. */
   userMovedAt = 0;
 
@@ -442,12 +444,15 @@ export class Engine {
     sfx.start();
     const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
       requiredFeatures: ["local-floor"],
-      optionalFeatures: mode === "ar" ? ["hand-tracking", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "bounded-floor"],
+      optionalFeatures: mode === "ar" ? ["hand-tracking", "tracked-sources", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "tracked-sources", "bounded-floor"],
     });
+    // With one hand free and a controller in the other, the one you set down moves here.
+    session.addEventListener("trackedsourceschange", (e) => this.trackedSourcesChange(e as XRInputSourcesChangeEvent));
     this.session = session;
     session.addEventListener("end", () => {
       if (this.session !== session) return;
       this.session = null;
+      for (const r of this.resting) if (r.source) this.restingOff(r);
       this.hitSource?.cancel();
       this.hitSource = null;
       this.mouse.keys.clear();
@@ -804,6 +809,48 @@ export class Engine {
       ray.addEventListener("selectend", () => this.pressEnd(id));
       ray.addEventListener("squeezestart", () => this.squeezeStart(id));
       ray.addEventListener("squeezeend", () => this.squeezeEnd(id));
+    }
+    for (let i = 0; i < 2; i++) {
+      const grip = new THREE.Group();
+      grip.matrixAutoUpdate = false;
+      grip.visible = false;
+      const cm = controllerModels.createControllerModel(grip);
+      grip.add(cm);
+      this.models.controllers.push(cm);
+      this.overlay.add(grip);
+      this.resting.push({ grip, source: null });
+    }
+  }
+
+  private trackedSourcesChange(e: XRInputSourcesChangeEvent) {
+    for (const s of e.removed) {
+      const r = this.resting.find((x) => x.source === s);
+      if (r) this.restingOff(r);
+    }
+    for (const s of e.added) {
+      // A hand that isn't pointing has nothing to show; a controller lying there does.
+      if (s.hand || !s.gripSpace || this.resting.some((x) => x.source === s)) continue;
+      const r = this.resting.find((x) => !x.source);
+      if (!r) break;
+      r.source = s;
+      r.grip.dispatchEvent({ type: "connected", data: s } as never);
+    }
+  }
+
+  private restingOff(r: { grip: THREE.Group; source: XRInputSource | null }) {
+    r.grip.dispatchEvent({ type: "disconnected", data: r.source } as never);
+    r.source = null;
+    r.grip.visible = false;
+  }
+
+  private placeResting(xrFrame: XRFrame) {
+    const ref = this.renderer.xr.getReferenceSpace();
+    for (const r of this.resting) {
+      const pose = r.source?.gripSpace && ref ? xrFrame.getPose(r.source.gripSpace, ref) : undefined;
+      r.grip.visible = !!pose;
+      if (!pose) continue;
+      r.grip.matrix.fromArray(pose.transform.matrix);
+      r.grip.matrixWorldNeedsUpdate = true;
     }
   }
 
@@ -2074,6 +2121,7 @@ export class Engine {
 
     // The table: its anchor followed, and its edges found.
     if (xrFrame && this.mode === "ar") this.trackTable(xrFrame);
+    if (xrFrame) this.placeResting(xrFrame);
     this.drawOutline();
 
     // AR placement: the reticle sits where the ray meets a real surface.
