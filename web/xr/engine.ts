@@ -3,6 +3,7 @@ import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerM
 import { XRHandModelFactory } from "three/examples/jsm/webxr/XRHandModelFactory.js";
 import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
 import { Bloom } from "./bloom";
+import { HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
 import { C, Panel, Tag, roundRect } from "./ui";
 
@@ -27,7 +28,9 @@ import { C, Panel, Tag, roundRect } from "./ui";
 
 export type Mode = "flat" | "vr" | "ar";
 export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
-export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar";
+export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf";
+/** Which kinds of hands are in: what the controls page lists. */
+export type Inputs = { hands: boolean; controllers: boolean };
 
 export type EngineHandlers = {
   onPick: (hit: MapHit) => void;
@@ -47,13 +50,33 @@ export type EngineHandlers = {
   onFlick?: (hit: MapHit) => void;
   /** A key pressed in the headset (a Bluetooth keyboard, say): true if it was used, so nothing else sees it. */
   onKey?: (e: KeyboardEvent) => boolean;
+  /** Files picked out by hand: drawn round with a loop, or framed between two Ls. */
+  onSelect?: (paths: string[], how: "lasso" | "frame") => void;
+  /** Hands or controllers came or went. */
+  onInputs?: (i: Inputs) => void;
+  /** The map is (or no longer is) on a real table. */
+  onTable?: (on: boolean) => void;
 };
+
+/**
+ * The real table the map sits on, from the detected planes (or a guess).
+ * `toward` runs from its middle to the edge nearest you, `right` along that
+ * edge to your right; the half sizes are along those.
+ */
+export type Table = { center: THREE.Vector3; toward: THREE.Vector3; right: THREE.Vector3; halfW: number; halfD: number };
+
+/** How long a pinch on open sky is held still before it draws a lasso instead of moving the map. */
+const LASSO_HOLD = 450;
+/** Where the headset's anchor for the table is kept between sessions. */
+const ANCHOR_KEY = "constellate.xr.anchor";
 
 type Grab = { p: Pointer; at0: THREE.Vector3; up0: THREE.Vector3 };
 type Press =
   | { kind: "panel"; panel: Panel }
   | { kind: "map"; hit: MapHit; from: THREE.Vector3 }
-  | { kind: "grab"; from: THREE.Vector3; moved: boolean }
+  | { kind: "grab"; from: THREE.Vector3; moved: boolean; t0?: number }
+  /** A hand's pinch held still on open sky, now drawing a loop round what to pick. */
+  | { kind: "lasso"; pts: THREE.Vector3[] }
   /** A body held on the end of the ray, `dist` metres out. */
   /** `pin`: the grip was pressed while holding it, so it stays where it's let go. */
   | { kind: "body"; id: string; dist: number; hit: MapHit; trail: { t: number; at: THREE.Vector3 }[]; pin: boolean }
@@ -86,6 +109,13 @@ type Pointer = {
   /** This hand stretching a panel the other hand is carrying. */
   resize: { panel: Panel; holder: Pointer; w0: number; h0: number; dx0: number; dy0: number; at: number } | null;
   lastHapticId: string | null;
+  /** A tracked hand: its joints, and what it's doing with them. */
+  hand?: THREE.XRHandSpace;
+  gest?: HandGestures;
+  /** The panel the index fingertip is pressing, as a touch, and where on it. */
+  poke?: { panel: Panel; x: number; y: number } | null;
+  /** The body the fingertip last touched, until it moves away. */
+  pokeBody?: string | null;
 };
 
 const MIN_SCALE = 0.00015;
@@ -133,6 +163,22 @@ export class Engine {
   placing = false;
   /** Where the map was put down in your room (AR), for the overview to return to. */
   private anchor: THREE.Vector3 | null = null;
+  /** The headset's own anchor at that spot, so the map stays on the table as tracking settles, and comes back to it next time. */
+  private xrAnchor: XRAnchor | null = null;
+  /** Where that anchor was last frame: when it moves, everything on the table moves with it. */
+  private anchorLast: THREE.Vector3 | null = null;
+  /** A spot just placed on, waiting for the next frame to anchor it. */
+  private anchorWanted: THREE.Vector3 | null = null;
+  /** Looking for the table under a spot, among the detected planes, until a little while has passed. */
+  private tableFrom: { at: THREE.Vector3; t0: number } | null = null;
+  table: Table | null = null;
+  /** Panels set by the room: the one on your wrist, and the shelf a dragged body can be dropped on. */
+  wrist: Panel | null = null;
+  shelf: Panel | null = null;
+  private lasso: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  /** Both hands in an L: since when, and whether it has fired. */
+  private framing = { since: 0, fired: false };
+  private inputs: Inputs = { hands: false, controllers: false };
   private mouse = { x: 0, y: 0, down: -1, lastX: 0, lastY: 0, moved: false, keys: new Set<string>() };
   private dockYaw = 0;
   /** When the user last moved the map themselves; automatic refits made before that are dropped. */
@@ -203,6 +249,14 @@ export class Engine {
     this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: C.course, toneMapped: false }));
     this.reticle.visible = false;
     this.overlay.add(this.reticle);
+
+    // The loop a lasso draws, and the frame two Ls make.
+    const lassoGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(512 * 3), 3));
+    this.lasso = new THREE.Line(lassoGeo, new THREE.LineBasicMaterial({ color: C.course, transparent: true, opacity: 0.9, depthTest: false, toneMapped: false }));
+    this.lasso.frustumCulled = false;
+    this.lasso.renderOrder = 31;
+    this.lasso.visible = false;
+    this.overlay.add(this.lasso);
 
     this.setupXRInput();
     this.setupMouse();
@@ -291,6 +345,7 @@ export class Engine {
     // A new session is a new room: panels open in front of you again.
     this.placed.clear();
     this.setMode(mode);
+    if (mode === "ar") void this.restoreAnchor(session);
     // Once the first poses are in, frame what you were looking at (or the whole map).
     setTimeout(() => (this.h.onEntered ? this.h.onEntered() : this.overview(900)), 400);
   }
@@ -306,7 +361,15 @@ export class Engine {
     this.renderer.setClearColor(0x000000, ar ? 0 : 1);
     this.placing = false;
     this.reticle.visible = false;
-    if (!ar) this.anchor = null;
+    if (this.wrist) this.hide(this.wrist);
+    if (!ar) {
+      this.anchor = null;
+      this.xrAnchor = null;
+      this.anchorLast = null;
+      this.anchorWanted = null;
+      this.tableFrom = null;
+      this.setTable(null);
+    }
     this.applyRoom();
     this.recenterPanels();
     this.h.onMode(mode);
@@ -375,6 +438,11 @@ export class Engine {
   }
 
   private place(p: Panel, slot: Slot) {
+    if ((slot === "table" || slot === "shelf") && this.table) {
+      this.placeOnTable(p, slot);
+      this.placed.add(p);
+      return;
+    }
     // The focus bar sits on top of the dock, wherever you've put that.
     const dock = [...this.slots].find(([, s]) => s === "dock")?.[0];
     if (slot === "focusbar" && dock?.open) {
@@ -395,6 +463,8 @@ export class Engine {
       hints: { yaw: 0, dist: 1.0, dy: 0.02, tilt: 0 },
       filter: { yaw: -0.25, dist: 0.9, dy: -0.1, tilt: 0.1 },
       focusbar: { yaw: 0, dist: 0.95, dy: -0.36, tilt: 0.4 },
+      table: { yaw: 0, dist: 0.7, dy: -0.45, tilt: 0.9 },
+      shelf: { yaw: -0.5, dist: 0.8, dy: -0.4, tilt: 0.7 },
     }[slot];
     // A desktop window sees a much narrower cone than a headset: the preview
     // sets the same panels further out and closer to the middle.
@@ -536,10 +606,15 @@ export class Engine {
       const id = `xr${i}`;
       ray.addEventListener("connected", (e) => {
         const source = (e as unknown as { data: XRInputSource }).data;
+        const handedness = source.handedness === "left" ? "left" : source.handedness === "right" ? "right" : "none";
         this.pointers.set(id, {
           id,
           kind: source.hand ? "hand" : "controller",
-          handedness: source.handedness === "left" ? "left" : source.handedness === "right" ? "right" : "none",
+          handedness,
+          hand: source.hand ? hand : undefined,
+          gest: source.hand ? new HandGestures(handedness) : undefined,
+          poke: null,
+          pokeBody: null,
           ray,
           line,
           dot,
@@ -559,19 +634,34 @@ export class Engine {
           lastHapticId: null,
         });
         line.visible = true;
+        this.reportInputs();
       });
       ray.addEventListener("disconnected", () => {
         const p = this.pointers.get(id);
-        if (p) this.endGrab(p);
+        if (p) {
+          this.endGrab(p);
+          this.endPoke(p);
+          if (p.press?.kind === "lasso") this.lasso.visible = false;
+        }
         this.pointers.delete(id);
         line.visible = false;
         dot.visible = false;
+        this.reportInputs();
       });
       ray.addEventListener("selectstart", () => this.pressStart(id));
       ray.addEventListener("selectend", () => this.pressEnd(id));
       ray.addEventListener("squeezestart", () => this.squeezeStart(id));
       ray.addEventListener("squeezeend", () => this.squeezeEnd(id));
     }
+  }
+
+  /** Tell the room whether hands, controllers or both are in, when that changes. */
+  private reportInputs() {
+    const ps = [...this.pointers.values()];
+    const i = { hands: ps.some((p) => p.kind === "hand"), controllers: ps.some((p) => p.kind === "controller") };
+    if (i.hands === this.inputs.hands && i.controllers === this.inputs.controllers) return;
+    this.inputs = i;
+    this.h.onInputs?.(i);
   }
 
   private setupMouse() {
@@ -715,7 +805,8 @@ export class Engine {
       return;
     }
     // Open sky: the trigger (or a pinch) grabs the map; let go without moving to clear.
-    p.press = { kind: "grab", from: p.origin.clone().add(p.dir), moved: false };
+    // A pinch held still there a moment draws a lasso instead (see updatePress).
+    p.press = { kind: "grab", from: p.origin.clone().add(p.dir), moved: false, t0: p.kind === "hand" ? performance.now() : undefined };
     if (p.kind !== "mouse") this.beginGrab(p);
   }
 
@@ -727,13 +818,24 @@ export class Engine {
     const moved = (from: THREE.Vector3) => from.distanceTo(p.origin.clone().add(p.dir)) > (p.kind === "mouse" ? 0.02 : 0.035);
     if (press.kind === "handle") {
       if (!p.squeezing) (p.carry = null), (p.resize = null);
+    } else if (press.kind === "lasso") {
+      this.lasso.visible = false;
+      const pts = press.pts;
+      let length = 0;
+      for (let i = 1; i < pts.length; i++) length += pts[i].distanceTo(pts[i - 1]);
+      if (pts.length >= 6 && length > 0.12) {
+        const paths = this.within(pts);
+        if (paths.length) this.h.onSelect?.(paths, "lasso");
+      } else this.h.onBackground();
     } else if (press.kind === "body") {
       // Thrown, not set down: hide it.
       const tr = press.trail;
       const first = tr.find((x) => performance.now() - x.t < 120) ?? tr[0];
       const last = tr.at(-1);
       const speed = first && last && last.t > first.t ? last.at.distanceTo(first.at) / ((last.t - first.t) / 1000) : 0;
-      const thrown = this.settings.flick && speed > this.settings.flickSpeed && !!this.h.onFlick;
+      // Thrown, or dropped on the table's shelf: off the map.
+      const shelved = !!this.shelf && p.hoverPanel?.panel === this.shelf && !!this.h.onFlick;
+      const thrown = shelved || (this.settings.flick && speed > this.settings.flickSpeed && !!this.h.onFlick);
       this.map.release(press.id, press.pin && !thrown);
       if (thrown) {
         this.haptic(p, 0.8, 60);
@@ -841,6 +943,12 @@ export class Engine {
 
   private beginGrab(p: Pointer) {
     if (this.grabs.some((g) => g.p === p)) return;
+    // The other hand reaching for the map: a lasso in progress is dropped.
+    for (const o of this.pointers.values())
+      if (o.press?.kind === "lasso") {
+        o.press = null;
+        this.lasso.visible = false;
+      }
     this.touched();
     this.grabs.push({ p, at0: this.grabPoint(p), up0: this.grabUp(p) });
     this.resetGrab();
@@ -936,8 +1044,351 @@ export class Engine {
     this.reticle.visible = false;
     this.hitSource?.cancel();
     this.hitSource = null;
+    // Anchored on the next frame (anchors are made from a frame), and the table under it looked for.
+    this.anchorWanted = at.clone();
+    this.tableFrom = { at: at.clone(), t0: performance.now() };
     this.overview(900);
     this.h.onPlaced?.();
+  }
+
+  /* --------------------------------- table --------------------------------- */
+
+  /** Last session's table, if the headset kept its anchor: the map goes back on it. */
+  private async restoreAnchor(session: XRSession) {
+    let uuid: string | null = null;
+    try {
+      uuid = localStorage.getItem(ANCHOR_KEY);
+    } catch {
+      /* no storage: nothing to restore */
+    }
+    if (!uuid || !session.restorePersistentAnchor) return;
+    try {
+      const a = await session.restorePersistentAnchor(uuid);
+      if (this.session !== session || this.anchor) return a.delete();
+      this.xrAnchor = a;
+      this.anchorLast = null;
+    } catch {
+      // Gone (the room was reset, or another app's space): forget it.
+      try {
+        localStorage.removeItem(ANCHOR_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** A new anchor for the table: the old one goes, and this one is kept for next time where the headset allows. */
+  private adoptAnchor(a: XRAnchor) {
+    const session = this.session;
+    this.xrAnchor?.delete();
+    this.xrAnchor = a;
+    this.anchorLast = null;
+    let old: string | null = null;
+    try {
+      old = localStorage.getItem(ANCHOR_KEY);
+    } catch {
+      /* ignore */
+    }
+    if (old && session?.deletePersistentAnchor) void session.deletePersistentAnchor(old).catch(() => {});
+    if (!a.requestPersistentHandle) return;
+    void a
+      .requestPersistentHandle()
+      .then((uuid) => localStorage.setItem(ANCHOR_KEY, uuid))
+      .catch(() => {});
+  }
+
+  /** Once a frame in passthrough: make the wanted anchor, follow the anchor as tracking corrects it, find the table. */
+  private trackTable(frame: XRFrame) {
+    const ref = this.renderer.xr.getReferenceSpace();
+    if (!ref) return;
+    if (this.anchorWanted) {
+      const w = this.anchorWanted;
+      this.anchorWanted = null;
+      void frame
+        .createAnchor?.(new XRRigidTransform({ x: w.x, y: w.y, z: w.z }), ref)
+        ?.then((a) => (this.mode === "ar" ? this.adoptAnchor(a) : a.delete()))
+        .catch(() => {});
+    }
+    const a = this.xrAnchor;
+    if (a && frame.trackedAnchors?.has(a)) {
+      const pose = frame.getPose(a.anchorSpace, ref);
+      if (pose) {
+        const at = new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+        if (!this.anchor) {
+          // Restored from last time: the map goes back on that table.
+          this.anchor = at.clone();
+          this.anchorLast = at.clone();
+          this.tableFrom = { at: at.clone(), t0: performance.now() };
+          this.overview(900);
+          this.h.onPlaced?.();
+        } else if (!this.anchorLast) this.anchorLast = at.clone();
+        else {
+          const d = at.clone().sub(this.anchorLast);
+          // Tracking corrected where the table is: take the map and what's on the table along.
+          if (d.lengthSq() > 1e-6) {
+            this.anchorLast.copy(at);
+            this.anchor.add(d);
+            this.world.position.add(d);
+            if (this.flight) this.flight.toP.add(d);
+            this.grabStart?.pos.add(d);
+            if (this.table) this.table.center.add(d);
+            for (const [p, slot] of this.slots) if (slot === "table" || slot === "shelf") p.mesh.position.add(d);
+          }
+        }
+      }
+    }
+    if (this.tableFrom) {
+      const t = this.fitTable(frame, ref, this.tableFrom.at);
+      if (t) this.setTable(t);
+      else if (performance.now() - this.tableFrom.t0 > 1500) this.setTable(this.guessTable(this.tableFrom.at));
+      if (this.table) this.tableFrom = null;
+    }
+  }
+
+  /** The detected horizontal plane under a spot, as a table: its edges squared to the plane's own axes. */
+  private fitTable(frame: XRFrame, ref: XRReferenceSpace, at: THREE.Vector3): Table | null {
+    let planes: XRPlaneSet | undefined;
+    try {
+      planes = frame.detectedPlanes;
+    } catch {
+      return null;
+    }
+    if (!planes) return null;
+    const head = this.head().pos;
+    for (const plane of planes) {
+      if (plane.orientation !== "horizontal" || plane.polygon.length < 3) continue;
+      const pose = frame.getPose(plane.planeSpace, ref);
+      if (!pose) continue;
+      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+      const local = at.clone().applyMatrix4(m.clone().invert());
+      if (Math.abs(local.y) > 0.05) continue;
+      const poly = plane.polygon.map((q) => [q.x, q.z] as [number, number]);
+      if (!inside(local.x, local.z, poly)) continue;
+      const xs = poly.map((q) => q[0]);
+      const zs = poly.map((q) => q[1]);
+      const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+      const center = new THREE.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2).applyMatrix4(m);
+      const ax = new THREE.Vector3(1, 0, 0).transformDirection(m).setY(0).normalize();
+      const az = new THREE.Vector3(0, 0, 1).transformDirection(m).setY(0).normalize();
+      // The edge nearest you is the front: whichever of the four faces you most.
+      const you = head.clone().sub(center).setY(0).normalize();
+      const sides = [
+        { dir: ax, half: (x1 - x0) / 2, across: (z1 - z0) / 2 },
+        { dir: ax.clone().negate(), half: (x1 - x0) / 2, across: (z1 - z0) / 2 },
+        { dir: az, half: (z1 - z0) / 2, across: (x1 - x0) / 2 },
+        { dir: az.clone().negate(), half: (z1 - z0) / 2, across: (x1 - x0) / 2 },
+      ];
+      const front = sides.reduce((a, b) => (b.dir.dot(you) > a.dir.dot(you) ? b : a));
+      const toward = front.dir.clone();
+      return {
+        center,
+        toward,
+        right: new THREE.Vector3().crossVectors(Y, toward).normalize(),
+        halfD: THREE.MathUtils.clamp(front.half, 0.2, 1.5),
+        halfW: THREE.MathUtils.clamp(front.across, 0.25, 1.5),
+      };
+    }
+    return null;
+  }
+
+  /** No planes to go by: a table a little wider than deep, square to you, around the spot. */
+  private guessTable(at: THREE.Vector3): Table {
+    const toward = this.head().pos.sub(at).setY(0);
+    if (toward.lengthSq() < 1e-4) toward.set(0, 0, 1);
+    toward.normalize();
+    return { center: at.clone(), toward, right: new THREE.Vector3().crossVectors(Y, toward).normalize(), halfW: 0.45, halfD: 0.3 };
+  }
+
+  private setTable(t: Table | null) {
+    const had = !!this.table;
+    this.table = t;
+    for (const [p, slot] of this.slots) if (p.open && (slot === "table" || slot === "shelf")) this.place(p, slot);
+    if (had !== !!t || t) this.h.onTable?.(!!t);
+  }
+
+  /**
+   * A panel lying on the table, tipped up a little towards you so it reads:
+   * the controls along the front edge, the shelf along the right.
+   */
+  private placeOnTable(p: Panel, slot: "table" | "shelf") {
+    const t = this.table!;
+    const tilt = slot === "table" ? 0.45 : 0.2;
+    const c = Math.cos(tilt);
+    const sn = Math.sin(tilt);
+    const up = t.toward.clone().multiplyScalar(-c).addScaledVector(Y, sn);
+    const normal = Y.clone().multiplyScalar(c).addScaledVector(t.toward, sn);
+    p.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t.right, up, normal));
+    const lift = (sn * p.heightM) / 2 + 0.008;
+    const at = t.center.clone().addScaledVector(Y, lift);
+    if (slot === "table") at.addScaledVector(t.toward, Math.max(0, t.halfD - (c * p.heightM) / 2 - 0.03));
+    else at.addScaledVector(t.right, Math.max(0, t.halfW - p.widthM / 2 - 0.03)).addScaledVector(t.toward, Math.min(0.1, Math.max(0, t.halfD - (c * p.heightM) / 2 - 0.2)));
+    p.mesh.position.copy(at);
+  }
+
+  /* --------------------------------- hands --------------------------------- */
+
+  /**
+   * Gestures past the pinch, for tracked hands: the thumb on the middle
+   * finger (right: forward, left: back), the fingertip as a touch, the left
+   * palm turned up for the wrist menu, and two Ls framing part of the map.
+   */
+  private readHands(now: number) {
+    const hands = [...this.pointers.values()].filter((p) => p.kind === "hand" && p.hand && p.gest);
+    for (const p of hands) {
+      const { middlePinch } = p.gest!.update(p.hand!, now);
+      if (middlePinch && !p.press) this.h.onButton(p.handedness === "left" ? "back" : "forward");
+      this.poke(p);
+    }
+    this.updateWrist(hands);
+    this.updateFraming(hands, now);
+  }
+
+  /** The index fingertip as a finger on a touchscreen: on a panel it presses; pointed at a body, a touch picks it. */
+  private poke(p: Pointer) {
+    const pose = p.gest?.pose;
+    if (!pose || p.press || p.carry) return this.endPoke(p);
+    const tip = pose.indexTip;
+    let touched: { panel: Panel; x: number; y: number } | null = null;
+    for (const panel of this.panels) {
+      if (!panel.open || (panel === this.wrist && p.handedness === "left")) continue;
+      panel.mesh.updateMatrixWorld();
+      const local = panel.mesh.worldToLocal(tip.clone());
+      // In front of the face by a centimetre counts as touching; once touching, a little more.
+      const depth = p.poke?.panel === panel ? 0.025 : 0.01;
+      if (local.z > depth || local.z < -0.04) continue;
+      if (Math.abs(local.x) > panel.widthM / 2 || Math.abs(local.y) > panel.heightM / 2) continue;
+      touched = { panel, x: (local.x / panel.widthM + 0.5) * panel.W, y: (0.5 - local.y / panel.heightM) * panel.H };
+      break;
+    }
+    const who = `${p.id}:poke`;
+    const was = p.poke;
+    if (was && was.panel !== touched?.panel) was.panel.pointer("up", was.x, was.y, who);
+    if (touched) {
+      touched.panel.pointer(was?.panel === touched.panel ? "move" : "down", touched.x, touched.y, who);
+      p.poke = touched;
+      p.pokeBody = null;
+      return;
+    }
+    p.poke = null;
+
+    // A body: only with a pointing finger (the others folded), so a hand passing through the map picks nothing.
+    const pointing = pose.middleTip.distanceTo(pose.wrist) < 0.11 && pose.indexTip.distanceTo(pose.wrist) > 0.13;
+    if (!pointing) return void (p.pokeBody = null);
+    const k = 1 / this.map.root.getWorldScale(tmpV).x;
+    const near = this.map.nearest(this.map.root.worldToLocal(tip.clone()), 0.025 * k);
+    if (!near) return void (p.pokeBody = null);
+    // Still on the last one (or only near something): wait for a fresh touch.
+    if (p.pokeBody || near.gap > 0.008 * k) return;
+    p.pokeBody = near.hit.id;
+    this.h.onPick(near.hit);
+  }
+
+  private endPoke(p: Pointer) {
+    if (p.poke) p.poke.panel.pointer("leave", 0, 0, `${p.id}:poke`);
+    p.poke = null;
+    p.pokeBody = null;
+  }
+
+  /** The left palm turned up: the wrist menu floats just above it, facing you. */
+  private updateWrist(hands: Pointer[]) {
+    const w = this.wrist;
+    if (!w) return;
+    const left = hands.find((p) => p.handedness === "left" && p.gest?.palmUp && p.gest.pose);
+    if (!left) {
+      if (w.open) this.hide(w);
+      return;
+    }
+    const pose = left.gest!.pose!;
+    if (!w.open) {
+      w.mesh.visible = true;
+      w.invalidate();
+    }
+    w.mesh.position.copy(pose.palmCenter).addScaledVector(pose.palmNormal, 0.08);
+    w.mesh.lookAt(this.head().pos);
+  }
+
+  /**
+   * Both hands in an L, apart: a frame between them. Held a moment, it picks
+   * what's inside; framing nothing, or nearly everything, is the whole map.
+   */
+  private updateFraming(hands: Pointer[], now: number) {
+    const l = hands.find((p) => p.handedness === "left");
+    const r = hands.find((p) => p.handedness === "right");
+    const a = l?.gest?.ell && !l.press ? l.gest.ellCorner() : null;
+    const b = r?.gest?.ell && !r.press ? r.gest.ellCorner() : null;
+    if (!a || !b || a.distanceTo(b) < 0.12) {
+      if (this.framing.since && ![...this.pointers.values()].some((p) => p.press?.kind === "lasso")) this.lasso.visible = false;
+      this.framing = { since: 0, fired: false };
+      return;
+    }
+    this.framing.since ||= now;
+    if (this.framing.fired) return;
+    const rect = this.frameRect(a, b);
+    this.drawLine(rect, true);
+    if (now - this.framing.since < 350) return;
+    this.framing.fired = true;
+    this.lasso.visible = false;
+    const paths = this.within(rect);
+    if (!paths.length || paths.length >= this.map.files().length * 0.85) this.h.onButton("overview");
+    else this.h.onSelect?.(paths, "frame");
+  }
+
+  /** The rectangle two L corners span, as you see it: upright, square to your view, at their depth. */
+  private frameRect(a: THREE.Vector3, b: THREE.Vector3) {
+    const cam = this.eye();
+    const view = cam.matrixWorld.clone().invert();
+    const va = a.clone().applyMatrix4(view);
+    const vb = b.clone().applyMatrix4(view);
+    const z = Math.min(-0.1, (va.z + vb.z) / 2);
+    const xa = (va.x * z) / va.z;
+    const ya = (va.y * z) / va.z;
+    const xb = (vb.x * z) / vb.z;
+    const yb = (vb.y * z) / vb.z;
+    return [
+      [xa, ya],
+      [xb, ya],
+      [xb, yb],
+      [xa, yb],
+    ].map(([x, y]) => new THREE.Vector3(x, y, z).applyMatrix4(cam.matrixWorld));
+  }
+
+  private eye() {
+    const cam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    cam.updateMatrixWorld();
+    return cam;
+  }
+
+  /** The files whose bodies sit inside a loop drawn in the air, as seen from your eyes. */
+  private within(loop: THREE.Vector3[]) {
+    const cam = this.eye();
+    const view = cam.matrixWorld.clone().invert();
+    const proj = (w: THREE.Vector3): [number, number] | null => {
+      const v = w.applyMatrix4(view);
+      return v.z < -0.01 ? [v.x / -v.z, v.y / -v.z] : null;
+    };
+    const poly = loop.map((p) => proj(p.clone())).filter((q): q is [number, number] => !!q);
+    if (poly.length < 3) return [];
+    this.map.root.updateWorldMatrix(true, false);
+    const m = this.map.root.matrixWorld;
+    const out: string[] = [];
+    for (const id of this.map.files()) {
+      const at = this.map.positionOf(id);
+      const q = at && proj(at.applyMatrix4(m));
+      if (q && inside(q[0], q[1], poly)) out.push(id);
+    }
+    return out;
+  }
+
+  /** The lasso's line (closed, for a frame). */
+  private drawLine(pts: THREE.Vector3[], closed: boolean) {
+    const attr = this.lasso.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const n = Math.min(pts.length, 511);
+    for (let i = 0; i < n; i++) attr.setXYZ(i, pts[i].x, pts[i].y, pts[i].z);
+    const ring = closed && n > 2;
+    if (ring) attr.setXYZ(n, pts[0].x, pts[0].y, pts[0].z);
+    attr.needsUpdate = true;
+    this.lasso.geometry.setDrawRange(0, ring ? n + 1 : n);
+    this.lasso.visible = n > 1;
   }
 
   /* --------------------------------- frame --------------------------------- */
@@ -962,6 +1413,7 @@ export class Engine {
     }
     this.applyGrab();
     this.readGamepads(dt);
+    this.readHands(now);
     this.keyFlight(dt);
 
     // The overview drifts round, slowly, until you touch it.
@@ -995,6 +1447,9 @@ export class Engine {
       if (Math.abs(d) > 0.6) this.place(panel, "dock");
     }
 
+    // The table: its anchor followed, and its edges found.
+    if (xrFrame && this.mode === "ar") this.trackTable(xrFrame);
+
     // AR placement: the reticle sits where the ray meets a real surface.
     if (this.placing && xrFrame && this.hitSource) {
       const ref = this.renderer.xr.getReferenceSpace();
@@ -1021,6 +1476,8 @@ export class Engine {
     for (const [panel, h] of this.handles) {
       const hot = [...this.pointers.values()].some((p) => p.hoverHandle === panel || p.carry?.panel === panel);
       h.material.opacity = hot ? 1 : 0.55;
+      // Under the panel, however tall it has grown.
+      h.position.y = -panel.heightM / 2 - 0.028;
     }
     this.applyRoom();
     this.draw(target);
@@ -1050,6 +1507,23 @@ export class Engine {
    */
   private updatePress(p: Pointer) {
     const press = p.press;
+    // A pinch held still on open sky, the only hand on the map: it becomes a lasso.
+    if (press?.kind === "grab" && press.t0 && !press.moved && performance.now() - press.t0 > LASSO_HOLD && this.grabs.length === 1 && this.grabs[0].p === p) {
+      const s0 = this.grabStart;
+      this.endGrab(p);
+      // The hand's tremble while holding still moved the map a little: put it back.
+      if (s0) this.world.position.copy(s0.pos);
+      p.press = { kind: "lasso", pts: [] };
+    }
+    if (p.press?.kind === "lasso") {
+      const at = p.gest?.pinchPoint() ?? p.origin.clone();
+      const pts = p.press.pts;
+      if (!pts.length || pts.at(-1)!.distanceTo(at) > 0.004) {
+        if (pts.length < 511) pts.push(at);
+        this.drawLine(pts, true);
+      }
+      return;
+    }
     if (press?.kind === "map") {
       const moved = p.kind === "mouse" ? this.mouse.moved : press.from.distanceTo(p.origin.clone().add(p.dir)) > 0.035;
       if (!moved) return;
@@ -1118,7 +1592,7 @@ export class Engine {
     p.hoverPanel = panelHit;
 
     let mapHit: MapHit | null = null;
-    if (!panelHit && !p.hoverHandle && !p.carry && !(p.press?.kind === "grab" && this.grabs.length) && p.press?.kind !== "body") mapHit = this.map.pick(p.origin, p.dir);
+    if (!panelHit && !p.hoverHandle && !p.carry && !(p.press?.kind === "grab" && this.grabs.length) && p.press?.kind !== "body" && p.press?.kind !== "lasso") mapHit = this.map.pick(p.origin, p.dir);
     const hoverKey = (h: MapHit | null) => (h ? `${h.kind}:${h.id}` : null);
     if (hoverKey(mapHit) !== hoverKey(p.hoverMap) && mapHit) {
       if (p.lastHapticId !== hoverKey(mapHit)) this.haptic(p, 0.12, 8);

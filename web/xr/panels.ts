@@ -4,6 +4,7 @@ import type { Actions, KeyboardMode, Model } from "./model";
 import { CodeView, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
 import type { Engine } from "./engine";
 import { FilterPanel, FocusBar } from "./filter";
+import { Shelf, TableMenu, WristPanel } from "./table";
 import { HintsPanel, TunePanel } from "./tune";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
 
@@ -140,7 +141,7 @@ export class DockPanel extends Panel {
     ctx.font = sans(23);
     let line = "";
     let color = C.text;
-    if (m.placing) line = "Point at a table or the floor and pull the trigger to set the map down.";
+    if (m.placing) line = `Point at a table or the floor and ${m.inputs.hands && !m.inputs.controllers ? "pinch" : "pull the trigger"} to set the map down.`;
     else if (m.toast) line = m.toast.text;
     else if (m.voice.heard) (line = `“${m.voice.heard}”`), (color = C.muted);
     else if (m.voice.caption) line = m.voice.caption;
@@ -839,6 +840,9 @@ export class Panels {
   readonly hints: HintsPanel;
   readonly filter: FilterPanel;
   readonly focusBar: FocusBar;
+  readonly tableMenu: TableMenu;
+  readonly shelf: Shelf;
+  readonly wrist: WristPanel;
   private lastKeyboard: Model["keyboard"] = null;
 
   constructor(
@@ -856,13 +860,27 @@ export class Panels {
     this.hints = new HintsPanel(a);
     this.filter = new FilterPanel(a);
     this.focusBar = new FocusBar(a);
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar]) engine.addPanel(p);
+    this.tableMenu = new TableMenu(a);
+    this.shelf = new Shelf(a);
+    this.wrist = new WristPanel(a);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist]) engine.addPanel(p);
+    // The wrist menu comes and goes with your palm, and the shelf takes bodies dropped on it: both the engine's to run.
+    engine.wrist = this.wrist;
+    engine.shelf = this.shelf;
   }
 
   update(m: Model) {
     const e = this.engine;
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.filter, this.focusBar]) p.update(m);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist]) p.update(m);
     e.show(this.dock, "dock");
+    // On a real table: controls along its front edge, and what's off the map along its right.
+    if (m.table) {
+      e.show(this.tableMenu, "table");
+      e.show(this.shelf, "shelf");
+    } else {
+      e.hide(this.tableMenu);
+      e.hide(this.shelf);
+    }
     if (m.menuOpen) e.show(this.menu, "center");
     else e.hide(this.menu);
     if (m.tuneOpen) e.show(this.tune, "tune");

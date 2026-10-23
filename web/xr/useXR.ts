@@ -51,6 +51,8 @@ export function useXR(feed: XRFeed) {
   const [tuneOpen, setTuneOpen] = useState(false);
   const [hintsOpen, setHintsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [table, setTable] = useState(false);
+  const [inputs, setInputs] = useState({ hands: false, controllers: false });
   /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
   const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
   const focusRef = useRef(focusAt);
@@ -249,6 +251,9 @@ export function useXR(feed: XRFeed) {
                 focusOn(h, same ? f.depth + 1 : 0);
               },
               onFlick: (h) => feedRef.current.actions.hideHit(h),
+              onSelect: (paths, how) => feedRef.current.actions.focusPaths(paths, `${paths.length} file${paths.length > 1 ? "s" : ""} ${how === "lasso" ? "you looped" : "you framed"}`),
+              onInputs: setInputs,
+              onTable: setTable,
               // In you go: to what you were looking at on the desktop, or the whole map.
               onEntered: () => feedRef.current.actions.frameSelection(),
             },
@@ -302,7 +307,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

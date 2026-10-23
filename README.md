@@ -59,6 +59,11 @@ With a Meta Quest 3 (its browser), or a PC with Link or SteamVR connected, **VR*
 **Passthrough** buttons appear next to the voice button. Nothing else changes when there's
 no headset. Go in and out freely: the open file, the focus, answers and stories carry
 across both ways. In passthrough, Menu → **Place on a surface** puts the map on a table.
+The headset anchors it there (and, where it can, keeps the anchor, so the next session
+puts the map back on the same table) and finds the table's edges from the room's planes.
+A strip of controls then lies along the edge nearest you, and a shelf along the right-hand
+edge holds what you've taken off the map: throw a module away, or drop a dragged one on
+the shelf, and it waits there, collapsed, until you press it to put it back.
 
 WebXR needs a secure page. Over USB, run `adb reverse tcp:4317 tcp:4317` and open
 `http://localhost:4317` on the Quest. Over Wi-Fi, put a [mkcert](https://github.com/FiloSottile/mkcert)
@@ -73,13 +78,22 @@ and open `https://<your-LAN-address>:4443`.
 | Right stick click | On a body, focus on it; again, a ring more of its connections (the bar over the dock widens and narrows it, and **Only these** hides the rest of the map) |
 | A · B · X · Y | Menu · back · voice · the whole map |
 
+| Hands | |
+| --- | --- |
+| Pinch | As the trigger: select; held on a body, drag it (throw it to hide it); on open sky, drag the map; both hands, scale and rotate it |
+| Touch with a fingertip | Press any panel's buttons; with a pointing finger, touch a body to pick it |
+| Pinch open sky, hold still, draw a loop | Light up the files inside the loop |
+| Thumb on middle finger | Right hand: forward · left hand: back |
+| Left palm up | A menu on your wrist, to touch with the other hand |
+| Both hands in an L, framing | Light up what's in the frame (frame all of it for the whole map) |
+
 A keyboard works in the headset too, in VR and passthrough (a Bluetooth one paired with
 the Quest, or the PC's own over Link). **Enter** or **/** opens the room's keyboard to ask,
 and while it's open you type into it: **Enter** sends, **Esc** closes. Otherwise the arrows
 or **WASD** fly the way you're facing, **Q / E** (or Page Down / Up) sink and rise, and
 **Shift** goes faster; other keys are the desktop's shortcuts.
 
-The dock's **?** shows these in the headset. **Tune** there holds every knob the desktop's
+The dock's **?** shows these in the headset, for what you're holding: controllers, hands, or both. **Tune** there holds every knob the desktop's
 Tune panel has (the same settings, so changes carry across), plus the headset's own:
 render resolution and bloom, how much of the room shows through in passthrough, a floor
 grid in VR, turning and speeds, and the voice volume. Panels stay where you carry them;
