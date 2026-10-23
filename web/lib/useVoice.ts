@@ -118,16 +118,8 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
         switch (msg.type) {
           case "proxy.status":
             if (msg.status === "ready") {
+              // It listens; it doesn't open with a speech of its own.
               setState("listening");
-              send({
-                type: "conversation.item.create",
-                item: {
-                  type: "message",
-                  role: "user",
-                  content: [{ type: "input_text", text: "[system] They just switched the voice on. If the map is charted, open in a sentence or two with what this codebase is and offer the tour or a topic; if it is still being charted, say so in one line. No greeting, no introduction." }],
-                },
-              });
-              send({ type: "response.create" });
             } else if (msg.status === "error") {
               setError(msg.message ?? "Voice error");
               setState("error");
