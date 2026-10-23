@@ -163,3 +163,45 @@ export class WristPanel extends Panel {
     cells.forEach((c, i) => this.button(ctx, `w:${c.id}`, pad + (i % cols) * (w + gap), pad + Math.floor(i / cols) * (h + gap), c.label, c.run, { w, h, size: 24, active: c.active, accent: c.accent, disabled: c.disabled }));
   }
 }
+
+/** While you trace the table by hand: what to do, and Undo / Done / Cancel. */
+export class OutlinePanel extends Panel {
+  m: Model | null = null;
+
+  constructor(private a: Actions) {
+    super("outline", 0.62, 0.26);
+  }
+
+  update(m: Model) {
+    const p = this.m;
+    this.m = m;
+    if (!p || p.outlining !== m.outlining || p.inputs !== m.inputs) this.invalidate();
+  }
+
+  protected draw(ctx: CanvasRenderingContext2D) {
+    const m = this.m;
+    if (!m || m.outlining === null) return;
+    this.frame(ctx, C.good);
+    const n = m.outlining;
+    const press = m.inputs.hands && !m.inputs.controllers ? "pinch" : "pull the trigger";
+    ctx.font = cond(34, 600);
+    ctx.fillStyle = C.text;
+    ctx.fillText(n ? `${n} corner${n > 1 ? "s" : ""}` : "Trace your table", PAD, 58);
+    ctx.font = sans(23);
+    ctx.fillStyle = C.muted;
+    const say =
+      n < 3
+        ? `Touch each corner of the table in turn and ${press} right there. Three corners make a rectangle.`
+        : n === 3
+          ? "Done makes a rectangle of these three corners, or go on round the table to trace its shape."
+          : "Done when you've been all the way round.";
+    wrap(ctx, say, this.W - PAD * 2)
+      .slice(0, 2)
+      .forEach((l, i) => ctx.fillText(l, PAD, 98 + i * 30));
+    const y = this.H - PAD - 64;
+    let x = PAD;
+    x = this.button(ctx, "done", x, y, "Done", this.a.finishOutline, { w: 170, h: 64, active: n >= 3, accent: C.good, disabled: n < 3 }) + 12;
+    x = this.button(ctx, "undo", x, y, "Undo", this.a.undoOutline, { w: 150, h: 64, disabled: !n }) + 12;
+    this.button(ctx, "cancel", x, y, "Cancel", this.a.cancelOutline, { w: 170, h: 64 });
+  }
+}

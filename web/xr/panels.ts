@@ -4,7 +4,7 @@ import type { Actions, KeyboardMode, Model } from "./model";
 import { CodeView, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
 import type { Engine } from "./engine";
 import { FilterPanel, FocusBar } from "./filter";
-import { Shelf, TableMenu, WristPanel } from "./table";
+import { OutlinePanel, Shelf, TableMenu, WristPanel } from "./table";
 import { HintsPanel, TunePanel } from "./tune";
 import { ViewsPanel } from "./views";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
@@ -217,7 +217,7 @@ export class MenuPanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story"] as const).some((k) => p[k] !== m[k])) this.invalidate();
+    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story", "placing", "outlining"] as const).some((k) => p[k] !== m[k])) this.invalidate();
   }
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
@@ -355,16 +355,23 @@ export class MenuPanel extends Panel {
     this.section(ctx, "View", y);
     y += 14;
     x = PAD;
-    if (m.mode !== "vr" && m.canVR) x = this.button(ctx, "vr", x, y, "Enter VR", () => a.enter("vr"), { size: 24, accent: C.course }) + 10;
-    if (m.mode !== "ar" && m.canAR) x = this.button(ctx, "ar", x, y, "Passthrough (AR)", () => a.enter("ar"), { size: 24, accent: C.course }) + 10;
-    if (m.mode === "ar") x = this.button(ctx, "place", x, y, "Place on a surface", a.placeMap, { size: 24, active: m.placing }) + 10;
-    x = this.button(ctx, "recenter", x, y, "Recenter panels", a.recenterPanels, { size: 24 }) + 10;
-    x = this.button(ctx, "tune", x, y, "Tune…", a.toggleTune, { size: 24 }) + 10;
-    x = this.button(ctx, "hints", x, y, "Controls", a.toggleHints, { size: 24 }) + 10;
+    // A row that runs on to the next line when it's full.
+    const add = (id: string, label: string, run: () => void, o: { active?: boolean; accent?: string } = {}) => {
+      ctx.font = cond(24, 600);
+      if (x + ctx.measureText(label).width + 36 > this.W - PAD) (x = PAD), (y += 70);
+      x = this.button(ctx, id, x, y, label, run, { size: 24, ...o }) + 10;
+    };
+    if (m.mode !== "vr" && m.canVR) add("vr", "Enter VR", () => a.enter("vr"), { accent: C.course });
+    if (m.mode !== "ar" && m.canAR) add("ar", "Passthrough (AR)", () => a.enter("ar"), { accent: C.course });
+    if (m.mode === "ar") add("place", "Place on a surface", a.placeMap, { active: m.placing });
+    if (m.mode === "ar") add("outline", "Trace the table", a.outlineTable, { active: m.outlining !== null });
+    add("recenter", "Recenter panels", a.recenterPanels);
+    add("tune", "Tune…", a.toggleTune);
+    add("hints", "Controls", a.toggleHints);
     if (m.mode !== "flat") {
       const armed = !!this.reloadArmed;
-      x = this.button(ctx, "reload", x, y, armed ? "Sure? Reload" : "↻ Reload", () => this.pressReload(), { size: 24, active: armed, accent: C.bad }) + 10;
-      x = this.button(ctx, "exit", x, y, "Exit", a.exitXR, { size: 24 }) + 10;
+      add("reload", armed ? "Sure? Reload" : "↻ Reload", () => this.pressReload(), { active: armed, accent: C.bad });
+      add("exit", "Exit", a.exitXR);
     }
   }
 
@@ -944,8 +951,10 @@ export class Panels {
   readonly shelf: Shelf;
   readonly wrist: WristPanel;
   readonly views: ViewsPanel;
+  readonly outline: OutlinePanel;
   private lastKeyboard: Model["keyboard"] = null;
   private menuOpen = false;
+  private m: Model | null = null;
 
   constructor(
     private engine: Engine,
@@ -970,15 +979,35 @@ export class Panels {
     this.shelf = new Shelf(a);
     this.wrist = new WristPanel(a);
     this.views = new ViewsPanel(a);
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views]) engine.addPanel(p);
+    this.outline = new OutlinePanel(a);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views, this.outline]) engine.addPanel(p);
     // The wrist menu comes and goes with your palm, and the shelf takes bodies dropped on it: both the engine's to run.
     engine.wrist = this.wrist;
     engine.shelf = this.shelf;
+    // Thrown away, a panel closes: the same as its ✕. The dock and the table's own stay.
+    const closers = new Map<Panel, () => void>([
+      [this.menu, a.toggleMenu],
+      [this.tune, a.toggleTune],
+      [this.hints, a.toggleHints],
+      [this.filter, a.toggleFilter],
+      [this.file, a.closeFile],
+      [this.answer, a.closeFrame],
+      [this.story, a.closeStory],
+      [this.keyboard, a.closeKeyboard],
+      [this.outline, a.cancelOutline],
+    ]);
+    engine.closePanel = (p) => {
+      const close = closers.get(p) ?? (p === this.views && !this.m?.table ? a.toggleViews : null);
+      if (!close) return false;
+      close();
+      return true;
+    };
   }
 
   update(m: Model) {
+    this.m = m;
     const e = this.engine;
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views]) p.update(m);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views, this.outline]) p.update(m);
     e.show(this.dock, "dock");
     // On a real table: controls along its front edge, what's off the map along its right, and the saved views along its left.
     if (m.table) {
@@ -999,6 +1028,8 @@ export class Panels {
     else e.hide(this.hints);
     if (m.filterOpen) e.show(this.filter, "filter");
     else e.hide(this.filter);
+    if (m.outlining !== null) e.show(this.outline, "outline");
+    else e.hide(this.outline);
     if (m.focus) e.show(this.focusBar, "focusbar");
     else e.hide(this.focusBar);
     if (m.file) e.show(this.file, "right");
