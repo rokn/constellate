@@ -733,6 +733,7 @@ export async function scanSource(src: Source, onProgress?: (done: number, total:
         loc: p.loc,
         symbols: p.symbols,
         externals: [],
+        ...(p.goPkg ? { goPkg: p.goPkg } : {}),
       });
       if (++done % 200 === 0) onProgress?.(done, kept.length);
     }

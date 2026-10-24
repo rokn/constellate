@@ -33,6 +33,16 @@ Or one container for any GitHub repo: set `CODEFLIGHT_REPOS_DIR=/data/repos` ins
 
 It has no login of its own, so put it behind an authenticating proxy before exposing it.
 
+## Go apps
+
+In a Go repository, **Organize by → Go apps** (on the desktop, in the headset's menu, or
+"organize by Go apps" to the voice) turns each executable, every `package main`, into an
+app. An app holds the packages only it imports, directly or through others; the packages
+two or more apps import are the shared libraries between them, and the lines between
+groups show which app imports which library. Packages no executable reaches gather under
+"in no app". It's built from the imports alone, so it's there before the navigator has
+charted anything, and it's rebuilt with every scan.
+
 ## Agents
 
 Constellate can also change the code. Ask for it ("add retries to the uploader") by voice

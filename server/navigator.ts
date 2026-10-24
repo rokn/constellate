@@ -549,6 +549,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
         async (a) => {
           const lens = lensById(a.lensId);
           if (!lens) return fail(`No grouping "${a.lensId}". ${lensList()}`);
+          if (lens.derived) return fail(`"${lens.title}" is built from the code and rebuilt with every scan, so it can't be edited. Write a new grouping with set_lens instead, starting from get_lens.`);
           const groups = lens.groups.map((g) => ({ ...g, paths: [...g.paths] }));
           let edges = [...lens.edges];
           const find = (id?: string) => groups.find((g) => g.id === id);
@@ -618,6 +619,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
         "Delete a grouping the reader no longer wants. If it's the one showing, the map goes back to folders. Only when they ask to remove it — never to replace it with a revised one (revise it instead).",
         { lensId: z.string() },
         async (a) => {
+          if (lensById(a.lensId)?.derived) return fail("That grouping is built from the code and comes back with every scan; it can't be removed.");
           const lens = removeLens(a.lensId);
           if (!lens) return fail(`No grouping "${a.lensId}" to remove. ${lensList()}`);
           return ok(`Removed the grouping "${lens.title}".`);
