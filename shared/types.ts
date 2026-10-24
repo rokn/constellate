@@ -379,6 +379,167 @@ export type StorySettings = {
   style: string;
 };
 
+/* ------------------------------ runtime ------------------------------ */
+
+/**
+ * What the code does when it runs, from OpenTelemetry traces: spans arrive
+ * over OTLP (or are pulled from Tempo or Jaeger), are pinned to the files
+ * they ran in, and add up to runtime edges between files, services and what
+ * they talk to outside the repo. See server/traces.ts.
+ */
+
+export type SpanKind = "internal" | "server" | "client" | "producer" | "consumer";
+
+/** Where in the repo a span ran, and how it was worked out. */
+export type SpanLocation = {
+  path: string;
+  line?: number;
+  symbol?: string;
+  /**
+   * code: its code.file.path (or code.filepath) attribute. function: its
+   * qualified function name. scope: its tracer is named for a package here.
+   * name: its name is a symbol here. Most sure first.
+   */
+  via: "code" | "function" | "scope" | "name";
+};
+
+export type TraceSpan = {
+  traceId: string;
+  spanId: string;
+  parentId?: string;
+  /** Its resource's service.name. */
+  service: string;
+  name: string;
+  kind: SpanKind;
+  /** Epoch milliseconds, and how long it took. */
+  start: number;
+  ms: number;
+  error: boolean;
+  /** The instrumentation scope (the tracer's name). */
+  scope?: string;
+  attrs: Record<string, string | number | boolean>;
+  /** Unset when it couldn't be pinned to a file. */
+  loc?: SpanLocation;
+};
+
+/**
+ * A runtime graph node is one of: a repo path ("server/api.go"), a service
+ * whose code isn't on the map ("svc:<service.name>"), or something outside
+ * the repo it calls ("ext:<kind>:<name>", e.g. "ext:db:postgresql/app").
+ */
+export type RuntimeNodeId = string;
+
+export type RuntimeEdgeKind = "call" | "http" | "rpc" | "messaging" | "db" | "external";
+
+/** One caller-to-callee link seen in traces, added up over every time it was seen. */
+export type RuntimeEdge = {
+  from: RuntimeNodeId;
+  to: RuntimeNodeId;
+  fromService: string;
+  /** Set when the call crossed into another service. */
+  toService?: string;
+  /** call: in-process. http, rpc, messaging: to another service, or out. db, external: out of the repo. */
+  kind: RuntimeEdgeKind;
+  /** What travelled it: routes, RPC methods, topics, queries' operations, span names. Most seen first. */
+  labels: { label: string; count: number }[];
+  /** The functions on each end, when known. Most seen first. */
+  calls: { from?: string; to?: string; count: number }[];
+  count: number;
+  errors: number;
+  /** Time spent on the callee's side, summed and at most. */
+  totalMs: number;
+  maxMs: number;
+  firstSeen: number;
+  lastSeen: number;
+  /**
+   * File-to-file edges only, against the static map. confirmed: an import
+   * says so too. package: the same Go package, which needs no import.
+   * runtime-only: no import explains it (an interface, a callback, a
+   * registry, HTTP to itself), the edges the static map can't draw.
+   */
+  verdict?: "confirmed" | "package" | "runtime-only";
+  /** A few traces it was seen in, for /api/traces/<id>. */
+  traces: string[];
+};
+
+/** A service that sent traces, and what of the repo it ran. */
+export type RuntimeService = {
+  name: string;
+  /** process.executable.name, and its path: what a service is built from. */
+  executable?: string;
+  executablePath?: string;
+  /** telemetry.sdk.language. */
+  language?: string;
+  namespace?: string;
+  spans: number;
+  errors: number;
+  firstSeen: number;
+  lastSeen: number;
+  /** Files its spans ran in, most first. */
+  files: { path: string; spans: number }[];
+  /** Where requests enter it: the first file its server, consumer and root spans reach. */
+  entries: { path: string; count: number }[];
+};
+
+/** Something outside the repo that services call. */
+export type RuntimeExternal = {
+  id: RuntimeNodeId;
+  kind: "db" | "http" | "rpc" | "messaging" | "service";
+  label: string;
+  /** db.system, rpc.system, messaging.system. */
+  system?: string;
+};
+
+/** Everything the traces say, added up: GET /api/runtime. */
+export type RuntimeMap = {
+  /** Spans taken in, and how many of them were pinned to a file. */
+  spans: number;
+  mapped: number;
+  traces: number;
+  firstSeen?: number;
+  lastSeen?: number;
+  services: RuntimeService[];
+  externals: RuntimeExternal[];
+  edges: RuntimeEdge[];
+  /** Imports between files that both ran, never seen used at runtime. */
+  dormant: { from: string; to: string }[];
+  /** The span shapes that couldn't be pinned to a file, most seen first: what to instrument better. */
+  unmapped: { service: string; name: string; scope?: string; count: number }[];
+};
+
+/** A trace still held in memory: GET /api/traces. */
+export type TraceSummary = {
+  traceId: string;
+  /** The root span's name (or the earliest span's, while the root hasn't arrived). */
+  root: string;
+  services: string[];
+  start: number;
+  ms: number;
+  spans: number;
+  errors: number;
+  mapped: number;
+};
+
+export type TraceSourceStatus = {
+  /** otlp: pushed to /v1/traces. tempo, jaeger: pulled from their query APIs. */
+  kind: "otlp" | "tempo" | "jaeger";
+  url?: string;
+  ok: boolean;
+  spans: number;
+  lastAt?: number;
+  error?: string;
+};
+
+/** The runtime layer in the session stream: bumped as spans arrive, so the page refetches /api/runtime. */
+export type RuntimeStatus = {
+  version: number;
+  spans: number;
+  traces: number;
+  services: string[];
+  lastAt?: number;
+  sources: TraceSourceStatus[];
+};
+
 /* --------------------------- live channel --------------------------- */
 
 export type Activity = {
@@ -509,6 +670,8 @@ export type SessionState = {
   agents: AgentRun[];
   /** Whether this server lets you start agents at all. */
   agentsOn?: boolean;
+  /** Traces taken in for this repo, and where they come from. */
+  runtime?: RuntimeStatus;
 };
 
 export type AgentStatus = "starting" | "working" | "done" | "failed" | "stopped";
