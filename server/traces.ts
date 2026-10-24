@@ -15,7 +15,8 @@ import type {
 } from "../shared/types";
 import { parseJaeger, parseOtlpJson } from "./otlp";
 import type { GraphIndex } from "./scan";
-import { CACHE_DIR, cacheFile, emitLive, session } from "./session";
+import { GO_APPS } from "../shared/goApps";
+import { CACHE_DIR, cacheFile, emitLive, refreshGoApps, session } from "./session";
 
 /**
  * The runtime layer: what the code really calls when it runs, from
@@ -657,14 +658,23 @@ function announce() {
     statusTimer = undefined;
     if (!session.state.repo) return;
     session.state.runtime = status(store?.root === session.state.repo.root ? store : null);
-    emitLive();
+    void goAppsRuntime().finally(emitLive);
   }, 1000);
+}
+
+/** The Go apps grouping, redrawn with what the traces say now. */
+async function goAppsRuntime() {
+  const graph = session.idx?.graph;
+  if (!graph || !session.state.lenses.some((l) => l.id === GO_APPS)) return;
+  const map = await runtimeMap().catch(() => null);
+  if (session.idx?.graph === graph) refreshGoApps(graph, map);
 }
 
 /** Called when a repo opens: its runtime layer, from disk. */
 export async function openTraces() {
   const s = await current();
   if (session.state.repo) session.state.runtime = status(s);
+  await goAppsRuntime();
   emitLive();
   pullNow?.();
 }

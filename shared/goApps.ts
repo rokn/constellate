@@ -1,10 +1,11 @@
-import type { Lens, LogicalEdge, LogicalModule, RepoGraph } from "./types";
+import type { Lens, LogicalEdge, LogicalModule, RepoGraph, RuntimeEdgeKind, RuntimeMap, RuntimeService } from "./types";
 
 /**
  * The Go view: every executable (a `package main`) is an app, holding the
  * packages only it reaches, and the packages two or more apps reach are the
  * shared libraries between them. Built from the import graph alone, so it's
- * there as soon as the scan is, and rebuilt with every scan.
+ * there as soon as the scan is, and rebuilt with every scan. With traces in
+ * (withRuntime), it also says what each app really calls when it runs.
  */
 
 export const GO_APPS = "go-apps";
@@ -122,5 +123,133 @@ export function goApps(graph: RepoGraph): Lens | null {
     edges: [...edges.values()],
     createdAt: 0,
     derived: true,
+  };
+}
+
+/* ------------------------------ at runtime ------------------------------ */
+
+const KIND: Record<RuntimeEdgeKind, LogicalEdge["kind"]> = { call: "calls", http: "http", rpc: "calls", messaging: "event", db: "data", external: "other" };
+const WORD: Record<RuntimeEdgeKind, string> = { call: "calls", http: "http", rpc: "rpc", messaging: "messages", db: "db", external: "calls" };
+const times = (n: number) => `${n.toLocaleString("en")}×`;
+
+/** Which app a service is: its executable's name, else its own name, else where most of its spans ran. */
+function appOfService(svc: RuntimeService, apps: LogicalModule[], groupOfPath: Map<string, string>): string | undefined {
+  const dir = (g: LogicalModule) => g.id.slice(4);
+  const base = (g: LogicalModule) => dir(g).split("/").pop()!;
+  const exe = svc.executable?.replace(/\.exe$/, "");
+  const hit =
+    (exe && apps.find((g) => base(g) === exe)) ||
+    (svc.executablePath && apps.find((g) => svc.executablePath!.replace(/\.exe$/, "").endsWith(`/${base(g)}`))) ||
+    apps.find((g) => g.label === svc.name || base(g) === svc.name);
+  if (hit) return hit.id;
+  const spans = new Map<string, number>();
+  for (const f of svc.files) {
+    const g = groupOfPath.get(f.path);
+    if (g?.startsWith("app:")) spans.set(g, (spans.get(g) ?? 0) + f.spans);
+  }
+  return [...spans].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+/**
+ * The Go apps with what the traces say: each import line is marked as seen
+ * running or not, calls no import explains (HTTP between services, an
+ * interface, a queue) are drawn as lines of their own, and each app's summary
+ * names its service and what it calls, the database and hosts outside the
+ * repo among them.
+ */
+export function withRuntime(lens: Lens, rt: RuntimeMap): Lens {
+  if (!rt.edges.length && !rt.services.length) return lens;
+  const groupOfPath = new Map<string, string>();
+  for (const g of lens.groups) for (const p of g.paths) groupOfPath.set(p, g.id);
+  const apps = lens.groups.filter((g) => g.id.startsWith("app:"));
+  const label = new Map(lens.groups.map((g) => [g.id, g.label]));
+  const serviceApp = new Map<string, string | undefined>();
+  for (const svc of rt.services) serviceApp.set(svc.name, appOfService(svc, apps, groupOfPath));
+  const externals = new Map(rt.externals.map((x) => [x.id, x.label]));
+
+  const nodeGroup = (id: string, service?: string) =>
+    id.startsWith("ext:") ? undefined : id.startsWith("svc:") ? serviceApp.get(id.slice(4)) : groupOfPath.get(id) ?? (service ? serviceApp.get(service) : undefined);
+
+  // Every runtime edge, added up between groups; calls out of the repo, by the app making them.
+  type Acc = { count: number; errors: number; kind: RuntimeEdgeKind; labels: Map<string, number> };
+  const pairs = new Map<string, Acc>();
+  const outside = new Map<string, Map<string, number>>();
+  const ran = new Set<string>();
+  for (const svc of rt.services) {
+    for (const f of svc.files) if (groupOfPath.has(f.path)) ran.add(groupOfPath.get(f.path)!);
+    const app = serviceApp.get(svc.name);
+    if (app) ran.add(app);
+  }
+  for (const e of rt.edges) {
+    let from = nodeGroup(e.from, e.fromService) ?? serviceApp.get(e.fromService);
+    if (!from) continue;
+    if (e.to.startsWith("ext:")) {
+      const app = serviceApp.get(e.fromService) ?? from;
+      const out = outside.get(app) ?? new Map<string, number>();
+      const name = externals.get(e.to) ?? e.to.split(":").slice(2).join(":");
+      out.set(name, (out.get(name) ?? 0) + e.count);
+      outside.set(app, out);
+      continue;
+    }
+    // Between services, the apps are what talk, whichever shared library made the call.
+    const across = e.toService && e.toService !== e.fromService;
+    const to = across ? serviceApp.get(e.toService!) ?? nodeGroup(e.to) : nodeGroup(e.to, e.toService);
+    if (across) from = serviceApp.get(e.fromService) ?? from;
+    if (!to || to === from) continue;
+    const key = `${from}>${to}`;
+    const acc = pairs.get(key) ?? { count: 0, errors: 0, kind: e.kind, labels: new Map() };
+    acc.count += e.count;
+    acc.errors += e.errors;
+    // Crossing services says more than an in-process call between the same two groups.
+    if (acc.kind === "call" && e.kind !== "call") acc.kind = e.kind;
+    for (const l of e.labels) acc.labels.set(l.label, (acc.labels.get(l.label) ?? 0) + l.count);
+    pairs.set(key, acc);
+  }
+
+  const top = (m: Map<string, number>) => [...m].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const errs = (n: number) => (n ? `, ${n.toLocaleString("en")} failed` : "");
+  const edges: LogicalEdge[] = lens.edges.map((e) => {
+    const acc = pairs.get(`${e.from}>${e.to}`);
+    if (acc) return { ...e, label: `imports · ran ${times(acc.count)}${errs(acc.errors)}` };
+    return ran.has(e.from) ? { ...e, label: "imports · not seen running" } : e;
+  });
+  const statics = new Set(lens.edges.map((e) => `${e.from}>${e.to}`));
+  for (const [key, acc] of pairs) {
+    if (statics.has(key)) continue;
+    const [from, to] = key.split(">");
+    const what = top(acc.labels);
+    edges.push({ from, to, kind: KIND[acc.kind], label: `${acc.kind === "call" ? "runtime only" : WORD[acc.kind]} ${times(acc.count)}${errs(acc.errors)}${what ? ` · ${what}` : ""}` });
+  }
+
+  const byApp = new Map<string, RuntimeService[]>();
+  for (const svc of rt.services) {
+    const app = serviceApp.get(svc.name);
+    if (app) byApp.set(app, [...(byApp.get(app) ?? []), svc]);
+  }
+  const groups = lens.groups.map((g) => {
+    if (!g.id.startsWith("app:")) return ran.has(g.id) ? g : { ...g, summary: `${g.summary} Not seen running.` };
+    const svcs = byApp.get(g.id);
+    if (!svcs) return { ...g, summary: `${g.summary} No traces from it yet.` };
+    const calls = [
+      ...[...pairs].filter(([k]) => k.startsWith(`${g.id}>`)).map(([k, acc]) => [`${label.get(k.split(">")[1])!}${acc.kind === "call" ? "" : ` (${WORD[acc.kind]})`}`, acc.count] as const),
+      ...(outside.get(g.id) ?? []),
+    ]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, n]) => `${name} ${times(n)}`);
+    const spans = svcs.reduce((n, s) => n + s.spans, 0);
+    const failed = svcs.reduce((n, s) => n + s.errors, 0);
+    return {
+      ...g,
+      summary: `${g.summary} Runs as ${svcs.map((s) => s.name).join(", ")}: ${spans.toLocaleString("en")} spans${errs(failed)}${calls.length ? `; calls ${calls.join(", ")}` : ""}.`,
+    };
+  });
+
+  const seen = apps.filter((g) => byApp.has(g.id)).length;
+  return {
+    ...lens,
+    description: `${lens.description} Traces: ${seen} of ${plural(apps.length, "app")} seen running, over ${plural(rt.traces, "trace")}.`,
+    groups,
+    edges,
   };
 }

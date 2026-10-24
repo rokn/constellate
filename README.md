@@ -43,6 +43,15 @@ groups show which app imports which library. Packages no executable reaches gath
 "in no app". It's built from the imports alone, so it's there before the navigator has
 charted anything, and it's rebuilt with every scan.
 
+With traces coming in (see [Traces](#traces)), the same view says what runs. Each service
+is matched to its app by its executable's name (else its own name, else where its spans
+ran). Import lines between groups read **ran N×** or **not seen running**. Calls no import
+explains get lines of their own: **http**, **rpc** or **messages** between the apps that
+sent and served them, whichever library made the call, and **runtime only** for in-process
+calls through an interface or a callback. Each app's card names its service, its spans
+and errors, and what it calls most, databases and hosts outside the repo included.
+Groups no trace reached say so.
+
 ## Agents
 
 Constellate can also change the code. Ask for it ("add retries to the uploader") by voice
