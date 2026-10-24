@@ -24,6 +24,8 @@ export type FileInfo = {
   symbols: Symbol[];
   /** Bare package imports — react, express, numpy. Not part of the graph. */
   externals: string[];
+  /** Go: the package clause (`main` for an executable). */
+  goPkg?: string;
 };
 
 /** A resolved, in-repo import: `from` imports `to`. */
@@ -115,6 +117,8 @@ export type Lens = {
   groups: LogicalModule[];
   edges: LogicalEdge[];
   createdAt: number;
+  /** Built from the code rather than written (the Go apps): rebuilt with every scan, so not edited or deleted. */
+  derived?: boolean;
 };
 
 /** Where a note is pinned: a file, or an import line between two files. */
