@@ -85,6 +85,13 @@ export function subscribe(fn: Listener) {
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function emit() {
+  emitLive();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => void persist(), 800);
+}
+
+/** Tell the page without saving: for what is kept elsewhere (the runtime layer keeps its own file). */
+export function emitLive() {
   for (const fn of listeners) {
     try {
       fn(session.state);
@@ -92,8 +99,11 @@ export function emit() {
       /* a dead connection must not stop the navigator */
     }
   }
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => void persist(), 800);
+}
+
+/** The file a repo's saved state goes in, named for its path; `suffix` for what else is kept beside it. */
+export function cacheFile(root: string, suffix = "") {
+  return path.join(CACHE_DIR, `${createHash("sha1").update(root).digest("hex").slice(0, 16)}${suffix}.json`);
 }
 
 /* ------------------------------ mutations ------------------------------ */
@@ -677,9 +687,6 @@ type Cached = {
   agentSessionId?: string;
 };
 
-function cacheFile(root: string) {
-  return path.join(CACHE_DIR, `${createHash("sha1").update(root).digest("hex").slice(0, 16)}.json`);
-}
 
 async function loadCache(root: string): Promise<Cached | null> {
   try {

@@ -59,6 +59,35 @@ the menu's **Agents** tab lists them, starts new ones, rebases them, and merges 
 An agent can read and edit files only inside its worktree, and has no
 shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
 
+## Traces
+
+Constellate takes OpenTelemetry traces in and works out what the code really calls when
+it runs. Point an app's exporter at it (`OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:4318`):
+it takes OTLP/HTTP on port 4318, protobuf or JSON, gzipped or not, and on `/v1/traces` of
+the main port too. Without a repo open it answers 503, which exporters retry. To pull
+from a backend instead, set `CONSTELLATE_TEMPO_URL` or `CONSTELLATE_JAEGER_URL` (see
+`.env.example`). A test run's traces can be posted too: a collector's file exporter
+output (JSON lines) works as-is.
+
+Each span is pinned to the file it ran in. The server tries its `code.file.path` attribute
+first, then its qualified function name (for Go, `pkg/path.(*Type).Method`), then a tracer
+named for one of the repo's packages (`otel.Tracer("github.com/you/app/internal/store")`),
+and last its name if that's a symbol defined in only one file. Each step from a span to
+its child in another file, in another service, or out to a database or a host adds to
+a runtime edge. A file-to-file edge gets a verdict: **confirmed** when an import backs it,
+**package** when both files are in one Go package, and **runtime-only** when nothing static
+explains it.
+
+| | |
+| --- | --- |
+| `GET /api/runtime` | Services (with the executable and the files each ran), edges, external endpoints, imports never seen used, and the span names that couldn't be pinned. `?service=a,b` and `?path=` narrow it. |
+| `GET /api/traces` | Recent traces, kept whole in memory (`?service=`, `?limit=`) |
+| `GET /api/traces/<id>` | One trace's spans, each with its location |
+| `DELETE /api/runtime` | Forget this repo's traces |
+
+The session stream carries `runtime` (a version, counts, services and the sources'
+health) so the page knows when to refetch. Totals are kept per repo, next to its session.
+
 ## In a headset
 
 With a Meta Quest 3 (its browser), or a PC with Link or SteamVR connected, **VR** and

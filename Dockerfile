@@ -38,5 +38,6 @@ ENV NODE_ENV=production \
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME /data
-EXPOSE 4317
+# 4318: OTLP/HTTP traces, for apps beside it to send to.
+EXPOSE 4317 4318
 ENTRYPOINT ["tini", "--", "constellate"]
