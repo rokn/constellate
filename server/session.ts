@@ -21,6 +21,7 @@ import type {
   View,
 } from "../shared/types";
 import { promisify } from "node:util";
+import { GO_APPS, goApps } from "../shared/goApps";
 import { movedDirs, renameInFilter, renamer, type Renames } from "../shared/renames";
 import { indexGraph, repoName, scanRepo, type GraphIndex } from "./scan";
 
@@ -133,7 +134,7 @@ export function setOverview(o: Overview) {
 /** Removes a grouping; returns it, so it can be restored. */
 export function removeLens(id: string): Lens | undefined {
   const lens = session.state.lenses.find((l) => l.id === id);
-  if (!lens) return undefined;
+  if (!lens || lens.derived) return undefined;
   session.state.lenses = session.state.lenses.filter((l) => l.id !== id);
   emit();
   return lens;
@@ -151,6 +152,12 @@ export function setModules(modules: Overview["modules"], edges: Overview["edges"
   if (!session.state.overview) return;
   session.state.overview = { ...session.state.overview, modules, edges };
   emit();
+}
+
+/** The Go apps grouping, built afresh from the graph: first among the groupings, or gone when no executable is left. */
+function refreshGoApps(graph: GraphIndex["graph"]) {
+  const apps = goApps(graph);
+  session.state.lenses = [...(apps ? [apps] : []), ...session.state.lenses.filter((l) => l.id !== GO_APPS)];
 }
 
 /** Adds a lens, replacing one with the same title so a redo doesn't pile up. */
@@ -433,6 +440,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
   const cached = await loadCache(graph.root);
   if (cached) {
     session.state.lenses = cached.lenses ?? [];
+    refreshGoApps(graph);
     session.state.overlays = cached.overlays ?? [];
     session.state.notes = cached.notes ?? [];
     session.state.view = cached.view;
@@ -460,6 +468,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     }
   }
 
+  refreshGoApps(graph);
   session.state.status = "analyzing";
   emit();
 }
@@ -551,6 +560,7 @@ export function rescan(): Promise<void> {
     const had = new Set([...before.files.map((f) => f.path), ...(moved?.files.map(([, to]) => to) ?? [])]);
     const added = graph.files.map((f) => f.path).filter((p) => !had.has(p));
     session.state.repo = { name: graph.name, root: graph.root, branch: graph.branch };
+    refreshGoApps(graph);
     session.state.graphVersion++;
     // The chart is out of date once the code moved on from where it was drawn.
     if (session.state.overview && session.state.status === "ready") {
