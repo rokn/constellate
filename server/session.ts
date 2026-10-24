@@ -12,6 +12,7 @@ import type {
   Note,
   NoteTarget,
   Overview,
+  RuntimeMap,
   SessionState,
   Story,
   StorySettings,
@@ -21,7 +22,7 @@ import type {
   View,
 } from "../shared/types";
 import { promisify } from "node:util";
-import { GO_APPS, goApps } from "../shared/goApps";
+import { GO_APPS, goApps, withRuntime } from "../shared/goApps";
 import { movedDirs, renameInFilter, renamer, type Renames } from "../shared/renames";
 import { indexGraph, repoName, scanRepo, type GraphIndex } from "./scan";
 
@@ -154,9 +155,18 @@ export function setModules(modules: Overview["modules"], edges: Overview["edges"
   emit();
 }
 
-/** The Go apps grouping, built afresh from the graph: first among the groupings, or gone when no executable is left. */
-function refreshGoApps(graph: GraphIndex["graph"]) {
-  const apps = goApps(graph);
+/** The traces the Go apps were last drawn with, kept for the rescans in between. */
+let goRuntime: RuntimeMap | null = null;
+
+/**
+ * The Go apps grouping, built afresh from the graph (and what the traces say,
+ * when `runtime` is given or was last time): first among the groupings, or
+ * gone when no executable is left. Doesn't emit.
+ */
+export function refreshGoApps(graph: GraphIndex["graph"], runtime?: RuntimeMap | null) {
+  if (runtime !== undefined) goRuntime = runtime;
+  const built = goApps(graph);
+  const apps = built && goRuntime ? withRuntime(built, goRuntime) : built;
   session.state.lenses = [...(apps ? [apps] : []), ...session.state.lenses.filter((l) => l.id !== GO_APPS)];
 }
 
@@ -412,6 +422,7 @@ export function resetSession(abs: string, name: string) {
     agentsOn: session.state.agentsOn,
   };
   session.idx = undefined;
+  goRuntime = null;
   session.agentSessionId = undefined;
   session.chartedHead = undefined;
   emit();
