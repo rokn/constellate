@@ -14,6 +14,7 @@ import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/a
 import { useVoice } from "./lib/useVoice";
 import { territoryColors } from "./lib/colors";
 import { Space, type Grouping, type Overlay, type SpaceHandle, type TouchHit, type TouchGesture } from "./components/Space";
+import { ListenButton } from "./components/ListenButton";
 import { FilterPanel, GroupsPanel, Legend, OTHER, OrganizeBar } from "./components/MapControls";
 import { TuningPanel } from "./components/TuningPanel";
 import { DEFAULT_TUNING, loadTuning, saveTuning, type Tuning } from "./lib/tuning";
@@ -2194,6 +2195,7 @@ export function App() {
             >
               Tune
             </button>
+            <ListenButton />
             <button
               onClick={() => {
                 if (historyOpen) showRange(null);

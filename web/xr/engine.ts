@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerModelFactory.js";
 import { XRHandModelFactory } from "three/examples/jsm/webxr/XRHandModelFactory.js";
+import { music, skyFor } from "../lib/music";
 import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
 import { Bloom } from "./bloom";
 import { type Ell, HandGestures, inside } from "./hands";
@@ -142,6 +143,9 @@ const MAX_SCALE = 0.25;
 const tmpM = new THREE.Matrix4();
 const tmpV = new THREE.Vector3();
 const Y = new THREE.Vector3(0, 1, 0);
+const STAR = 0x8fa3c8;
+const STAR_COLOR = new THREE.Color(STAR);
+const NIGHT_COLOR = new THREE.Color(C.night);
 /** Keys that fly in the headset: the preview's, and the desktop's WASD and Q / E. */
 const FLY_KEYS = new Set(["arrowup", "arrowdown", "arrowleft", "arrowright", "pageup", "pagedown", "w", "a", "s", "d", "q", "e", "shift"]);
 
@@ -165,6 +169,12 @@ export class Engine {
   settings: XRSettings = DEFAULT_XR;
 
   private stars: THREE.Points;
+  /** The stars as tuned, before the music moves them. */
+  private starBase = { opacity: 0.55, size: 2 };
+  /** The glow as the music has it this frame: a multiplier on the tuned strength. */
+  private bloomK = 1;
+  /** The music moved the sky last frame, so it needs putting back when it stops. */
+  private moved = false;
   private floor: THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial>;
   /**
    * Where the map is set down, in the room: it holds still while you move the
@@ -303,7 +313,7 @@ export class Engine {
       pts.set([r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), r * Math.cos(p)], i * 3);
     }
     const starGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(pts, 3));
-    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x8fa3c8, size: 2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false }));
+    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: STAR, size: 2, sizeAttenuation: false, transparent: true, opacity: 0.55, depthWrite: false }));
     this.stars.renderOrder = -5;
     this.scene.add(this.stars);
 
@@ -362,6 +372,10 @@ export class Engine {
     const was = this.settings;
     this.settings = s;
     sfx.configure(s);
+    if (s.listen !== was.listen) {
+      if (s.listen) void music.start("mic");
+      else if (music.state.source === "mic") music.stop();
+    }
     if (s.foveation !== was.foveation) this.renderer.xr.setFoveation(s.foveation);
     if (s.renderScale !== was.renderScale && !this.renderer.xr.isPresenting) this.renderer.xr.setFramebufferScaleFactor(s.renderScale);
     if (s.panelDistance !== was.panelDistance) this.recenterPanels();
@@ -379,6 +393,7 @@ export class Engine {
     const stars = this.stars.material as THREE.PointsMaterial;
     stars.opacity = (tu?.starOpacity ?? 0.55) * (ar ? (s.arStars ? night : 0) : 1);
     stars.size = (tu?.starSize ?? 2.2) * 0.9;
+    this.starBase = { opacity: stars.opacity, size: stars.size };
     this.stars.visible = stars.opacity > 0.001;
     this.floor.visible = (ar ? s.floorInAR : s.floor && this.mode === "vr") && s.floorOpacity > 0;
     this.floor.scale.setScalar(s.floorSize / 2);
@@ -2139,6 +2154,7 @@ export class Engine {
     if (carrier) this.showSnap(carrier);
     else this.ghost.visible = false;
     if (this.mode !== "flat") sfx.listen(head.pos, head.quat, now);
+    this.moveWithMusic(now);
 
     // The dock can follow lazily (a setting): it only turns with you once you've looked well away.
     for (const [panel, slot] of this.slots) {
@@ -2242,6 +2258,31 @@ export class Engine {
     }
   }
 
+  /** The sky, the stars and the glow, moved by the music you're listening to (lib/music). */
+  private moveWithMusic(now: number) {
+    const k = this.map.tuning?.musicReact ?? 1;
+    const stars = this.stars.material as THREE.PointsMaterial;
+    const backdrop = this.backdrop.material as THREE.MeshBasicMaterial;
+    if (!music.state.on || k <= 0) {
+      if (!this.moved) return;
+      this.moved = false;
+      this.bloomK = 1;
+      stars.color.set(STAR);
+      backdrop.color.set(C.night);
+      if (this.scene.background instanceof THREE.Color) this.scene.background.set(C.night);
+      this.applyRoom();
+      return;
+    }
+    this.moved = true;
+    const sky = skyFor(music.read(now), k, STAR_COLOR, NIGHT_COLOR, now);
+    stars.size = this.starBase.size * sky.starSize;
+    stars.opacity = Math.min(1, this.starBase.opacity * sky.starOpacity);
+    stars.color.copy(sky.star);
+    backdrop.color.copy(sky.night);
+    if (this.scene.background instanceof THREE.Color) this.scene.background.copy(sky.night);
+    this.bloomK = sky.bloom;
+  }
+
   /** The room (sky, floor, table) without the map, or the map without the room. */
   private only(part: "room" | "map") {
     const room = part === "room";
@@ -2290,7 +2331,7 @@ export class Engine {
     if (bloom) {
       this.bloom ??= new Bloom(r);
       this.only("map");
-      this.bloom.render(r, this.scene, this.camera, target, { strength: tu.bloomStrength, radius: tu.bloomRadius, threshold: tu.bloomThreshold }, under);
+      this.bloom.render(r, this.scene, this.camera, target, { strength: tu.bloomStrength * this.bloomK, radius: tu.bloomRadius, threshold: tu.bloomThreshold }, under);
     } else {
       under();
       r.render(this.scene, this.camera);

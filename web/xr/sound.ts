@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { music } from "../lib/music";
 
 /**
  * The room's sound: a quiet ambience under the map, and small effects for
@@ -9,7 +10,8 @@ import * as THREE from "three";
  *
  * The ambience is a low, slow pad with a breath of filtered noise, and now
  * and then a faint chime from one of the map's bodies: each top-level folder
- * has its own note, so the map hums in its own key.
+ * has its own note, so the map hums in its own key. While you're listening
+ * to music (lib/music), it hushes: the music is the ambience then.
  */
 
 export type Sfx = "tick" | "hover" | "pick" | "focus" | "grab" | "drop" | "snap" | "fling" | "place" | "enter" | "back";
@@ -92,11 +94,11 @@ class Sound {
     this.apply();
   }
 
-  private apply() {
+  apply() {
     const ctx = this.ctx;
     if (!ctx || !this.live) return;
     this.sfxBus!.gain.setTargetAtTime(this.s.sfx ? this.s.sfxVolume : 0, ctx.currentTime, 0.05);
-    const amb = this.s.ambience ? this.s.ambienceVolume * 0.5 : 0;
+    const amb = this.s.ambience ? this.s.ambienceVolume * 0.5 * (music.state.on ? 0.1 : 1) : 0;
     this.ambBus!.gain.setTargetAtTime(amb, ctx.currentTime, 0.8);
     if (amb > 0 && !this.pad) this.pad = this.makePad();
   }
@@ -124,7 +126,7 @@ class Sound {
       l.setOrientation(f.x, f.y, f.z, u.x, u.y, u.z);
     }
     // Now and then, a body on the map chimes, softly, in its folder's note.
-    if (this.s.ambience && this.chimeSource && now > this.chimeTimer) {
+    if (this.s.ambience && !music.state.on && this.chimeSource && now > this.chimeTimer) {
       this.chimeTimer = now + 3500 + Math.random() * 6000;
       const c = this.chimeSource();
       if (c) this.chime(c.at, hash(c.key));
@@ -344,3 +346,5 @@ class Sound {
 
 /** One for the page: the room's ears. */
 export const sfx = new Sound();
+// Music starting or stopping hushes the ambience, or brings it back.
+music.subscribe(() => sfx.apply());

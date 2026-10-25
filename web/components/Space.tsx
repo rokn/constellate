@@ -11,6 +11,7 @@ import { FORCE_KNOBS, SHAPE_KNOBS, type Tuning } from "../lib/tuning";
 import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { Coupling, Heat, MapDelta } from "../lib/history";
 import { buzz, touchFirst } from "../lib/haptics";
+import { music, skyFor } from "../lib/music";
 
 /**
  * The space you fly through.
@@ -61,6 +62,8 @@ const ADDED = "#6ee7a8";
 /** Import lines brought up by hovering: a brighter, whiter cyan than the lit ones. */
 const BUMP = "#b4f0ff";
 const REMOVED = "#ff6b6b";
+const NIGHT = "#060b16";
+const STAR = 0x8fa3c8;
 
 /** How hot a changed file glows: 0 for a one-line touch, 1 for a rewrite. */
 const churnHeat = (add: number, del: number) => Math.min(1, Math.log10(add + del + 1) / 3);
@@ -409,7 +412,7 @@ export function Space({
     // The library hands the clear colour to the renderer as raw numbers, and
     // the composer treats those as linear and sRGB-encodes them — the night
     // came out slate. So it gets the night already in linear space.
-    g.backgroundColor(`#${new THREE.Color("#060b16").getHexString(THREE.LinearSRGBColorSpace)}`)
+    g.backgroundColor(`#${new THREE.Color(NIGHT).getHexString(THREE.LinearSRGBColorSpace)}`)
       .showNavInfo(false)
       .nodeId("id")
       .nodeLabel((n) =>
@@ -510,7 +513,7 @@ export function Space({
       pts.set([r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), r * Math.cos(p)], i * 3);
     }
     starGeo.setAttribute("position", new THREE.BufferAttribute(pts, 3));
-    starMat.current = new THREE.PointsMaterial({ color: 0x8fa3c8, size: tu().starSize, sizeAttenuation: false, transparent: true, opacity: tu().starOpacity });
+    starMat.current = new THREE.PointsMaterial({ color: STAR, size: tu().starSize, sizeAttenuation: false, transparent: true, opacity: tu().starOpacity });
     g.scene().add(new THREE.Points(starGeo, starMat.current));
 
     // The course line and the halo around the open file.
@@ -1425,6 +1428,36 @@ export function Space({
     // Grabbing the map is a request to stop drifting.
     controls.addEventListener("start", () => (controls.autoRotate = false));
 
+    // The sky, the stars and the glow move with the music you're listening to (lib/music).
+    const starBase = new THREE.Color(STAR);
+    const nightBase = new THREE.Color(NIGHT);
+    let moved = false;
+    const moveWithMusic = (now: number) => {
+      const t = tu();
+      const scene = g.scene();
+      if (!music.state.on || t.musicReact <= 0) {
+        if (!moved) return;
+        moved = false;
+        // Back to the library's clear colour, and the knobs as tuned.
+        scene.background = null;
+        starMat.current?.color.copy(starBase);
+        if (starMat.current) Object.assign(starMat.current, { size: t.starSize, opacity: t.starOpacity });
+        if (bloomRef.current) bloomRef.current.strength = t.bloomStrength;
+        return;
+      }
+      moved = true;
+      const sky = skyFor(music.read(now), t.musicReact, starBase, nightBase, now);
+      // A colour background replaces the clear colour, and is colour-managed, so it takes the night as written.
+      if (!(scene.background instanceof THREE.Color)) scene.background = new THREE.Color();
+      scene.background.copy(sky.night);
+      if (starMat.current) {
+        starMat.current.color.copy(sky.star);
+        starMat.current.size = t.starSize * sky.starSize;
+        starMat.current.opacity = Math.min(1, t.starOpacity * sky.starOpacity);
+      }
+      if (bloomRef.current) bloomRef.current.strength = t.bloomStrength * sky.bloom;
+    };
+
     let raf = 0;
     let nearAt = 0;
     /** The module the camera is inside, checked a few times a second: going into another one ticks. */
@@ -1478,6 +1511,8 @@ export function Space({
         }
         controls.update();
       }
+
+      moveWithMusic(now);
 
       for (const [id, t0] of pulses.current) {
         const o = objs.current.get(id);

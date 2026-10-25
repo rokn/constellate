@@ -63,6 +63,8 @@ export type XRSettings = {
   /** A quiet pad under the map, and now and then a chime from one of its bodies. */
   ambience: boolean;
   ambienceVolume: number;
+  /** Listen through the microphone and move the sky with the music in the room. Never kept: the microphone is asked for each time. */
+  listen: boolean;
   // Hints
   hintsSeen: boolean;
 };
@@ -101,6 +103,7 @@ export const DEFAULT_XR: XRSettings = {
   sfxVolume: 0.6,
   ambience: true,
   ambienceVolume: 0.5,
+  listen: false,
   hintsSeen: false,
 };
 
@@ -180,6 +183,7 @@ export const XR_SECTIONS: XRSection[] = [
       r("sfxVolume", "Effects volume", 0, 1.5, 0.05),
       t("ambience", "Ambience", "A quiet hum under the map, and now and then a chime from one of its bodies"),
       r("ambienceVolume", "Ambience volume", 0, 1.5, 0.05),
+      t("listen", "Move with the music", "Listen through the microphone, and let the sky, stars and glow move with whatever's playing in the room. The ambience hushes meanwhile"),
     ],
   },
 ];

@@ -102,7 +102,7 @@ export class TunePanel extends Panel {
       this.button(ctx, "reset", x, y, "Reset all", () => this.a.setTuning(DEFAULT_TUNING), { size: 22 });
     } else {
       // The hints are worth leaving as they were.
-      x = this.button(ctx, "reset", x, y, "Reset all", () => this.a.setXR({ ...DEFAULT_XR, hintsSeen: m.settings.hintsSeen }), { size: 22 }) + 8;
+      x = this.button(ctx, "reset", x, y, "Reset all", () => this.a.setXR({ ...DEFAULT_XR, hintsSeen: m.settings.hintsSeen, listen: m.settings.listen }), { size: 22 }) + 8;
       ctx.font = sans(21);
       ctx.fillStyle = C.muted;
       ctx.fillText(fit(ctx, m.mode === "ar" ? "In passthrough now." : m.mode === "vr" ? "In VR now." : "", W - x - PAD), x + 10, y + 30);

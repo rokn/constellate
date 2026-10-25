@@ -23,7 +23,7 @@ export type KnobInfo = {
 };
 
 /** The headset's knobs that aren't settings anyone tunes: left out of presets and the voice. */
-const NOT_TUNED = new Set(["hintsSeen"]);
+const NOT_TUNED = new Set(["hintsSeen", "listen"]);
 
 export const KNOBS: KnobInfo[] = [
   ...SECTIONS.flatMap((s) => s.knobs.map((k) => ({ ...k, side: "map" as const, section: s.title, default: DEFAULT_TUNING[k.key] }))),

@@ -9,7 +9,8 @@ const KEY = "constellate.xr";
 
 export function loadXR(): XRSettings {
   try {
-    return { ...DEFAULT_XR, ...(JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<XRSettings>) };
+    // Listening is never restored: the microphone is only opened from a press.
+    return { ...DEFAULT_XR, ...(JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<XRSettings>), listen: false };
   } catch {
     return DEFAULT_XR;
   }

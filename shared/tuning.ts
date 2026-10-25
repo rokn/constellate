@@ -72,6 +72,8 @@ export type Tuning = {
   // Background
   starOpacity: number;
   starSize: number;
+  /** How much the sky, stars and glow move with the music you're listening to (0 is still). */
+  musicReact: number;
   showCourse: boolean;
   courseOpacity: number;
   haloSize: number;
@@ -137,6 +139,7 @@ export const DEFAULT_TUNING: Tuning = {
   showBeaconLabels: true,
   starOpacity: 0.55,
   starSize: 2.2,
+  musicReact: 1,
   showCourse: true,
   courseOpacity: 0.9,
   haloSize: 1,
@@ -258,6 +261,7 @@ export const SECTIONS: Section[] = [
     knobs: [
       r("starOpacity", "Stars", 0, 1, 0.01),
       r("starSize", "Star size", 0.5, 6, 0.1),
+      r("musicReact", "Music", 0, 2, 0.05, "How much the sky, stars and glow move with the music you're listening to (Listen, next to Tune)"),
       t("showCourse", "Show course line", "The dashed magenta trail of where you've flown"),
       r("courseOpacity", "Course brightness", 0, 1, 0.01),
       r("haloSize", "Open-file halo", 0, 3, 0.05),

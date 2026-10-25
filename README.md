@@ -107,6 +107,18 @@ explains it.
 The session stream carries `runtime` (a version, counts, services and the sources'
 health) so the page knows when to refetch. Totals are kept per repo, next to its session.
 
+## Music
+
+**Listen** (next to Tune) moves the sky with whatever you're playing: the stars swell
+with the bass and flash on the beat, take a colour from the highs, and the night and the
+glow lift with it. Spotify can't be read directly (its streams are DRM-protected and its
+Web API no longer gives new apps audio analysis), so it listens to what's actually
+playing: share the Spotify tab (or, for the desktop app, your screen with its audio) in
+the browser's picker, or use the microphone. The sound never leaves the page. **Music**
+in Tune sets how much the sky moves. In the headset, Tune → **Move with the music**
+listens through its microphone (or keeps listening to what you shared before going in),
+and the room's ambience hushes meanwhile.
+
 ## In a headset
 
 With a Meta Quest 3 (its browser), or a PC with Link or SteamVR connected, **VR** and
