@@ -5,7 +5,16 @@ import { GoEditor } from "./GoEditor";
 import { DiffStat, DiffView } from "./DiffView";
 
 /** The open file's change in the span of history shown on the map. */
-export type FileChange = { from: string; to: string; add: number; del: number; status: "A" | "M" | "D"; label?: string };
+export type FileChange = {
+  from: string;
+  to: string;
+  add: number;
+  del: number;
+  status: "A" | "M" | "D";
+  label?: string;
+  /** Where its diff is read, when not the span from..to (a branch: against where it forked). */
+  diffUrl?: string;
+};
 
 /**
  * The code panel. A file is never a dead end: everything it imports and
@@ -59,7 +68,7 @@ export function FilePanel({
     if (!change || tab !== "changes") return;
     let live = true;
     setDiff(undefined);
-    fetch(`/api/diff?path=${encodeURIComponent(path)}&from=${change.from}&to=${change.to}`)
+    fetch(change.diffUrl ?? `/api/diff?path=${encodeURIComponent(path)}&from=${change.from}&to=${change.to}`)
       .then((r) => (r.ok ? r.json() : { diff: null }))
       .then((b: { diff: string | null }) => live && setDiff(b.diff))
       .catch(() => live && setDiff(null));

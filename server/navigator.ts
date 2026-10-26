@@ -12,7 +12,8 @@ import { digest, findPath, neighbourhood } from "./scan";
 import { agentDiff } from "./agents";
 import { branchDiff, fileAt } from "./branch";
 import { AGENTS_ON } from "./agents";
-import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
+import { AGENT_ACTIONS, agentLines, describe, type Action } from "./actions";
+import { TUNE_ACTIONS, tuneNote } from "./tune";
 import {
   afterRescan,
   addLens,
@@ -75,6 +76,7 @@ const FLIGHT_TOOLS = [
   "read_at",
   "show_diff",
   "set_time_range",
+  "changed_only",
   "set_overview",
 ];
 const mcpName = (t: string) => `mcp__flight__${t}`;
@@ -192,13 +194,13 @@ export function graphTools(): SdkMcpToolDefinition<any>[] {
 const PLACE_TOOLS = ["deps", "outline", "get_lens", "revise_lens"];
 
 /**
- * The coding-agent tools, for a typed request: the voice's own (actions.ts),
- * in the SDK's shape. Late news goes to the activity; a merge waits for the
- * Merge button this puts on the answer.
+ * The voice's own tools for a typed request (the coding agents, actions.ts;
+ * the Tune panel, tune.ts), in the SDK's shape. Late news goes to the
+ * activity; a merge waits for the Merge button this puts on the answer.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool has its own schema
-function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinition<any>[] {
-  return AGENT_ACTIONS.map((a) =>
+function actionTools(list: Action[], frameId: string, screen: ScreenContext): SdkMcpToolDefinition<any>[] {
+  return list.map((a) =>
     tool(
       a.name,
       describe(a, "typed"),
@@ -211,7 +213,7 @@ function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinitio
       async (args) => {
         let out: Record<string, unknown> | null;
         try {
-          out = runAction(a.name, args, {
+          out = a.run(args, {
             surface: "typed",
             screen,
             command: pushCommand,
@@ -227,7 +229,7 @@ function agentTools(frameId: string, screen: ScreenContext): SdkMcpToolDefinitio
   );
 }
 
-function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", actions?: ScreenContext) {
+function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", actions?: ScreenContext, tune?: ScreenContext) {
   const needFrame = () => {
     if (!frameId) throw new Error("Views can only be shown while answering a request.");
     return frameId;
@@ -547,6 +549,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
         async (a) => {
           const lens = lensById(a.lensId);
           if (!lens) return fail(`No grouping "${a.lensId}". ${lensList()}`);
+          if (lens.derived) return fail(`"${lens.title}" is built from the code and rebuilt with every scan, so it can't be edited. Write a new grouping with set_lens instead, starting from get_lens.`);
           const groups = lens.groups.map((g) => ({ ...g, paths: [...g.paths] }));
           let edges = [...lens.edges];
           const find = (id?: string) => groups.find((g) => g.id === id);
@@ -616,6 +619,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
         "Delete a grouping the reader no longer wants. If it's the one showing, the map goes back to folders. Only when they ask to remove it — never to replace it with a revised one (revise it instead).",
         { lensId: z.string() },
         async (a) => {
+          if (lensById(a.lensId)?.derived) return fail("That grouping is built from the code and comes back with every scan; it can't be removed.");
           const lens = removeLens(a.lensId);
           if (!lens) return fail(`No grouping "${a.lensId}" to remove. ${lensList()}`);
           return ok(`Removed the grouping "${lens.title}".`);
@@ -739,6 +743,15 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
           return ok("Range lit on the map.");
         },
       ),
+      tool(
+        "changed_only",
+        "While a branch or a span of history is on the reader's map: `on` shows only the files it changed (everything else steps off the map); off brings the whole map back. Use it when they ask for just the changes, or for the whole map again.",
+        { on: z.boolean() },
+        async (a) => {
+          pushCommand({ cmd: "changed_only", on: a.on });
+          return ok(a.on ? "Only the changed files are on the map." : "The whole map is back.");
+        },
+      ),
     );
   }
 
@@ -810,7 +823,8 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
     );
   }
 
-  if (mode === "ask" && actions && frameId) tools.push(...agentTools(frameId, actions));
+  if (mode === "ask" && actions && frameId) tools.push(...actionTools(AGENT_ACTIONS, frameId, actions));
+  if (mode === "ask" && tune && frameId) tools.push(...actionTools(TUNE_ACTIONS, frameId, tune));
 
   const offered = mode === "place" ? tools.filter((t) => PLACE_TOOLS.includes(t.name)) : tools;
   return createSdkMcpServer({ name: "flight", version: "1.0.0", tools: offered, alwaysLoad: true });
@@ -1031,6 +1045,9 @@ async function branchNote(b?: ScreenContext["branch"]): Promise<string> {
       d.agent
         ? `They're looking at what the coding agent "${d.agent.title}" changed: its branch ${d.branch}, compared with the commit it started from (${d.mergeBase.slice(0, 10)}), tip ${tip}${d.agent.live ? ", which includes edits it hasn't committed yet" : ""}. The map shows the code as the agent has it, with what it changed lit.`
         : `They're looking at the branch ${d.branch} compared with ${d.base}, since they forked (merge base ${d.mergeBase.slice(0, 10)}, tip ${tip}). The map shows the code as it is at the branch tip, with what it changed lit.`,
+      b.changedOnly
+        ? "Only the files it changed are on the map right now; changed_only with on: false brings the whole map back."
+        : "changed_only shows just the files it changed, when they want only the changes.",
       d.checkedOut
         ? "It's checked out, so Read, Grep, outline and deps see the branch."
         : `It isn't checked out: Read, Grep, outline and deps see ${session.state.repo?.branch ?? "the checked-out branch"}, not this branch. Read the branch's version of a file with read_at (rev ${tip}); its diffs with show_diff.`,
@@ -1186,11 +1203,14 @@ async function run(opts: {
   signal: AbortController;
   /** A typed request: the agent tools too, with what's on their screen. */
   actions?: ScreenContext;
+  /** A typed request: the Tune panel's knobs and presets too, with what's on their screen. */
+  tune?: ScreenContext;
 }): Promise<RunResult> {
   const root = idx().graph.root;
   const tools = [
     ...(opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview")),
     ...(opts.mode === "ask" && opts.actions ? AGENT_ACTIONS.map((a) => a.name) : []),
+    ...(opts.mode === "ask" && opts.tune ? TUNE_ACTIONS.map((a) => a.name) : []),
   ];
   let live = "";
   let answer = "";
@@ -1210,7 +1230,7 @@ async function run(opts: {
       // The opened repo's own .claude settings could carry hooks; this is a
       // read-only explorer and must not run them.
       settingSources: [],
-      mcpServers: { flight: flightServer(opts.frameId, opts.mode, opts.actions) },
+      mcpServers: { flight: flightServer(opts.frameId, opts.mode, opts.actions, opts.tune) },
       // A placement is housekeeping on the side: it doesn't join the conversation.
       resume: opts.mode === "place" ? undefined : session.agentSessionId,
       includePartialMessages: true,
@@ -1407,15 +1427,17 @@ export async function ask(
 
   // A topic's deep dive is a tour, not a request that could be a task.
   const actions = opts.typed && AGENTS_ON && !topic;
+  const typed = !!opts.typed && !topic;
 
   try {
     const res = await run({
-      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : ""),
+      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : "") + (typed ? `\n\n${tuneNote({ screen: opts.screen ?? {} })}\nIf they ask to change a setting (how the map looks or moves, the headset's settings) or to use, save or delete a preset, do it with tune, reset_tune and the preset tools.` : ""),
       frameId: frame.id,
       mode: "ask",
       effort: ASK_EFFORT,
       signal: controller,
       actions: actions ? opts.screen ?? {} : undefined,
+      tune: typed ? opts.screen ?? {} : undefined,
     });
     if (controller.signal.aborted) return { frameId: frame.id, answer: res.answer, error: "superseded" };
     patchFrame(frame.id, {

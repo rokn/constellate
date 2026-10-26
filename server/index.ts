@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GroupOverlay, Lens, Note, NoteTarget, ScreenContext, StorySettings, ViewSettings } from "../shared/types";
+import type { GroupOverlay, Lens, Note, NoteTarget, ScreenContext, StorySettings, TunePreset, ViewSettings } from "../shared/types";
 import { ask, interrupt, runIntro, stopNavigator } from "./navigator";
 import { REPOS_DIR, ensureClone, lastOpened, listRepos, markOpened, parseGitHub, removeClone, rootOf } from "./library";
 import { loadFile } from "./repo";
@@ -35,14 +35,19 @@ import {
   updateOverlay,
   loadStorySettings,
   setStorySettings,
+  loadTunePresets,
+  setTunePresets,
   getStory,
 } from "./session";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
+import { cleanPreset } from "../shared/knobs";
 import { attachVoice } from "./voice";
 import { AGENTS_ON, agentDiff, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents, syncPullRequests } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
 import { branchDiff, branchFileDiff, fetchRemotes, listBranches } from "./branch";
+import { decodeBody, parseOtlp } from "./otlp";
+import { NoRepoError, clearTraces, getTrace, ingest, listTraces, noteOtlp, openTraces, runtimeMap, startPulling } from "./traces";
 
 /**
  * One process: the API, the live stream, the voice bridge and (in dev) Vite.
@@ -54,6 +59,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const dev = process.env.NODE_ENV !== "production";
 const port = Number(process.env.PORT ?? 4317);
+/** OTLP/HTTP on its own port as well, for apps that send traces from inside the cluster (0 turns it off). */
+const otlpPort = Number(process.env.CONSTELLATE_OTLP_PORT ?? 4318);
 const httpsPort = Number(process.env.HTTPS_PORT ?? 4443);
 
 /**
@@ -99,6 +106,47 @@ async function body<T>(req: IncomingMessage): Promise<T> {
   }
 }
 
+async function rawBody(req: IncomingMessage, limit = 32 << 20): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > limit) throw new Error("Body too large.");
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * OTLP/HTTP trace export (POST /v1/traces), protobuf or JSON, as any
+ * OpenTelemetry SDK or collector sends it: point OTEL_EXPORTER_OTLP_ENDPOINT
+ * at this server. The answer is an empty ExportTraceServiceResponse in the
+ * request's encoding; 503 while no repo is open, which exporters retry.
+ */
+async function otlp(req: IncomingMessage, res: ServerResponse) {
+  const type = String(req.headers["content-type"] ?? "");
+  const proto = /protobuf/i.test(type);
+  const reply = (status: number, message?: string) => {
+    if (proto) {
+      res.writeHead(status, { "Content-Type": "application/x-protobuf" });
+      res.end();
+    } else json(res, status, message ? { error: message } : { partialSuccess: {} });
+  };
+  let spans;
+  try {
+    spans = parseOtlp(decodeBody(await rawBody(req), String(req.headers["content-encoding"] ?? "")), type);
+  } catch (err) {
+    return reply(400, err instanceof Error ? err.message : String(err));
+  }
+  try {
+    await ingest(spans, "otlp");
+    reply(200);
+  } catch (err) {
+    if (err instanceof NoRepoError) return reply(503, err.message);
+    throw err;
+  }
+}
+
 /** Open a repo and, unless the cache already knew it, run the intro analysis. */
 /**
  * CODEFLIGHT_LOCK_REPO=1 pins the server to the repo it started with: in a
@@ -120,6 +168,7 @@ async function open(root: string) {
   stopAllAgents();
   try {
     await openRepo(root);
+    await openTraces();
     // Its agents' PRs may have been merged or closed on GitHub while it was away.
     void syncPullRequests();
     // A freshly charted repo gets its intro stories written right after.
@@ -164,7 +213,35 @@ async function openGitHub(id: string) {
 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const route = `${req.method} ${url.pathname}`;
+  const traceId = req.method === "GET" && url.pathname.match(/^\/api\/traces\/([0-9a-fA-F]{1,32})$/)?.[1];
+  if (traceId) {
+    const spans = await getTrace(traceId);
+    if (!spans) return json(res, 404, { error: "No such trace held (only recent ones are kept whole)." }), true;
+    json(res, 200, { traceId: traceId.toLowerCase(), spans });
+    return true;
+  }
   switch (route) {
+    case "POST /v1/traces":
+      await otlp(req, res);
+      return true;
+    case "GET /api/runtime": {
+      // The runtime layer: services, files and what calls what, from traces (see server/traces.ts).
+      const services = url.searchParams.get("service")?.split(",").filter(Boolean);
+      const map = await runtimeMap({ services, path: url.searchParams.get("path") ?? undefined });
+      if (!map) return json(res, 404, { error: "No repository open." }), true;
+      json(res, 200, map);
+      return true;
+    }
+    case "DELETE /api/runtime":
+      await clearTraces();
+      json(res, 200, { ok: true });
+      return true;
+    case "GET /api/traces": {
+      const list = await listTraces({ service: url.searchParams.get("service") ?? undefined, limit: Number(url.searchParams.get("limit") ?? 50) || 50 });
+      if (!list) return json(res, 404, { error: "No repository open." }), true;
+      json(res, 200, list);
+      return true;
+    }
     case "GET /api/events": {
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -550,6 +627,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       json(res, done && s?.state === "ready" ? 200 : done ? 500 : 202, { ok: s?.state === "ready", id: story.id, state: s?.state, error: s?.error, title: s?.title, url: link, diffUrl, story: s });
       return true;
     }
+    case "POST /api/tune-presets": {
+      const b = await body<{ presets?: unknown[] }>(req);
+      if (!Array.isArray(b.presets)) return json(res, 400, { error: "No presets." }), true;
+      const list = b.presets.map(cleanPreset).filter((p): p is TunePreset => !!p);
+      // One per name: the last one sent wins.
+      await setTunePresets([...new Map(list.map((p) => [p.name.toLowerCase(), p])).values()]);
+      json(res, 200, { ok: true });
+      return true;
+    }
     case "POST /api/story-settings": {
       const b = await body<{ settings?: Partial<StorySettings> }>(req);
       const s = b.settings ?? {};
@@ -662,6 +748,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
 async function main() {
   await loadEnv();
   await loadStorySettings();
+  await loadTunePresets();
   const server = createServer();
 
   let assets: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
@@ -724,6 +811,26 @@ async function main() {
     attachVoice(secure);
     secure.listen(httpsPort, () => console.log(`  🔒 https on https://localhost:${httpsPort} (and your LAN address)\n`));
   }
+
+  if (otlpPort > 0 && otlpPort !== port) {
+    const receiver = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://x");
+      if (req.method === "POST" && url.pathname === "/v1/traces") {
+        otlp(req, res).catch((err) => {
+          console.error("[otlp]", err);
+          if (!res.headersSent) json(res, 500, { error: String(err) });
+        });
+      } else if (url.pathname === "/healthz") json(res, 200, { ok: true });
+      else json(res, 404, { error: "Only POST /v1/traces here." });
+    });
+    // Something else (a collector) may have the port already; the main port takes traces too.
+    receiver.on("error", (err) => console.log(`     (OTLP receiver not started on :${otlpPort}: ${err.message}; POST /v1/traces on :${port} still works)\n`));
+    receiver.listen(otlpPort, () => {
+      noteOtlp(`:${otlpPort}`);
+      console.log(`     OTLP/HTTP traces on http://localhost:${otlpPort}/v1/traces\n`);
+    });
+  }
+  startPulling();
 
   server.listen(port, () => {
     console.log(`\n  ✦  Constellate on http://localhost:${port}\n`);

@@ -8,6 +8,8 @@ import { findPath } from "./scan";
 import { addOverlay, changeOverlays, findView, session, subscribe } from "./session";
 import { AGENTS_ON, onAgentFinished } from "./agents";
 import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
+import { listBranches } from "./branch";
+import { TUNE_ACTIONS, runTune, tuneNote } from "./tune";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -21,7 +23,7 @@ import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
 
 const INWORLD_WS = "wss://api.inworld.ai/api/v1/realtime/session";
 // The voice drives the UI through tools, so the session model must support them.
-const REALTIME_MODEL = process.env.INWORLD_REALTIME_MODEL ?? "openai/gpt-5.5";
+const REALTIME_MODEL = process.env.INWORLD_REALTIME_MODEL ?? "openai/gpt-5.6-luna";
 
 const fn = (name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []) => ({
   type: "function",
@@ -70,6 +72,17 @@ const TOOLS = [
     span: { type: "string", enum: ["last_commit", "day", "week", "month", "all", "uncommitted"] },
   }, ["span"]),
   fn("clear_history", "Back to the present: stop showing history on the map."),
+  fn("show_branch", "Put a branch on the map (names from the branches list): the map becomes the code on that branch, with what it changed since it forked lit, and the camera flies there. Instant. For an agent's branch, use show_agent.", {
+    branch: { type: "string", description: "The branch name; a close guess like 'login' is fine" },
+  }, ["branch"]),
+  fn("close_branch", "Back to the map as it's checked out: stop showing a branch."),
+  fn("leave_table", "In the headset's passthrough: take the map off the real table it's set down on (table mode ends), back floating in front of them. The table is forgotten until they place it again."),
+  fn("connection_direction", "In the headset, with a body focused with its rings of connections (the right stick): light only its inbound connections (the files that import it), only its outbound ones (the files it imports), or both. Kept for the next focus too. Instant.", {
+    dir: { type: "string", enum: ["in", "out", "both"] },
+  }, ["dir"]),
+  fn("changed_only", "While a branch (or history) is on the map: on, show only the files it changed, everything else steps off; off, the whole map again. Instant. Use it when they ask for just the changes, or for the whole map back.", {
+    on: { type: "boolean" },
+  }, ["on"]),
   fn("replay_history", "Play through the commits toward the present, one at a time: the map turns to each commit in turn."),
   fn("add_marker", "Put a marker on files by path patterns (globs or plain words), without reorganizing anything: a coloured beacon appears over those files. For a marker that needs the code read to choose its files, ask the navigator.", {
     label: { type: "string" },
@@ -92,13 +105,20 @@ const TOOLS = [
   fn("stop_navigator", "Cancel what the navigator is working on, when they change their mind."),
 ];
 
+/** The Tune panel's knobs and presets. Shared with typed Ask (see tune.ts). */
+const TUNE_TOOLS = TUNE_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
+
 /** Coding agents: only offered when the server allows them. Shared with typed Ask (see actions.ts). */
 const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
 
 /** Tools called mid-sentence. Prompting a response after them would cut the sentence off. */
-const SILENT = new Set(["show_agent", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
+const SILENT = new Set(["show_agent", "show_branch", "close_branch", "changed_only", "connection_direction", "clear_history", "fly_to", "open_file", "focus_module", "overview", "back", "show_frame", "highlight", "clear_highlight", "set_layer", "set_lens", "clear_filter", "edit_markers"]);
 
 const FOLLOW_UP_SETTLE_MS = 400;
+/** The least time between two instruction updates. */
+const SYNC_MIN_MS = 2000;
+/** How long after they stop talking to wait for the reply to their turn before asking for one. */
+const NUDGE_AFTER_SPEECH_MS = 1500;
 
 /* ---------------------------- instructions ---------------------------- */
 
@@ -138,7 +158,10 @@ function frameDoc(frame: Frame | undefined): string {
     .join("\n");
 }
 
-function instructions(screen: ScreenContext): string {
+/** The branches worth showing: those with commits their base doesn't have. */
+type Branches = { base: string; names: string[] };
+
+function instructions(screen: ScreenContext, branches: Branches | null): string {
   const s = session.state;
   const o = s.overview;
   const frame = s.frames.find((f) => f.id === screen.frameId) ?? s.frames.at(-1);
@@ -153,6 +176,7 @@ function instructions(screen: ScreenContext): string {
     "",
     "You have NOT read this code. You only know what is written below. The moment they want to understand something, see something, or ask about code not shown here, call ask_navigator (or focus_topic for a suggested topic). Say a short line first ('let me pull that up'), then stop; when the result arrives, say it in your own words. Never invent how something is wired.",
     "If they just want to go somewhere — 'take me to the auth code', 'open the server' — that's navigation: use fly_to or focus_module yourself, no navigator needed.",
+    "Settings are yours too: tune turns any knob of the Tune panel (how the map looks and moves, and the headset's own settings), reset_tune puts them back, use_preset / save_preset / delete_preset work the presets. Do it straight away and say what you changed in a few words.",
     "",
     AGENTS_ON
       ? "You can also start coding agents (start_agent) when they want the code changed: each works on its own branch, and they review what it did on the map (show_agent). A finished agent's work opens as a pull request on its own; merge_pr merges it, only after they confirm. Questions still go to the navigator."
@@ -179,6 +203,12 @@ function instructions(screen: ScreenContext): string {
     s.overlays.length
       ? `Markers on the map (for edit_markers): ${s.overlays.map((g) => `[${g.id}] ${g.label} — ${g.paths.length} files${g.frameId ? `, from answer ${g.frameId}` : ""}${g.visible ? "" : " (hidden)"}`).join("; ")}`
       : "",
+    branches?.names.length
+      ? `Branches ahead of ${branches.base} (for show_branch), newest first: ${branches.names.slice(0, 30).join(", ")}${s.repo?.branch ? `. Checked out: ${s.repo.branch}` : ""}.`
+      : "",
+    screen.branch
+      ? `The map is showing the branch ${screen.branch.name}${screen.branch.base ? ` against ${screen.branch.base}` : ""}${screen.branch.changedOnly ? ", only the files it changed (changed_only off brings back the whole map)" : " (changed_only shows just the files it changed)"}; close_branch goes back to the checked-out code.`
+      : "",
     screen.range ? `The map is showing history: ${screen.range}.` : "",
     screen.lens ? `The map is organized by: ${screen.lens}.` : "",
     screen.filter ? `The map is filtered to ${screen.filter}${screen.visibleFiles !== undefined ? ` (${screen.visibleFiles} files)` : ""}.` : "",
@@ -200,6 +230,7 @@ function instructions(screen: ScreenContext): string {
       ? "A story is open, and it pauses while they talk to you. Answer a quick question about it from its script yourself; for anything that needs the code read or something drawn, ask the navigator, and the story waits while the answer is on screen."
       : "",
     storyNote(screen.story),
+    tuneNote({ screen }),
     screen.selection ? `They selected this — "this"/"that" means it:\n"""\n${screen.selection.slice(0, 1500)}\n"""` : "",
   ]
     .filter(Boolean)
@@ -208,6 +239,15 @@ function instructions(screen: ScreenContext): string {
 
 type VoiceSettings = { voiceId: string; speed: number; eagerness: "low" | "medium" | "high"; interrupt: boolean; ttsModel: string };
 const DEFAULTS: VoiceSettings = { voiceId: "Sophie", speed: 1, eagerness: "medium", interrupt: true, ttsModel: "inworld-tts-2" };
+
+/**
+ * Only the instructions. Re-sending the audio config restarts Inworld's turn
+ * detection and speech, which chopped what they were saying into fragments
+ * and cut the voice off mid-sentence whenever the screen or an agent changed.
+ */
+function instructionsUpdate(text: string) {
+  return { type: "session.update", session: { type: "realtime", instructions: text } };
+}
 
 function sessionUpdate(text: string, v: VoiceSettings) {
   return {
@@ -226,7 +266,7 @@ function sessionUpdate(text: string, v: VoiceSettings) {
         },
         output: { model: v.ttsModel, voice: v.voiceId, ...(v.speed !== 1 ? { speed: v.speed } : {}) },
       },
-      tools: AGENTS_ON ? [...TOOLS, ...AGENT_TOOLS] : TOOLS,
+      tools: AGENTS_ON ? [...TOOLS, ...TUNE_TOOLS, ...AGENT_TOOLS] : [...TOOLS, ...TUNE_TOOLS],
       providerData: { stt: { voice_profile: false } },
     },
   };
@@ -243,6 +283,8 @@ function bridge(client: WebSocket) {
   }
 
   let screen: ScreenContext = {};
+  let branches: Branches | null = null;
+  let branchesAt = 0;
   let settings = DEFAULTS;
   let upstream: WebSocket | null = null;
   let ready = false;
@@ -251,6 +293,10 @@ function bridge(client: WebSocket) {
   let followUp: ReturnType<typeof setTimeout> | undefined;
   let lastInstructions = "";
   let syncTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSync = 0;
+  let userSpeaking = false;
+  let nudgeAfterSpeech = false;
+  let pendingSync = false;
   let closed = false;
   let attempt = 0;
   const pending: string[] = [];
@@ -265,22 +311,64 @@ function bridge(client: WebSocket) {
     if (upstream?.readyState === WebSocket.OPEN) upstream.send(JSON.stringify(obj));
   };
 
-  /** Re-issue the session's instructions, but only when they actually changed. */
-  const sync = () => {
+  /** Send the instructions now if they changed. */
+  const flush = () => {
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => {
-      if (!ready) return;
-      const text = instructions(screen);
-      if (text === lastInstructions) return;
-      lastInstructions = text;
-      send(sessionUpdate(text, settings));
-    }, 250);
+    syncTimer = undefined;
+    if (!ready) return;
+    const text = instructions(screen, branches);
+    if (text === lastInstructions) return;
+    lastInstructions = text;
+    lastSync = Date.now();
+    send(instructionsUpdate(text));
   };
 
-  /** Never start a response over one being spoken — it truncates mid-sentence. */
+  /**
+   * Re-issue the session's instructions when they changed — but never while
+   * they're talking or the voice is speaking, and at most every couple of
+   * seconds (a working agent changes them constantly). A held-back update
+   * goes out when the turn ends, or right before the voice is asked to speak.
+   */
+  const sync = () => {
+    if (syncTimer) return;
+    const wait = Math.max(250, SYNC_MIN_MS - (Date.now() - lastSync));
+    syncTimer = setTimeout(() => {
+      syncTimer = undefined;
+      if (userSpeaking || responseActive) pendingSync = true;
+      else flush();
+    }, wait);
+  };
+  const settle = () => {
+    if (!pendingSync || userSpeaking || responseActive) return;
+    pendingSync = false;
+    sync();
+  };
+
+  /** The branch list, read again at most every 20s: an agent may have made one since. */
+  const refreshBranches = () => {
+    const root = session.idx?.graph.root;
+    if (!root || Date.now() - branchesAt < 20_000) return;
+    branchesAt = Date.now();
+    void listBranches(root).then(
+      (b) => {
+        branches = { base: b.base, names: b.branches.filter((x) => x.name !== b.base && x.ahead > 0).map((x) => x.name) };
+        sync();
+      },
+      () => undefined,
+    );
+  };
+
+  /**
+   * Never start a response over one being spoken — it truncates mid-sentence —
+   * nor while they're talking: the reply to their turn picks up the news.
+   */
   const respond = () => {
-    if (responseActive) followUpWhenIdle = true;
-    else send({ type: "response.create" });
+    if (userSpeaking) nudgeAfterSpeech = true;
+    else if (responseActive) followUpWhenIdle = true;
+    else {
+      flush();
+      send({ type: "response.create" });
+    }
   };
 
   /** A late result, injected as a new turn for the voice to say. */
@@ -427,6 +515,37 @@ function bridge(client: WebSocket) {
       case "clear_history":
         command({ cmd: "clear_range" });
         return { ok: true };
+      case "show_branch": {
+        const want = str("branch");
+        const names = branches?.names ?? [];
+        const bare = (n: string) => n.replace(/^[^/]+\//, "");
+        const lower = want.toLowerCase();
+        const hits = names.includes(want)
+          ? [want]
+          : [names.filter((n) => n.toLowerCase() === lower || bare(n).toLowerCase() === lower), names.filter((n) => n.toLowerCase().includes(lower))].find((h) => h.length) ?? [];
+        if (!want || hits.length !== 1) {
+          return { ok: false, error: hits.length ? `"${want}" could be ${hits.slice(0, 6).join(", ")}: ask which.` : `No branch matches "${want}". The branches: ${names.slice(0, 20).join(", ") || "none ahead of the base"}.` };
+        }
+        command({ cmd: "show_branch", branch: hits[0], base: branches?.base });
+        return { ok: true, branch: hits[0] };
+      }
+      case "close_branch":
+        command({ cmd: "close_branch" });
+        return { ok: true };
+      case "leave_table":
+        if (screen.tune?.mode !== "ar") return { ok: false, error: "They aren't in passthrough, so there's no table." };
+        command({ cmd: "leave_table" });
+        return { ok: true };
+      case "connection_direction": {
+        if (!screen.tune?.mode) return { ok: false, error: "They aren't in the headset; the direction is for a focus made there." };
+        const dir = args.dir === "in" || args.dir === "out" ? args.dir : "both";
+        command({ cmd: "focus_direction", dir });
+        return { ok: true };
+      }
+      case "changed_only":
+        if (!screen.branch && !screen.range) return { ok: false, error: "No branch or history is on the map. Show one first." };
+        command({ cmd: "changed_only", on: args.on !== false });
+        return { ok: true };
       case "replay_history":
         command({ cmd: "replay" });
         return { ok: true, say: "Narrate each commit briefly as it flies by." };
@@ -464,17 +583,18 @@ function bridge(client: WebSocket) {
       case "stop_navigator":
         return { ok: interrupt() };
       default:
-        // The coding agents, shared with typed Ask. The voice has its yes for
-        // a merge out loud before it calls merge_pr, so it merges.
+        // The Tune panel, then the coding agents, both shared with typed Ask.
+        // The voice has its yes for a merge out loud before it calls merge_pr, so it merges.
         return (
-          (AGENTS_ON &&
+          runTune(name, args, { surface: "voice", screen, command, report: () => {} }) ??
+          ((AGENTS_ON &&
             runAction(name, args, {
               surface: "voice",
               screen,
               command,
               report: (news, ok) => deliver(`${news} ${ok ? "Tell them in a line." : "Tell them briefly."}`),
               changed: sync,
-            })) || { ok: false, error: `Unknown tool ${name}` }
+            })) || { ok: false, error: `Unknown tool ${name}` })
         );
     }
   };
@@ -500,8 +620,24 @@ function bridge(client: WebSocket) {
         return;
       }
 
-      if (msg.type === "response.created") {
+      if (msg.type === "input_audio_buffer.speech_started") {
+        userSpeaking = true;
+      } else if (msg.type === "input_audio_buffer.speech_stopped") {
+        userSpeaking = false;
+        if (nudgeAfterSpeech) {
+          // Their turn usually gets a reply of its own, which covers the news;
+          // if none comes, ask for one.
+          nudgeAfterSpeech = false;
+          clearTimeout(followUp);
+          followUp = setTimeout(() => {
+            followUp = undefined;
+            if (!responseActive && !userSpeaking) respond();
+          }, NUDGE_AFTER_SPEECH_MS);
+        }
+        settle();
+      } else if (msg.type === "response.created") {
         responseActive = true;
+        userSpeaking = false;
         // The model started on its own (semantic VAD does this); a queued
         // nudge would now collide with it.
         clearTimeout(followUp);
@@ -513,14 +649,15 @@ function bridge(client: WebSocket) {
           clearTimeout(followUp);
           followUp = setTimeout(() => {
             followUp = undefined;
-            if (!responseActive) send({ type: "response.create" });
+            if (!responseActive) respond();
           }, FOLLOW_UP_SETTLE_MS);
         }
+        settle();
       }
 
       switch (msg.type) {
         case "session.created":
-          lastInstructions = instructions(screen);
+          lastInstructions = instructions(screen, branches);
           ws.send(JSON.stringify(sessionUpdate(lastInstructions, settings)));
           return;
         case "session.updated":
@@ -560,6 +697,7 @@ function bridge(client: WebSocket) {
     ws.on("close", () => {
       if (closed) return;
       ready = false;
+      responseActive = userSpeaking = false;
       toClient({ type: "proxy.status", status: "reconnecting" });
       setTimeout(connect, Math.min(15_000, 500 * 2 ** attempt++));
     });
@@ -576,12 +714,15 @@ function bridge(client: WebSocket) {
     }
     if (msg.type === "proxy.settings") {
       settings = { ...DEFAULTS, ...(msg.settings ?? {}) };
-      lastInstructions = "";
-      sync();
+      if (ready) {
+        lastInstructions = instructions(screen, branches);
+        send(sessionUpdate(lastInstructions, settings));
+      }
       return;
     }
     if (msg.type === "proxy.screen") {
       screen = msg.screen ?? {};
+      refreshBranches();
       sync();
       return;
     }

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryRepo } from "../../shared/types";
-import { fetchFile, type FileData } from "../lib/api";
+import { fetchFile, post, type FileData } from "../lib/api";
 import type { Mode } from "./engine";
 import type { MapHit, MapInput, MapStyle } from "./map";
 import { splitList } from "../../shared/filter";
-import type { Actions, AppActions, AppModel, Model } from "./model";
+import type { Actions, AppActions, AppModel, BranchRow, FocusDir, Model } from "./model";
 import type { Room, StorySource } from "./room";
 import { suggest } from "./suggest";
 
@@ -58,8 +58,8 @@ try {
 if (resumeTo) navigator.xr?.addEventListener("sessiongranted", () => ((granted = true), onGranted?.()), { once: true });
 
 /** The map's look, with the focus's inner rings marked so only links reaching in from it light. */
-function styled(style: MapStyle, f: { paths: string[]; core: string[] } | null): MapStyle {
-  return f && style.emphasis === f.paths ? { ...style, core: f.core } : style;
+function styled(style: MapStyle, f: { paths: string[]; core: string[]; dir: FocusDir } | null): MapStyle {
+  return f && style.emphasis === f.paths ? { ...style, core: f.core, coreDir: f.dir === "both" ? undefined : f.dir } : style;
 }
 
 export function useXR(feed: XRFeed) {
@@ -71,15 +71,22 @@ export function useXR(feed: XRFeed) {
   const [tuneOpen, setTuneOpen] = useState(false);
   const [hintsOpen, setHintsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [viewsOpen, setViewsOpen] = useState(false);
   const [table, setTable] = useState(false);
+  const [outlining, setOutlining] = useState<Model["outlining"]>(null);
+  const [surfaces, setSurfaces] = useState(0);
   const [inputs, setInputs] = useState({ hands: false, controllers: false });
   /** A focus made with the right stick: what it's on, how wide, and the files it lit. */
-  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
+  const [focusAt, setFocusAt] = useState<{ hit: MapHit; depth: number; dir: FocusDir; label: string; count: number; more: boolean; paths: string[]; core: string[] } | null>(null);
+  /** Which way focuses go: kept from one focus to the next. */
+  const focusDir = useRef<FocusDir>("both");
   const focusRef = useRef(focusAt);
   focusRef.current = focusAt;
   const [keyboard, setKeyboard] = useState<Model["keyboard"]>(null);
   const [fileData, setFileData] = useState<FileData | null>(null);
   const [repos, setRepos] = useState<LibraryRepo[]>([]);
+  const [branches, setBranches] = useState<Model["branches"]>(null);
+  const [fileDiff, setFileDiff] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [entering, setEntering] = useState(false);
   const feedRef = useRef(feed);
@@ -131,6 +138,14 @@ export function useXR(feed: XRFeed) {
         // Hand-edited, the navigator's name and file set no longer describe what's shown (as on the desktop).
         const f = feedRef.current.model.mapFilter;
         a.setMapFilter({ ...f, label: undefined, paths: undefined, [kb.mode]: splitList(text) });
+      } else if (kb?.mode === "view") {
+        // The current filter, under this name; the same name replaces it (as on the desktop).
+        const { mapFilter, savedFilters } = feedRef.current.model;
+        const name = text.trim();
+        if (name) a.setSavedFilters([...savedFilters.filter((v) => v.name !== name), { name, filter: mapFilter }]);
+      } else if (kb?.mode === "preset") {
+        // Saved in the headset, a preset keeps the headset's knobs as well as the map's.
+        if (text.trim()) a.saveTunePreset(text, true);
       } else if (kb?.mode === "note" && kb.target) a.addNote(kb.target, text);
       else if (kb?.mode === "repo") a.openPath(text);
       else if (kb?.mode === "agent") a.startAgent(text);
@@ -160,7 +175,25 @@ export function useXR(feed: XRFeed) {
       setPlacing(true);
       roomRef.current?.engine.startPlacing();
     },
+    leaveTable: () => {
+      setMenuOpen(false);
+      roomRef.current?.engine.leaveTable();
+    },
     recenterPanels: () => roomRef.current?.engine.recenterPanels(),
+    outlineTable: () => {
+      setMenuOpen(false);
+      setPlacing(false);
+      roomRef.current?.engine.startOutline();
+    },
+    undoOutline: () => roomRef.current?.engine.undoOutline(),
+    finishOutline: () => roomRef.current?.engine.finishOutline(),
+    cancelOutline: () => roomRef.current?.engine.cancelOutline(),
+    addSurface: () => {
+      setMenuOpen(false);
+      setPlacing(false);
+      roomRef.current?.engine.startOutline("surface");
+    },
+    clearSurfaces: () => roomRef.current?.engine.clearSurfaces(),
     toggleTune: () => {
       setMenuOpen(false);
       setTuneOpen((o) => !o);
@@ -174,6 +207,10 @@ export function useXR(feed: XRFeed) {
       setMenuOpen(false);
       setFilterOpen((o) => !o);
     },
+    toggleViews: () => {
+      setMenuOpen(false);
+      setViewsOpen((o) => !o);
+    },
     focusWider: () => {
       const f = focusRef.current;
       if (f?.more) focusOn(f.hit, f.depth + 1);
@@ -181,6 +218,12 @@ export function useXR(feed: XRFeed) {
     focusNarrower: () => {
       const f = focusRef.current;
       if (f && f.depth > 0) focusOn(f.hit, f.depth - 1);
+    },
+    focusDirection: (dir) => {
+      focusDir.current = dir;
+      const f = focusRef.current;
+      // Just the body itself has no direction: one way or the other means its first ring.
+      if (f) focusOn(f.hit, dir === "both" ? f.depth : Math.max(1, f.depth));
     },
     focusOnly: () => {
       const f = focusRef.current;
@@ -207,13 +250,36 @@ export function useXR(feed: XRFeed) {
       setMenuOpen(false);
       feedRef.current.actions.startTour();
     },
+    showBranch: (name, base) => {
+      setMenuOpen(false);
+      feedRef.current.actions.showBranch(name, base);
+    },
+    showAgent: (id) => {
+      setMenuOpen(false);
+      feedRef.current.actions.showAgent(id);
+    },
+    fetchBranches: () => {
+      setBranches((b) => b && { ...b, fetching: true, error: undefined });
+      void loadBranches(post("/api/branches/fetch"));
+    },
   };
+  /** The branches, from a list or a fetch of the remotes; a failed fetch keeps the list it had. */
+  const loadBranches = (req: Promise<Response>) =>
+    req
+      .then(async (r) => {
+        const j = (await r.json().catch(() => ({}))) as { base?: string; branches?: BranchRow[]; error?: string; failed?: { remote: string }[] };
+        if (!r.ok || !j.base) throw new Error(j.error ?? "Couldn't list the branches.");
+        const failed = j.failed?.length ? `Couldn't fetch ${j.failed.map((f) => f.remote).join(", ")}.` : undefined;
+        setBranches({ base: j.base, list: j.branches ?? [], fetching: false, error: failed });
+      })
+      .catch((e) => setBranches((b) => ({ base: b?.base ?? "", list: b?.list ?? [], fetching: false, error: String(e instanceof Error ? e.message : e) })));
   /** The filter from before "Show only these", to go back to. */
   const beforeOnly = useRef<AppModel["mapFilter"] | null>(null);
   /** Focus on a body with `depth` rings of its connections. */
   const focusOn = (hit: MapHit, depth: number) => {
-    const r = feedRef.current.actions.focusAround(hit, depth);
-    setFocusAt(r.count ? { hit, depth, ...r } : null);
+    const dir = focusDir.current;
+    const r = feedRef.current.actions.focusAround(hit, depth, dir);
+    setFocusAt(r.count ? { hit, depth, dir, ...r } : null);
   };
   // Focused some other way since (a pick, the menu, back): the bar goes.
   const emphasis = feed.style.emphasis;
@@ -267,6 +333,7 @@ export function useXR(feed: XRFeed) {
                   setTuneOpen(false);
                   setHintsOpen(false);
                   setFilterOpen(false);
+                  setViewsOpen(false);
                   setKeyboard(null);
                   setPlacing(false);
                 } else if (!feedRef.current.model.settings.hintsSeen) setHintsOpen(true);
@@ -283,6 +350,8 @@ export function useXR(feed: XRFeed) {
               onSelect: (paths, how) => feedRef.current.actions.focusPaths(paths, `${paths.length} file${paths.length > 1 ? "s" : ""} ${how === "lasso" ? "you looped" : "you framed"}`),
               onInputs: setInputs,
               onTable: setTable,
+              onOutline: setOutlining,
+              onSurfaces: setSurfaces,
               // In you go: to what you were looking at on the desktop, or the whole map.
               onEntered: () => feedRef.current.actions.frameSelection(),
             },
@@ -345,13 +414,35 @@ export function useXR(feed: XRFeed) {
       live = false;
     };
   }, [presenting, path]);
+  // A changed file opens on its diff, as on the desktop.
+  const change = feed.model.fileChange;
+  const diffUrl = change && path ? change.diffUrl ?? `/api/diff?path=${encodeURIComponent(path)}&from=${change.from}&to=${change.to}` : null;
+  const diffKey = diffUrl && `${diffUrl}|${change!.from}|${change!.to}`;
+  useEffect(() => {
+    if (!presenting || !diffUrl) return setFileDiff(undefined);
+    let live = true;
+    setFileDiff(undefined);
+    void fetch(diffUrl)
+      .then((r) => (r.ok ? r.json() : { diff: null }))
+      .then((b: { diff: string | null }) => live && setFileDiff(b.diff))
+      .catch(() => live && setFileDiff(null));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenting, diffKey]);
   useEffect(() => {
     if (presenting && menuOpen && feed.model.library) void fetch("/api/repos").then((r) => (r.ok ? r.json() : [])).then(setRepos).catch(() => {});
   }, [presenting, menuOpen, feed.model.library]);
+  // Fresh each time the menu opens, as an agent may have made one since.
+  useEffect(() => {
+    if (presenting && menuOpen && feed.model.status !== "idle" && feed.model.status !== "scanning") void loadBranches(fetch("/api/branches"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presenting, menuOpen, feed.model.status]);
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, story: null, repos, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, table, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths } });
+    room.update({ ...feed.model, fileData, fileDiff, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths, dir: focusAt.dir } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */
@@ -364,6 +455,8 @@ export function useXR(feed: XRFeed) {
       focus: (ps: string[]) => live() && roomRef.current!.engine.focus(ps),
       overview: () => live() && roomRef.current!.engine.overview(),
       pulse: (p: string) => live() && roomRef.current!.engine.map.pulse(p),
+      leaveTable: () => live() && roomRef.current!.engine.leaveTable(),
+      focusDirection: (dir: FocusDir) => own.current.focusDirection!(dir),
     }),
     [],
   );

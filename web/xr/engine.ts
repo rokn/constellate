@@ -5,6 +5,8 @@ import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
 import { Bloom } from "./bloom";
 import { type Ell, HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
+import { sfx } from "./sound";
+import { type Plane, type SavedTable, type Table, Surface, disc, facing, loadSurfaces, loadTable, mainAxis, overTable, planeThrough, saveSurfaces, saveTable, tableFrom, tableIn, tableInto, v3, vec } from "./surface";
 import { C, Panel, Tag, roundRect } from "./ui";
 
 /**
@@ -29,7 +31,9 @@ import { C, Panel, Tag, roundRect } from "./ui";
 
 export type Mode = "flat" | "vr" | "ar";
 export type Button = "menu" | "back" | "voice" | "overview" | "frame" | "ask" | "forward";
-export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf";
+export type Slot = "left" | "right" | "center" | "low" | "dock" | "tune" | "hints" | "filter" | "focusbar" | "table" | "shelf" | "views" | "outline";
+/** The slots that lie on the table when the map is on one: the strip along the front, the shelf on the right, the saved views on the left. */
+const TABLE_SLOTS: Slot[] = ["table", "shelf", "views"];
 /** Which kinds of hands are in: what the controls page lists. */
 export type Inputs = { hands: boolean; controllers: boolean };
 
@@ -57,14 +61,28 @@ export type EngineHandlers = {
   onInputs?: (i: Inputs) => void;
   /** The map is (or no longer is) on a real table. */
   onTable?: (on: boolean) => void;
+  /** Tracing the table (or a surface) by hand: how many corners so far, or null when done. */
+  onOutline?: (o: { kind: "table" | "surface"; corners: number } | null) => void;
+  /** How many surfaces of your own there are. */
+  onSurfaces?: (n: number) => void;
 };
 
+export type { Table };
+
+/** A wall the headset found (a vertical plane): its pose, and its extent in its own x and z. */
+type Wall = { m: THREE.Matrix4; x0: number; x1: number; z0: number; z1: number };
+/** A level surface the headset found (a horizontal plane): its pose, its outline in its own x and z, and its size. */
+type Flat = { m: THREE.Matrix4; poly: [number, number][]; sx: number; sz: number };
+/** Where a panel would land if let go now: flat on the table, flush on a wall, or on one of your surfaces (by its id). */
+type Snap = { on: string; pos: THREE.Vector3; quat: THREE.Quaternion };
 /**
- * The real table the map sits on, from the detected planes (or a guess).
- * `toward` runs from its middle to the edge nearest you, `right` along that
- * edge to your right; the half sizes are along those.
+ * A surface you traced: its plane, drawn like the table, and the headset's
+ * anchor at its middle (made with its pose, so it brings the whole pose back
+ * next session). Null `plane` until a restored anchor is found again.
  */
-export type Table = { center: THREE.Vector3; toward: THREE.Vector3; right: THREE.Vector3; halfW: number; halfD: number };
+type Custom = { id: string; plane: Plane | null; poly: [number, number][]; top: Surface; anchor: XRAnchor | null; uuid: string | null; wanted: boolean };
+/** How near a surface (m) a carried panel has to be let go for it to snap onto it. */
+const SNAP_REACH = 0.14;
 
 /** How long a pinch on open sky is held still before it draws a lasso instead of moving the map. */
 const LASSO_HOLD = 450;
@@ -101,7 +119,7 @@ type Pointer = {
   press: Press | null;
   squeezing: boolean;
   /** A panel held with the grip: it follows the hand. */
-  carry: { panel: Panel; offset: THREE.Matrix4 } | null;
+  carry: { panel: Panel; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[] } | null;
   buttons: boolean[];
   /** Thumbstick turned past the snap threshold, waiting for it to come back. */
   snapped: boolean;
@@ -137,6 +155,12 @@ export class Engine {
   readonly hud = new THREE.Group();
   /** Drawn over the (bloomed) map: panels, hands, rays, tags. */
   readonly overlay = new THREE.Scene();
+  /** Panels the map stands in front of: drawn before the map, so it covers them. */
+  readonly under = new THREE.Scene();
+  private behind = new Set<Panel>();
+  private sortedAt = 0;
+  /** The scene's background while a frame is drawn in parts. */
+  private sky: THREE.Scene["background"] = null;
   mode: Mode = "flat";
   settings: XRSettings = DEFAULT_XR;
 
@@ -146,7 +170,7 @@ export class Engine {
    * Where the map is set down, in the room: it holds still while you move the
    * map, and the overview puts the map back on it. Placed by `placeSurface`.
    */
-  private surface: THREE.Mesh<THREE.CircleGeometry, THREE.ShaderMaterial>;
+  private surface = new Surface();
   private surfaceSet = false;
   /** In passthrough, the night drawn over your room as much as you ask for. */
   private backdrop: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
@@ -182,12 +206,40 @@ export class Engine {
   /** Panels set by the room: the one on your wrist, and the shelf a dragged body can be dropped on. */
   wrist: Panel | null = null;
   shelf: Panel | null = null;
+  /** Close a panel thrown away; false for one that can't be closed (it just drops). */
+  closePanel: ((p: Panel) => boolean) | null = null;
+  /** Panels lying on a real surface: on the table they move with it, and a fingertip presses them against it. */
+  private stuck = new Map<Panel, string>();
+  /** The surfaces you traced, this session (kept by their anchors for the next). */
+  private customs: Custom[] = [];
+  /** The walls the headset has found, looked at again every so often. */
+  private walls: Wall[] = [];
+  /** The level surfaces the headset has found: where a table is looked for. */
+  private flats: Flat[] = [];
+  private planesAt = 0;
+  /** The anchor's pose this session, once tracked: the table is kept relative to it. */
+  private anchorPose: THREE.Matrix4 | null = null;
+  /** Coming back in without the anchor: last time's table, looked for among the planes for a while. */
+  private lookFor: { saved: SavedTable; t0: number } | null = null;
+  /** Corners touched so far while tracing the table by hand; null when not tracing. */
+  private outline: THREE.Vector3[] | null = null;
+  /** What the outline being traced is for: the table, or a surface of your own. */
+  private outlineFor: "table" | "surface" = "table";
+  private outlineLine: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  /** The outline of where a carried panel would snap to. */
+  private ghost: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  /** The snap the carried panel had last frame, to tick when one comes into reach. */
+  private snapWas: string | null = null;
   private lasso: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   /** Both hands in an L: since when, and whether it has fired. */
   private framing = { since: 0, fired: false };
   private inputs: Inputs = { hands: false, controllers: false };
   private mouse = { x: 0, y: 0, down: -1, lastX: 0, lastY: 0, moved: false, keys: new Set<string>() };
   private dockYaw = 0;
+  /** The drawn controllers and hands, shown or not by the settings. */
+  private models: { controllers: THREE.Object3D[]; hands: THREE.Object3D[] } = { controllers: [], hands: [] };
+  /** Controllers you've put down: still tracked, drawn where they lie, but no longer pointing. */
+  private resting: { grip: THREE.Group; source: XRInputSource | null }[] = [];
   /** When the user last moved the map themselves; automatic refits made before that are dropped. */
   userMovedAt = 0;
 
@@ -238,8 +290,7 @@ export class Engine {
     this.floor = makeFloor();
     this.scene.add(this.floor);
     // Only drawn, never pointed at: rays, grabs and panels go straight through it.
-    this.surface = makeSurface();
-    this.scene.add(this.surface);
+    this.scene.add(this.surface.mesh);
 
     // A far starfield, so there is something to fly past. It belongs to the
     // room, not the map: it holds still while the map moves, which keeps the
@@ -268,6 +319,30 @@ export class Engine {
     this.lasso.visible = false;
     this.overlay.add(this.lasso);
 
+    // Where a carried panel will land: its outline on the table or the wall.
+    const ghostGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, -0.5, 0), new THREE.Vector3(0.5, -0.5, 0), new THREE.Vector3(0.5, 0.5, 0), new THREE.Vector3(-0.5, 0.5, 0)]);
+    this.ghost = new THREE.LineLoop(ghostGeo, new THREE.LineBasicMaterial({ color: C.good, transparent: true, opacity: 0.9, depthTest: false, toneMapped: false }));
+    this.ghost.renderOrder = 31;
+    this.ghost.visible = false;
+    this.overlay.add(this.ghost);
+
+    // The table's outline as it's traced by hand.
+    const outlineGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(66 * 3), 3));
+    this.outlineLine = new THREE.Line(outlineGeo, new THREE.LineBasicMaterial({ color: C.good, transparent: true, opacity: 0.95, depthTest: false, toneMapped: false }));
+    this.outlineLine.frustumCulled = false;
+    this.outlineLine.renderOrder = 31;
+    this.outlineLine.visible = false;
+    this.overlay.add(this.outlineLine);
+
+    // Now and then a body on the map chimes: one at random, in its top folder's note.
+    sfx.chimeSource = () => {
+      if (this.mode === "flat") return null;
+      const files = this.map.files();
+      const id = files[Math.floor(Math.random() * files.length)];
+      const at = id ? this.map.positionOf(id) : null;
+      return at ? { at: this.map.toWorld(at), key: id.split("/")[0] } : null;
+    };
+
     this.setupXRInput();
     this.setupMouse();
     window.addEventListener("resize", this.onResize);
@@ -286,6 +361,7 @@ export class Engine {
   setSettings(s: XRSettings) {
     const was = this.settings;
     this.settings = s;
+    sfx.configure(s);
     if (s.foveation !== was.foveation) this.renderer.xr.setFoveation(s.foveation);
     if (s.renderScale !== was.renderScale && !this.renderer.xr.isPresenting) this.renderer.xr.setFramebufferScaleFactor(s.renderScale);
     if (s.panelDistance !== was.panelDistance) this.recenterPanels();
@@ -308,8 +384,16 @@ export class Engine {
     this.floor.scale.setScalar(s.floorSize / 2);
     this.floor.material.uniforms.uOpacity.value = s.floorOpacity;
     // While you're choosing a surface, the reticle says where; the old table would only confuse it.
-    this.surface.visible = this.surfaceSet && this.mode !== "flat" && !this.placing && s.table && s.tableOpacity > 0;
-    this.surface.material.uniforms.uOpacity.value = s.tableOpacity;
+    this.surface.mesh.visible = this.surfaceSet && this.mode !== "flat" && !this.placing && !this.outline && s.table && s.tableOpacity > 0;
+    this.surface.opacity = s.tableOpacity;
+    // On a real table it is the table, and follows it as tracking corrects where that is.
+    if (this.mode === "ar" && this.table) this.surface.setPose(this.table.center.clone().addScaledVector(Y, 0.002), this.table.toward);
+    for (const c of this.customs) {
+      c.top.mesh.visible = this.mode === "ar" && !!c.plane && s.tableOpacity > 0;
+      c.top.opacity = s.tableOpacity * 0.8;
+    }
+    for (const m of this.models.controllers) m.visible = s.controllerModels;
+    for (const m of this.models.hands) m.visible = s.handModels;
   }
 
   /**
@@ -318,14 +402,14 @@ export class Engine {
    */
   private placeSurface() {
     const f = this.overviewFrame();
-    // On the real table when one was found under the anchor, else at the anchor.
-    if (this.mode === "ar" && (this.table || this.anchor)) this.surface.position.copy(this.table?.center ?? this.anchor!);
-    else {
-      const { pos, yaw } = this.head();
-      this.surface.position.set(pos.x - Math.sin(yaw) * f.dist, Math.max(0.05, pos.y + f.dy - f.radiusM), pos.z - Math.cos(yaw) * f.dist);
-    }
-    this.surface.scale.setScalar(f.radiusM * 1.25);
     this.surfaceSet = true;
+    // On the real table when one was found under the anchor: its own shape (see setTable).
+    if (this.mode === "ar" && this.table) return this.surface.setShape(this.table.poly);
+    // Else a disc at the anchor, or under the overview's framing in front of you.
+    this.surface.setShape(disc(f.radiusM * 1.25));
+    const { pos, yaw } = this.head();
+    const at = this.mode === "ar" && this.anchor ? this.anchor.clone() : new THREE.Vector3(pos.x - Math.sin(yaw) * f.dist, Math.max(0.05, pos.y + f.dy - f.radiusM), pos.z - Math.cos(yaw) * f.dist);
+    this.surface.setPose(at, new THREE.Vector3(0, 0, 1));
   }
 
 
@@ -356,17 +440,23 @@ export class Engine {
       await old.end().catch(() => {});
     }
     this.renderer.xr.setFramebufferScaleFactor(this.settings.renderScale);
+    // Audio starts on the press that took you in, while it still counts as one.
+    sfx.start();
     const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
       requiredFeatures: ["local-floor"],
-      optionalFeatures: mode === "ar" ? ["hand-tracking", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "bounded-floor"],
+      optionalFeatures: mode === "ar" ? ["hand-tracking", "tracked-sources", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "tracked-sources", "bounded-floor"],
     });
+    // With one hand free and a controller in the other, the one you set down moves here.
+    session.addEventListener("trackedsourceschange", (e) => this.trackedSourcesChange(e as XRInputSourcesChangeEvent));
     this.session = session;
     session.addEventListener("end", () => {
       if (this.session !== session) return;
       this.session = null;
+      for (const r of this.resting) if (r.source) this.restingOff(r);
       this.hitSource?.cancel();
       this.hitSource = null;
       this.mouse.keys.clear();
+      sfx.stop();
       this.setMode("flat");
     });
     await this.renderer.xr.setSession(session);
@@ -374,8 +464,15 @@ export class Engine {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     // A new session is a new room: panels open in front of you again.
     this.placed.clear();
+    this.stuck.clear();
     this.setMode(mode);
-    if (mode === "ar") void this.restoreAnchor(session);
+    sfx.play("enter");
+    if (mode === "ar") {
+      const saved = loadTable();
+      this.lookFor = saved?.plane ? { saved, t0: performance.now() } : null;
+      void this.restoreAnchor(session);
+      void this.restoreSurfaces(session);
+    }
     // Once the first poses are in, set the surface in front of you and frame what you were looking at (or the whole map).
     setTimeout(() => {
       this.placeSurface();
@@ -402,8 +499,14 @@ export class Engine {
       this.anchorLast = null;
       this.anchorWanted = null;
       this.tableFrom = null;
+      this.lookFor = null;
+      this.anchorPose = null;
+      this.walls = [];
+      this.flats = [];
       this.setTable(null);
     }
+    if (this.outline) this.cancelOutline();
+    this.dropSurfaces();
     this.surfaceSet = false;
     this.applyRoom();
     this.recenterPanels();
@@ -429,7 +532,7 @@ export class Engine {
     this.panels.push(p);
     this.hud.add(p.mesh);
     // A handle under every panel: point at it and hold the trigger (or the grip) to carry the panel.
-    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthWrite: false, toneMapped: false, opacity: 0.6 }));
+    const h = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.026), new THREE.MeshBasicMaterial({ map: handleTexture(), transparent: true, depthTest: false, depthWrite: false, toneMapped: false, opacity: 0.6 }));
     h.position.set(0, -p.heightM / 2 - 0.028, 0);
     h.renderOrder = 11;
     h.userData.handleOf = p;
@@ -445,7 +548,8 @@ export class Engine {
     const was = p.open;
     p.mesh.visible = true;
     p.invalidate();
-    if (!was && (!this.placed.has(p) || !this.inView(p) || slot === "focusbar")) this.place(p, slot);
+    // One you've stuck on a wall or the table stays there, seen or not.
+    if (!was && (!this.placed.has(p) || (!this.inView(p) && !this.stuck.has(p)) || slot === "focusbar")) this.place(p, slot);
     this.slots.set(p, slot);
   }
 
@@ -469,12 +573,17 @@ export class Engine {
   /** Put every open panel back around where you're looking; closed ones open there next time. */
   recenterPanels() {
     this.placed.clear();
+    this.stuck.clear();
     for (const [p, slot] of this.slots) if (p.open) this.place(p, slot);
   }
 
   private place(p: Panel, slot: Slot) {
-    if ((slot === "table" || slot === "shelf") && this.table) {
-      this.placeOnTable(p, slot);
+    this.stuck.delete(p);
+    if (TABLE_SLOTS.includes(slot) && this.table) {
+      const { pos, quat } = this.tablePose(p, slot);
+      p.mesh.position.copy(pos);
+      p.mesh.quaternion.copy(quat);
+      this.stuck.set(p, "table");
       this.placed.add(p);
       return;
     }
@@ -500,6 +609,8 @@ export class Engine {
       focusbar: { yaw: 0, dist: 0.95, dy: -0.36, tilt: 0.4 },
       table: { yaw: 0, dist: 0.7, dy: -0.45, tilt: 0.9 },
       shelf: { yaw: -0.5, dist: 0.8, dy: -0.4, tilt: 0.7 },
+      views: { yaw: 0.5, dist: 0.85, dy: -0.3, tilt: 0.4 },
+      outline: { yaw: 0, dist: 1.0, dy: 0.05, tilt: 0 },
     }[slot];
     // A desktop window sees a much narrower cone than a headset: the preview
     // sets the same panels further out and closer to the middle.
@@ -640,8 +751,12 @@ export class Engine {
       const ray = this.renderer.xr.getController(i);
       const grip = this.renderer.xr.getControllerGrip(i);
       const hand = this.renderer.xr.getHand(i);
-      grip.add(controllerModels.createControllerModel(grip));
-      hand.add(handModels.createHandModel(hand, "mesh"));
+      const cm = controllerModels.createControllerModel(grip);
+      const hm = handModels.createHandModel(hand, "mesh");
+      grip.add(cm);
+      hand.add(hm);
+      this.models.controllers.push(cm);
+      this.models.hands.push(hm);
       this.overlay.add(ray, grip, hand);
       const { line, dot } = this.makeRayVisual();
       ray.add(line);
@@ -694,6 +809,48 @@ export class Engine {
       ray.addEventListener("selectend", () => this.pressEnd(id));
       ray.addEventListener("squeezestart", () => this.squeezeStart(id));
       ray.addEventListener("squeezeend", () => this.squeezeEnd(id));
+    }
+    for (let i = 0; i < 2; i++) {
+      const grip = new THREE.Group();
+      grip.matrixAutoUpdate = false;
+      grip.visible = false;
+      const cm = controllerModels.createControllerModel(grip);
+      grip.add(cm);
+      this.models.controllers.push(cm);
+      this.overlay.add(grip);
+      this.resting.push({ grip, source: null });
+    }
+  }
+
+  private trackedSourcesChange(e: XRInputSourcesChangeEvent) {
+    for (const s of e.removed) {
+      const r = this.resting.find((x) => x.source === s);
+      if (r) this.restingOff(r);
+    }
+    for (const s of e.added) {
+      // A hand that isn't pointing has nothing to show; a controller lying there does.
+      if (s.hand || !s.gripSpace || this.resting.some((x) => x.source === s)) continue;
+      const r = this.resting.find((x) => !x.source);
+      if (!r) break;
+      r.source = s;
+      r.grip.dispatchEvent({ type: "connected", data: s } as never);
+    }
+  }
+
+  private restingOff(r: { grip: THREE.Group; source: XRInputSource | null }) {
+    r.grip.dispatchEvent({ type: "disconnected", data: r.source } as never);
+    r.source = null;
+    r.grip.visible = false;
+  }
+
+  private placeResting(xrFrame: XRFrame) {
+    const ref = this.renderer.xr.getReferenceSpace();
+    for (const r of this.resting) {
+      const pose = r.source?.gripSpace && ref ? xrFrame.getPose(r.source.gripSpace, ref) : undefined;
+      r.grip.visible = !!pose;
+      if (!pose) continue;
+      r.grip.matrix.fromArray(pose.transform.matrix);
+      r.grip.matrixWorldNeedsUpdate = true;
     }
   }
 
@@ -827,8 +984,17 @@ export class Engine {
   private pressStart(id: string) {
     const p = this.pointers.get(id);
     if (!p) return;
+    sfx.resume();
     if (this.placing && this.reticle.visible) {
       this.placeAt(this.reticle.position.clone());
+      return;
+    }
+    // Tracing the table: anywhere but a panel, the press marks a corner.
+    if (this.outline && !p.hoverPanel && !p.hoverHandle) {
+      if (this.outline.length < 64) this.outline.push(this.cornerAt(p));
+      this.haptic(p, 0.5, 25);
+      sfx.play("tick", this.cornerAt(p));
+      this.h.onOutline?.({ kind: this.outlineFor, corners: this.outline.length });
       return;
     }
     if (p.hoverHandle) {
@@ -859,7 +1025,7 @@ export class Engine {
     p.press = null;
     const moved = (from: THREE.Vector3) => from.distanceTo(p.origin.clone().add(p.dir)) > (p.kind === "mouse" ? 0.02 : 0.035);
     if (press.kind === "handle") {
-      if (!p.squeezing) (p.carry = null), (p.resize = null);
+      if (!p.squeezing) this.letGo(p);
     } else if (press.kind === "lasso") {
       this.lasso.visible = false;
       const pts = press.pts;
@@ -867,7 +1033,10 @@ export class Engine {
       for (let i = 1; i < pts.length; i++) length += pts[i].distanceTo(pts[i - 1]);
       if (pts.length >= 6 && length > 0.12) {
         const paths = this.within(pts);
-        if (paths.length) this.h.onSelect?.(paths, "lasso");
+        if (paths.length) {
+          sfx.play("focus");
+          this.h.onSelect?.(paths, "lasso");
+        }
       } else this.h.onBackground();
     } else if (press.kind === "body") {
       // Thrown, not set down: hide it.
@@ -878,11 +1047,17 @@ export class Engine {
       // Thrown, or dropped on the table's shelf: off the map.
       const shelved = !!this.shelf && p.hoverPanel?.panel === this.shelf && !!this.h.onFlick;
       const thrown = shelved || (this.settings.flick && speed > this.settings.flickSpeed && !!this.h.onFlick);
+      const at = this.map.positionOf(press.id);
+      const where = at ? this.map.toWorld(at) : null;
       this.map.release(press.id, press.pin && !thrown);
       if (thrown) {
         this.haptic(p, 0.8, 60);
+        sfx.play(shelved ? "snap" : "fling", where);
         this.h.onFlick!(press.hit);
-      } else this.haptic(p, press.pin ? 0.6 : 0.3, press.pin ? 40 : 20);
+      } else {
+        this.haptic(p, press.pin ? 0.6 : 0.3, press.pin ? 40 : 20);
+        sfx.play("drop", where);
+      }
     } else if (press.kind === "panel") {
       const hp = p.hoverPanel?.panel === press.panel ? p.hoverPanel : null;
       press.panel.pointer("up", hp?.x ?? -1, hp?.y ?? -1, p.id);
@@ -890,6 +1065,7 @@ export class Engine {
       const still = p.kind === "mouse" ? !this.mouse.moved : !moved(press.from);
       if (still) {
         this.haptic(p, 0.5, 30);
+        sfx.play("pick", this.hitPoint(p, press.hit), this.hitKey(press.hit));
         this.h.onPick(press.hit);
       }
     } else {
@@ -927,9 +1103,41 @@ export class Engine {
     }
     p.ray.updateMatrixWorld();
     panel.mesh.updateMatrixWorld();
-    p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone() };
+    p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone(), trail: [] };
     this.placed.add(panel);
+    this.stuck.delete(panel);
+    this.snapWas = null;
     this.haptic(p, 0.4, 25);
+    sfx.play("grab", panel.mesh.position);
+  }
+
+  /** A carried panel let go: near the table or a wall it snaps onto it, else it stays in the air where it is. */
+  private letGo(p: Pointer) {
+    const c = p.carry;
+    p.carry = null;
+    p.resize = null;
+    if (!c) return;
+    this.ghost.visible = false;
+    this.snapWas = null;
+    // Thrown away, not set down: it closes (those that can).
+    const tr = c.trail;
+    const first = tr.find((x) => performance.now() - x.t < 120) ?? tr[0];
+    const last = tr.at(-1);
+    const speed = first && last && last.t > first.t ? last.at.distanceTo(first.at) / ((last.t - first.t) / 1000) : 0;
+    if (this.settings.flickPanels && speed > this.settings.flickSpeed && this.closePanel?.(c.panel)) {
+      this.haptic(p, 0.8, 60);
+      sfx.play("fling", c.panel.mesh.position);
+      // Next time it opens in its usual place, not mid-air where it was let go.
+      this.placed.delete(c.panel);
+      return;
+    }
+    const snap = this.snapFor(c.panel);
+    if (!snap) return void sfx.play("drop", c.panel.mesh.position);
+    c.panel.mesh.position.copy(snap.pos);
+    c.panel.mesh.quaternion.copy(snap.quat);
+    this.stuck.set(c.panel, snap.on);
+    this.haptic(p, 0.7, 35);
+    sfx.play("snap", snap.pos);
   }
 
   /** How far apart two hands are across a panel and up it. */
@@ -966,7 +1174,7 @@ export class Engine {
       return;
     }
     if (p.carry) {
-      if (p.press?.kind !== "handle") p.carry = null;
+      if (p.press?.kind !== "handle") this.letGo(p);
       return;
     }
     this.endGrab(p);
@@ -1086,9 +1294,13 @@ export class Engine {
     this.reticle.visible = false;
     this.hitSource?.cancel();
     this.hitSource = null;
-    // Anchored on the next frame (anchors are made from a frame), and the table under it looked for.
+    // Anchored on the next frame (anchors are made from a frame), and the table under it looked for:
+    // unless it's set down again on a table you traced by hand, which stays as you drew it.
     this.anchorWanted = at.clone();
-    this.tableFrom = { at: at.clone(), t0: performance.now() };
+    this.lookFor = null;
+    if (this.table?.manual && overTable(this.table, at)) this.tableFrom = null;
+    else this.tableFrom = { at: at.clone(), t0: performance.now() };
+    sfx.play("place", at);
     this.overview(900);
     this.h.onPlaced?.();
   }
@@ -1110,7 +1322,7 @@ export class Engine {
       this.xrAnchor = a;
       this.anchorLast = null;
     } catch {
-      // Gone (the room was reset, or another app's space): forget it.
+      // Gone (the room was reset, or another app's space): forget it. The plane may still find the table.
       try {
         localStorage.removeItem(ANCHOR_KEY);
       } catch {
@@ -1125,6 +1337,7 @@ export class Engine {
     this.xrAnchor?.delete();
     this.xrAnchor = a;
     this.anchorLast = null;
+    this.anchorPose = null;
     let old: string | null = null;
     try {
       old = localStorage.getItem(ANCHOR_KEY);
@@ -1139,10 +1352,21 @@ export class Engine {
       .catch(() => {});
   }
 
-  /** Once a frame in passthrough: make the wanted anchor, follow the anchor as tracking corrects it, find the table. */
+  /**
+   * Once a frame in passthrough: make the wanted anchor, follow the anchor as
+   * tracking corrects it, find the table. Coming back in, the map goes back on
+   * last time's table: by the headset's anchor when it kept it, or else by
+   * finding the same plane again (the same size, at the same height).
+   */
   private trackTable(frame: XRFrame) {
     const ref = this.renderer.xr.getReferenceSpace();
     if (!ref) return;
+    const now = performance.now();
+    if (now - this.planesAt > 1000) {
+      this.planesAt = now;
+      this.findPlanes(frame, ref);
+    }
+    this.trackSurfaces(frame, ref);
     if (this.anchorWanted) {
       const w = this.anchorWanted;
       this.anchorWanted = null;
@@ -1155,12 +1379,17 @@ export class Engine {
     if (a && frame.trackedAnchors?.has(a)) {
       const pose = frame.getPose(a.anchorSpace, ref);
       if (pose) {
-        const at = new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+        const first = !this.anchorPose;
+        this.anchorPose = new THREE.Matrix4().fromArray(pose.transform.matrix);
+        const at = new THREE.Vector3().setFromMatrixPosition(this.anchorPose);
         if (!this.anchor) {
-          // Restored from last time: the map goes back on that table.
+          // Restored from last time: the map goes back on that table, as it was.
           this.anchor = at.clone();
           this.anchorLast = at.clone();
-          this.tableFrom = { at: at.clone(), t0: performance.now() };
+          this.lookFor = null;
+          const saved = loadTable();
+          if (saved?.anchor) this.setTable(facing(tableIn(this.anchorPose, saved.anchor, saved.poly, saved.manual), this.head().pos));
+          else this.tableFrom = { at: at.clone(), t0: now };
           this.overview(900);
           this.h.onPlaced?.();
         } else if (!this.anchorLast) this.anchorLast = at.clone();
@@ -1174,63 +1403,63 @@ export class Engine {
             if (this.flight) this.flight.toP.add(d);
             this.grabStart?.pos.add(d);
             if (this.table) this.table.center.add(d);
-            for (const [p, slot] of this.slots) if (slot === "table" || slot === "shelf") p.mesh.position.add(d);
+            for (const [p, on] of this.stuck) if (on === "table") p.mesh.position.add(d);
           }
         }
+        // A new anchor's first pose: the table is kept against it.
+        if (first) this.persistTable();
       }
     }
+    // No anchor came back: look for last time's plane, for a while.
+    const lf = this.lookFor;
+    if (lf && !this.anchor && now - lf.t0 > 2500) {
+      if (now - lf.t0 > 20000) this.lookFor = null;
+      else this.findSavedPlane(lf.saved);
+    }
     if (this.tableFrom) {
-      const t = this.fitTable(frame, ref, this.tableFrom.at);
+      const t = this.fitTable(this.tableFrom.at);
       if (t) this.setTable(t);
-      else if (performance.now() - this.tableFrom.t0 > 1500) this.setTable(this.guessTable(this.tableFrom.at));
+      else if (now - this.tableFrom.t0 > 1500) this.setTable(this.guessTable(this.tableFrom.at));
       if (this.table) this.tableFrom = null;
     }
   }
 
-  /** The detected horizontal plane under a spot, as a table: its edges squared to the plane's own axes. */
-  private fitTable(frame: XRFrame, ref: XRReferenceSpace, at: THREE.Vector3): Table | null {
-    let planes: XRPlaneSet | undefined;
-    try {
-      planes = frame.detectedPlanes;
-    } catch {
-      return null;
-    }
-    if (!planes) return null;
-    const head = this.head().pos;
-    for (const plane of planes) {
-      if (plane.orientation !== "horizontal" || plane.polygon.length < 3) continue;
-      const pose = frame.getPose(plane.planeSpace, ref);
-      if (!pose) continue;
-      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
-      const local = at.clone().applyMatrix4(m.clone().invert());
-      if (Math.abs(local.y) > 0.05) continue;
-      const poly = plane.polygon.map((q) => [q.x, q.z] as [number, number]);
-      if (!inside(local.x, local.z, poly)) continue;
-      const xs = poly.map((q) => q[0]);
-      const zs = poly.map((q) => q[1]);
-      const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
-      const center = new THREE.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2).applyMatrix4(m);
-      const ax = new THREE.Vector3(1, 0, 0).transformDirection(m).setY(0).normalize();
-      const az = new THREE.Vector3(0, 0, 1).transformDirection(m).setY(0).normalize();
-      // The edge nearest you is the front: whichever of the four faces you most.
-      const you = head.clone().sub(center).setY(0).normalize();
-      const sides = [
-        { dir: ax, half: (x1 - x0) / 2, across: (z1 - z0) / 2 },
-        { dir: ax.clone().negate(), half: (x1 - x0) / 2, across: (z1 - z0) / 2 },
-        { dir: az, half: (z1 - z0) / 2, across: (x1 - x0) / 2 },
-        { dir: az.clone().negate(), half: (z1 - z0) / 2, across: (x1 - x0) / 2 },
-      ];
-      const front = sides.reduce((a, b) => (b.dir.dot(you) > a.dir.dot(you) ? b : a));
-      const toward = front.dir.clone();
-      return {
-        center,
-        toward,
-        right: new THREE.Vector3().crossVectors(Y, toward).normalize(),
-        halfD: THREE.MathUtils.clamp(front.half, 0.2, 1.5),
-        halfW: THREE.MathUtils.clamp(front.across, 0.25, 1.5),
-      };
+  /** Last time's plane among those found now, by its size and height: the map goes back on it. */
+  private findSavedPlane(saved: SavedTable) {
+    const sp = saved.plane;
+    if (!sp) return void (this.lookFor = null);
+    const match = this.flats.find((f) => {
+      const y = new THREE.Vector3().setFromMatrixPosition(f.m).y;
+      return Math.abs(y - sp.y) < 0.05 && Math.abs(f.sx - sp.sx) < 0.08 && Math.abs(f.sz - sp.sz) < 0.08;
+    });
+    if (!match) return;
+    this.lookFor = null;
+    const spot = vec(sp.spot).applyMatrix4(match.m);
+    this.anchor = spot;
+    this.anchorWanted = spot.clone();
+    this.setTable(facing(tableIn(match.m, sp, saved.poly, saved.manual), this.head().pos));
+    this.overview(900);
+    this.h.onPlaced?.();
+  }
+
+  /** The detected level surface under a spot, if any: the plane itself, a little above or below it. */
+  private flatUnder(at: THREE.Vector3): Flat | null {
+    for (const f of this.flats) {
+      const local = at.clone().applyMatrix4(f.m.clone().invert());
+      if (Math.abs(local.y) < 0.06 && inside(local.x, local.z, f.poly)) return f;
     }
     return null;
+  }
+
+  /** The detected horizontal plane under a spot, as a table: its own outline, its front the side nearest you. */
+  private fitTable(at: THREE.Vector3): Table | null {
+    const f = this.flatUnder(at);
+    if (!f) return null;
+    // The floor (or something as big): no table to fit; a mat round the spot instead.
+    if (f.sx > 2.6 || f.sz > 2.6) return this.guessTable(at);
+    const pts = f.poly.map(([x, z]) => new THREE.Vector3(x, 0, z).applyMatrix4(f.m));
+    const y = new THREE.Vector3().setFromMatrixPosition(f.m).y;
+    return facing(tableFrom(pts, new THREE.Vector3(0, 0, 1).transformDirection(f.m), y), this.head().pos);
   }
 
   /** No planes to go by: a table a little wider than deep, square to you, around the spot. */
@@ -1238,33 +1467,420 @@ export class Engine {
     const toward = this.head().pos.sub(at).setY(0);
     if (toward.lengthSq() < 1e-4) toward.set(0, 0, 1);
     toward.normalize();
-    return { center: at.clone(), toward, right: new THREE.Vector3().crossVectors(Y, toward).normalize(), halfW: 0.45, halfD: 0.3 };
+    const right = new THREE.Vector3().crossVectors(Y, toward).normalize();
+    const corner = (x: number, z: number) => at.clone().addScaledVector(right, x).addScaledVector(toward, z);
+    return tableFrom([corner(-0.45, -0.3), corner(0.45, -0.3), corner(0.45, 0.3), corner(-0.45, 0.3)], toward, at.y);
   }
 
   private setTable(t: Table | null) {
     const had = !!this.table;
     this.table = t;
-    for (const [p, slot] of this.slots) if (p.open && (slot === "table" || slot === "shelf")) this.place(p, slot);
+    // The table's panels go on it (back to their edges, when it's a new table).
+    for (const [p, slot] of this.slots) if (p.open && TABLE_SLOTS.includes(slot)) this.place(p, slot);
+    if (!t) for (const [p, on] of this.stuck) if (on === "table") this.stuck.delete(p);
+    if (t) {
+      this.surface.setShape(t.poly);
+      this.surfaceSet = true;
+      this.persistTable();
+    }
     if (had !== !!t || t) this.h.onTable?.(!!t);
   }
 
+  /** The table as it is now, kept for next time: against the anchor, and against the plane it lies on. */
+  private persistTable() {
+    const t = this.table;
+    if (!t || this.mode !== "ar") return;
+    const saved: SavedTable = { poly: t.poly, manual: t.manual };
+    if (this.anchorPose) saved.anchor = tableInto(this.anchorPose.clone().invert(), t);
+    const f = this.flatUnder(t.center);
+    if (f && this.anchor) {
+      const inv = f.m.clone().invert();
+      saved.plane = { sx: f.sx, sz: f.sz, y: new THREE.Vector3().setFromMatrixPosition(f.m).y, spot: v3(this.anchor.clone().applyMatrix4(inv)), ...tableInto(inv, t) };
+    }
+    saveTable(saved);
+  }
+
   /**
-   * A panel lying on the table, tipped up a little towards you so it reads:
-   * the controls along the front edge, the shelf along the right.
+   * Off the table: the map comes back in front of you, the table's panels go,
+   * and it's forgotten (next time you come in, it isn't put back on it).
+   * Place on a surface sets it down again.
    */
-  private placeOnTable(p: Panel, slot: "table" | "shelf") {
+  leaveTable() {
+    if (this.mode !== "ar") return;
+    const session = this.session;
+    this.xrAnchor?.delete();
+    this.xrAnchor = null;
+    try {
+      const uuid = localStorage.getItem(ANCHOR_KEY);
+      if (uuid && session?.deletePersistentAnchor) void session.deletePersistentAnchor(uuid).catch(() => {});
+      localStorage.removeItem(ANCHOR_KEY);
+    } catch {
+      /* no storage: nothing kept */
+    }
+    saveTable(null);
+    this.anchor = null;
+    this.anchorPose = null;
+    this.anchorLast = null;
+    this.anchorWanted = null;
+    this.tableFrom = null;
+    this.lookFor = null;
+    this.setTable(null);
+    sfx.play("grab");
+    this.overview(900);
+  }
+
+  /* ------------------------- tracing the table by hand ------------------------- */
+
+  /**
+   * When the headset doesn't know the table (or knows it wrong): touch its
+   * corners one by one, pinching (or pulling the trigger) at each, and the
+   * outline becomes the table. Three corners make a rectangle; more trace
+   * any shape.
+   */
+  startOutline(kind: "table" | "surface" = "table") {
+    if (this.mode !== "ar") return;
+    this.placing = false;
+    this.reticle.visible = false;
+    this.outline = [];
+    this.outlineFor = kind;
+    this.h.onOutline?.({ kind, corners: 0 });
+  }
+
+  undoOutline() {
+    if (!this.outline) return;
+    this.outline.pop();
+    this.h.onOutline?.({ kind: this.outlineFor, corners: this.outline.length });
+  }
+
+  cancelOutline() {
+    this.outline = null;
+    this.outlineLine.visible = false;
+    this.h.onOutline?.(null);
+  }
+
+  finishOutline() {
+    const raw = this.outline;
+    if (!raw || raw.length < 3) return;
+    if (this.outlineFor === "surface") {
+      this.cancelOutline();
+      return this.addSurface(raw);
+    }
+    const y = raw.reduce((s, p) => s + p.y, 0) / raw.length;
+    let pts = raw.map((p) => p.clone().setY(y));
+    if (pts.length === 3) {
+      // Three corners in a row: the fourth is where they square off.
+      const [a, b, c] = pts;
+      const ab = b.clone().sub(a);
+      const bc = c.clone().sub(b);
+      bc.sub(ab.clone().multiplyScalar(bc.dot(ab) / Math.max(1e-6, ab.lengthSq())));
+      pts = [a, b, b.clone().add(bc), a.clone().add(bc)];
+    }
+    this.cancelOutline();
+    const t = facing(tableFrom(pts, mainAxis(pts), y, true), this.head().pos);
+    // The map goes on it, unless it's already there.
+    if (!this.anchor || !overTable(t, this.anchor)) {
+      this.anchor = t.center.clone();
+      this.anchorWanted = t.center.clone();
+    }
+    this.tableFrom = null;
+    this.lookFor = null;
+    this.setTable(t);
+    sfx.play("place", t.center);
+    this.overview(900);
+    this.h.onPlaced?.();
+  }
+
+  /* ------------------------------ your surfaces ------------------------------ */
+
+  /** A surface from traced corners: drawn now, anchored on the next frame, and kept for next time. */
+  private addSurface(pts: THREE.Vector3[]) {
+    const plane = planeThrough(pts, this.head().pos);
+    if (!plane) return;
+    const c = this.makeCustom(`s${Date.now().toString(36)}`, plane.poly);
+    c.plane = plane;
+    c.wanted = true;
+    this.placeCustom(c);
+    sfx.play("place", new THREE.Vector3().setFromMatrixPosition(plane.m));
+  }
+
+  private makeCustom(id: string, poly: [number, number][]): Custom {
+    const top = new Surface();
+    top.setShape(poly);
+    this.scene.add(top.mesh);
+    const c: Custom = { id, plane: null, poly, top, anchor: null, uuid: null, wanted: false };
+    this.customs.push(c);
+    this.h.onSurfaces?.(this.customs.length);
+    return c;
+  }
+
+  /** Draw a surface where its plane is, a hair out of it. */
+  private placeCustom(c: Custom) {
+    if (!c.plane) return;
+    const n = new THREE.Vector3().setFromMatrixColumn(c.plane.m, 1);
+    c.top.setMatrix(c.plane.m.clone().setPosition(new THREE.Vector3().setFromMatrixPosition(c.plane.m).addScaledVector(n, 0.002)));
+  }
+
+  /** Last session's surfaces, by their anchors: each comes back once the headset finds its anchor again. */
+  private async restoreSurfaces(session: XRSession) {
+    if (!session.restorePersistentAnchor) return;
+    const saved = loadSurfaces();
+    const kept: typeof saved = [];
+    for (const sv of saved) {
+      try {
+        const a = await session.restorePersistentAnchor(sv.uuid);
+        if (this.session !== session) return void a.delete();
+        const c = this.makeCustom(sv.uuid, sv.poly);
+        c.anchor = a;
+        c.uuid = sv.uuid;
+        kept.push(sv);
+      } catch {
+        // Gone with the room: forget it.
+      }
+    }
+    if (kept.length !== saved.length) saveSurfaces(kept);
+  }
+
+  /** Each frame: anchor new surfaces, and follow their anchors (taking the panels on them along). */
+  private trackSurfaces(frame: XRFrame, ref: XRReferenceSpace) {
+    for (const c of this.customs) {
+      if (c.wanted && c.plane) {
+        c.wanted = false;
+        const p = new THREE.Vector3();
+        const q = new THREE.Quaternion();
+        c.plane.m.decompose(p, q, new THREE.Vector3());
+        void frame
+          .createAnchor?.(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), ref)
+          ?.then((a) => {
+            if (this.mode !== "ar" || !this.customs.includes(c)) return a.delete();
+            c.anchor = a;
+            return a.requestPersistentHandle?.().then((uuid) => {
+              c.uuid = uuid;
+              saveSurfaces([...loadSurfaces().filter((x) => x.uuid !== uuid), { uuid, poly: c.poly }]);
+            });
+          })
+          .catch(() => {});
+      }
+      const a = c.anchor;
+      if (!a || !frame.trackedAnchors?.has(a)) continue;
+      const pose = frame.getPose(a.anchorSpace, ref);
+      if (!pose) continue;
+      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+      const was = c.plane ? new THREE.Vector3().setFromMatrixPosition(c.plane.m) : null;
+      const at = new THREE.Vector3().setFromMatrixPosition(m);
+      if (was && was.distanceToSquared(at) < 1e-6) continue;
+      if (was) for (const [p, on] of this.stuck) if (on === c.id) p.mesh.position.add(at.clone().sub(was));
+      const xs = c.poly.map((q) => q[0]);
+      const zs = c.poly.map((q) => q[1]);
+      c.plane = { m, poly: c.poly, halfX: (Math.max(...xs) - Math.min(...xs)) / 2, halfZ: (Math.max(...zs) - Math.min(...zs)) / 2 };
+      this.placeCustom(c);
+    }
+  }
+
+  /** Every surface of yours goes (the panels on them stay where they are, in the air). */
+  clearSurfaces() {
+    const session = this.session;
+    for (const c of this.customs) {
+      c.anchor?.delete();
+      if (c.uuid && session?.deletePersistentAnchor) void session.deletePersistentAnchor(c.uuid).catch(() => {});
+      this.scene.remove(c.top.mesh);
+      c.top.mesh.geometry.dispose();
+      for (const [p, on] of this.stuck) if (on === c.id) this.stuck.delete(p);
+    }
+    this.customs = [];
+    saveSurfaces([]);
+    this.h.onSurfaces?.(0);
+  }
+
+  /** This session's surfaces put away (the next session restores them). */
+  private dropSurfaces() {
+    for (const c of this.customs) {
+      this.scene.remove(c.top.mesh);
+      c.top.mesh.geometry.dispose();
+    }
+    if (this.customs.length) this.h.onSurfaces?.(0);
+    this.customs = [];
+  }
+
+  /** Where a pointer marks a corner: between a hand's pinching fingertips, or the controller's tip. */
+  private cornerAt(p: Pointer) {
+    if (p.kind === "hand") return p.gest?.pinchPoint() ?? p.origin.clone();
+    if (p.kind === "mouse") return p.origin.clone().addScaledVector(p.dir, 1);
+    return p.origin.clone();
+  }
+
+  /** The outline so far, and a line from its last corner to where you'd put the next. */
+  private drawOutline() {
+    const pts = this.outline;
+    if (!pts) return;
+    const ptr = [...this.pointers.values()].filter((x) => x.kind !== "mouse" || this.mode === "flat");
+    const p = ptr.find((x) => x.handedness === "right") ?? ptr[0];
+    const all = p ? [...pts, this.cornerAt(p)] : pts;
+    if (pts.length >= 2) all.push(pts[0]);
+    const attr = this.outlineLine.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const n = Math.min(all.length, attr.count);
+    for (let i = 0; i < n; i++) attr.setXYZ(i, all[i].x, all[i].y, all[i].z);
+    attr.needsUpdate = true;
+    this.outlineLine.geometry.setDrawRange(0, n);
+    this.outlineLine.visible = n >= 2;
+  }
+
+  /**
+   * Where a table panel lies: flat on the table top, where a fingertip can
+   * press it against the wood, with its top edge away from you so it reads.
+   * The controls along the front edge, the shelf along the right, the saved
+   * views along the left.
+   */
+  private tablePose(p: Panel, slot: Slot): { pos: THREE.Vector3; quat: THREE.Quaternion } {
     const t = this.table!;
-    const tilt = slot === "table" ? 0.45 : 0.2;
-    const c = Math.cos(tilt);
-    const sn = Math.sin(tilt);
-    const up = t.toward.clone().multiplyScalar(-c).addScaledVector(Y, sn);
-    const normal = Y.clone().multiplyScalar(c).addScaledVector(t.toward, sn);
-    p.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(t.right, up, normal));
-    const lift = (sn * p.heightM) / 2 + 0.008;
-    const at = t.center.clone().addScaledVector(Y, lift);
-    if (slot === "table") at.addScaledVector(t.toward, Math.max(0, t.halfD - (c * p.heightM) / 2 - 0.03));
-    else at.addScaledVector(t.right, Math.max(0, t.halfW - p.widthM / 2 - 0.03)).addScaledVector(t.toward, Math.min(0.1, Math.max(0, t.halfD - (c * p.heightM) / 2 - 0.2)));
-    p.mesh.position.copy(at);
+    const quat = flatOn(t.toward.clone().negate());
+    const pos = t.center.clone().addScaledVector(Y, LIFT);
+    const front = Math.max(0, t.halfD - p.heightM / 2 - 0.03);
+    const side = Math.max(0, t.halfW - p.widthM / 2 - 0.03);
+    const back = Math.min(0.1, Math.max(0, t.halfD - p.heightM / 2 - 0.2));
+    if (slot === "table") pos.addScaledVector(t.toward, front);
+    else if (slot === "shelf") pos.addScaledVector(t.right, side).addScaledVector(t.toward, back);
+    else pos.addScaledVector(t.right, -side).addScaledVector(t.toward, back);
+    return { pos, quat };
+  }
+
+  /**
+   * Where a carried panel would land if let go now: flat on the table when
+   * it's held just over it (back on its own edge when it's near there), or
+   * flush against a wall when it's held up to one. Null in the open air.
+   */
+  private snapFor(panel: Panel): Snap | null {
+    const at = panel.mesh.position;
+    const head = this.head().pos;
+    let best: (Snap & { d: number }) | null = null;
+    const t = this.table;
+    if (t) {
+      const rel = at.clone().sub(t.center);
+      const up = rel.y;
+      const x = rel.dot(t.right);
+      const z = rel.dot(t.toward);
+      if (up > -0.05 && up < SNAP_REACH + 0.1 && Math.abs(x) < t.halfW + 0.1 && Math.abs(z) < t.halfD + 0.1) {
+        // Its own edge, if it's a table panel let go near there.
+        const slot = this.slots.get(panel);
+        const home = slot && TABLE_SLOTS.includes(slot) ? this.tablePose(panel, slot) : null;
+        if (home && home.pos.distanceTo(at.clone().setY(home.pos.y)) < 0.15) best = { on: "table", ...home, d: Math.max(0, up) };
+        else {
+          // Square to the table, the top edge whichever of its sides faces most away from you.
+          const away = at.clone().sub(head).setY(0).normalize();
+          const axes = [t.toward, t.toward.clone().negate(), t.right, t.right.clone().negate()];
+          const top = axes.reduce((a, b) => (b.dot(away) > a.dot(away) ? b : a));
+          const clamp = (v: number, half: number, size: number) => THREE.MathUtils.clamp(v, -Math.max(0, half - size / 2), Math.max(0, half - size / 2));
+          // Kept on the table: across its width and depth, whichever way round the panel lies.
+          const sideways = Math.abs(top.dot(t.right)) > 0.5;
+          const cx = clamp(x, t.halfW, sideways ? panel.heightM : panel.widthM);
+          const cz = clamp(z, t.halfD, sideways ? panel.widthM : panel.heightM);
+          const pos = t.center.clone().addScaledVector(t.right, cx).addScaledVector(t.toward, cz).addScaledVector(Y, LIFT);
+          best = { on: "table", pos, quat: flatOn(top), d: Math.max(0, up) };
+        }
+      }
+    }
+    // Your own surfaces: flat on one when it's held just off it.
+    for (const c of this.customs) {
+      const pl = c.plane;
+      if (!pl || this.mode !== "ar") continue;
+      const x = new THREE.Vector3().setFromMatrixColumn(pl.m, 0);
+      const n = new THREE.Vector3().setFromMatrixColumn(pl.m, 1);
+      const z = new THREE.Vector3().setFromMatrixColumn(pl.m, 2);
+      const rel = at.clone().sub(new THREE.Vector3().setFromMatrixPosition(pl.m));
+      const d = rel.dot(n);
+      if (d < -0.05 || d > SNAP_REACH || (best && Math.max(0, d) >= best.d)) continue;
+      const lx = rel.dot(x);
+      const lz = rel.dot(z);
+      if (Math.abs(lx) > pl.halfX + 0.1 || Math.abs(lz) > pl.halfZ + 0.1) continue;
+      // Its top edge: up, on an upright surface; away from you, on one lying down.
+      const top = Math.abs(n.y) < 0.7 ? Y.clone().projectOnPlane(n).normalize() : at.clone().sub(head).projectOnPlane(n).normalize();
+      const right = new THREE.Vector3().crossVectors(top, n).normalize();
+      // Kept on it, whichever way round the panel lies on it.
+      const across = Math.abs(right.dot(x)) > 0.5;
+      const w = across ? panel.widthM : panel.heightM;
+      const h = across ? panel.heightM : panel.widthM;
+      const cx = THREE.MathUtils.clamp(lx, -Math.max(0, pl.halfX - w / 2), Math.max(0, pl.halfX - w / 2));
+      const cz = THREE.MathUtils.clamp(lz, -Math.max(0, pl.halfZ - h / 2), Math.max(0, pl.halfZ - h / 2));
+      const pos = new THREE.Vector3().setFromMatrixPosition(pl.m).addScaledVector(x, cx).addScaledVector(z, cz).addScaledVector(n, LIFT);
+      const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, top, n));
+      best = { on: c.id, pos, quat, d: Math.max(0, d) };
+    }
+    for (const w of this.walls) {
+      const inv = w.m.clone().invert();
+      const local = at.clone().applyMatrix4(inv);
+      // A plane lies in its own x-z; its y is out of it.
+      const d = Math.abs(local.y);
+      if (d > SNAP_REACH || (best && d >= best.d)) continue;
+      if (local.x < w.x0 - 0.1 || local.x > w.x1 + 0.1 || local.z < w.z0 - 0.1 || local.z > w.z1 + 0.1) continue;
+      const normal = new THREE.Vector3(0, 1, 0).transformDirection(w.m);
+      // Out of the wall on your side of it.
+      const origin = new THREE.Vector3().setFromMatrixPosition(w.m);
+      if (head.clone().sub(origin).dot(normal) < 0) normal.negate();
+      normal.setY(0);
+      if (normal.lengthSq() < 0.5) continue;
+      normal.normalize();
+      const onWall = new THREE.Vector3(THREE.MathUtils.clamp(local.x, w.x0, w.x1), 0, THREE.MathUtils.clamp(local.z, w.z0, w.z1)).applyMatrix4(w.m);
+      // Keep the panel's height where you held it; only its depth snaps.
+      const pos = at.clone().sub(normal.clone().multiplyScalar(at.clone().sub(onWall).dot(normal))).addScaledVector(normal, 0.006);
+      const right = new THREE.Vector3().crossVectors(Y, normal).normalize();
+      const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, Y, normal));
+      best = { on: "wall", pos, quat, d };
+    }
+    return best;
+  }
+
+  /** The planes the headset knows about: the walls (vertical), with their extents, and the level surfaces (horizontal), with their outlines. */
+  private findPlanes(frame: XRFrame, ref: XRReferenceSpace) {
+    let planes: XRPlaneSet | undefined;
+    try {
+      planes = frame.detectedPlanes;
+    } catch {
+      return;
+    }
+    const walls: Wall[] = [];
+    const flats: Flat[] = [];
+    for (const plane of planes ?? []) {
+      if (plane.polygon.length < 3) continue;
+      const pose = frame.getPose(plane.planeSpace, ref);
+      if (!pose) continue;
+      const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+      const xs = plane.polygon.map((q) => q.x);
+      const zs = plane.polygon.map((q) => q.z);
+      const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+      if (plane.orientation === "vertical") walls.push({ m, x0, x1, z0, z1 });
+      else flats.push({ m, poly: plane.polygon.map((q) => [q.x, q.z]), sx: x1 - x0, sz: z1 - z0 });
+    }
+    this.walls = walls;
+    this.flats = flats;
+  }
+
+  /** While a panel is carried: its landing spot outlined, and a tick when one comes into reach. */
+  private showSnap(p: Pointer) {
+    const snap = p.carry ? this.snapFor(p.carry.panel) : null;
+    const key = snap ? snap.on : null;
+    if (key !== this.snapWas) {
+      this.snapWas = key;
+      if (snap) {
+        this.haptic(p, 0.25, 12);
+        sfx.play("tick", snap.pos);
+      }
+    }
+    if (!snap || !p.carry) return void (this.ghost.visible = false);
+    this.ghost.position.copy(snap.pos);
+    this.ghost.quaternion.copy(snap.quat);
+    this.ghost.scale.set(p.carry.panel.widthM, p.carry.panel.heightM, 1);
+    this.ghost.visible = true;
+  }
+
+  /** Where on the map a hit is, in the room, for a sound to come from. */
+  private hitPoint(p: Pointer, hit: MapHit) {
+    const id = this.map.bodyOf(hit);
+    const at = id ? this.map.positionOf(id) : null;
+    return at ? this.map.toWorld(at) : p.origin.clone().addScaledVector(p.dir, this.hitDistanceM(p, hit));
+  }
+
+  /** A hit's top folder (or module): its note. */
+  private hitKey(hit: MapHit) {
+    return hit.kind === "file" ? hit.id.split("/")[0] : `${hit.kind}:${hit.id}`;
   }
 
   /* --------------------------------- hands --------------------------------- */
@@ -1278,7 +1894,10 @@ export class Engine {
     const hands = [...this.pointers.values()].filter((p) => p.kind === "hand" && p.hand && p.gest);
     for (const p of hands) {
       const { middlePinch } = p.gest!.update(p.hand!, now);
-      if (middlePinch && !p.press) this.h.onButton(p.handedness === "left" ? "back" : "forward");
+      if (middlePinch && !p.press) {
+        sfx.play("back");
+        this.h.onButton(p.handedness === "left" ? "back" : "forward");
+      }
       this.poke(p);
     }
     this.updateWrist(hands);
@@ -1296,8 +1915,11 @@ export class Engine {
       panel.mesh.updateMatrixWorld();
       const local = panel.mesh.worldToLocal(tip.clone());
       // In front of the face by a centimetre counts as touching; once touching, a little more.
-      const depth = p.poke?.panel === panel ? 0.025 : 0.01;
-      if (local.z > depth || local.z < -0.04) continue;
+      // One lying on the table is pressed against it: the real top can sit a little off the
+      // detected one, so it starts a touch higher and goes on through the wood.
+      const flat = this.stuck.has(panel);
+      const depth = p.poke?.panel === panel ? (flat ? 0.03 : 0.025) : flat ? 0.016 : 0.01;
+      if (local.z > depth || local.z < (flat ? -0.07 : -0.04)) continue;
       if (Math.abs(local.x) > panel.widthM / 2 || Math.abs(local.y) > panel.heightM / 2) continue;
       touched = { panel, x: (local.x / panel.widthM + 0.5) * panel.W, y: (0.5 - local.y / panel.heightM) * panel.H };
       break;
@@ -1306,6 +1928,7 @@ export class Engine {
     const was = p.poke;
     if (was && was.panel !== touched?.panel) was.panel.pointer("up", was.x, was.y, who);
     if (touched) {
+      if (was?.panel !== touched.panel) sfx.resume();
       touched.panel.pointer(was?.panel === touched.panel ? "move" : "down", touched.x, touched.y, who);
       p.poke = touched;
       p.pokeBody = null;
@@ -1322,6 +1945,7 @@ export class Engine {
     // Still on the last one (or only near something): wait for a fresh touch.
     if (p.pokeBody || near.gap > 0.008 * k) return;
     p.pokeBody = near.hit.id;
+    sfx.play("pick", tip, this.hitKey(near.hit));
     this.h.onPick(near.hit);
   }
 
@@ -1372,7 +1996,10 @@ export class Engine {
     this.lasso.visible = false;
     const paths = this.within(rect);
     if (!paths.length || paths.length >= this.map.files().length * 0.85) this.h.onButton("overview");
-    else this.h.onSelect?.(paths, "frame");
+    else {
+      sfx.play("focus");
+      this.h.onSelect?.(paths, "frame");
+    }
   }
 
   /**
@@ -1504,11 +2131,18 @@ export class Engine {
       const m = p.ray.matrixWorld.clone().multiply(p.carry.offset);
       p.carry.panel.mesh.position.setFromMatrixPosition(m);
       p.carry.panel.mesh.lookAt(head.pos);
+      const tr = p.carry.trail;
+      tr.push({ t: now, at: p.carry.panel.mesh.position.clone() });
+      while (tr.length > 2 && now - tr[0].t > 200) tr.shift();
     }
+    const carrier = [...this.pointers.values()].find((p) => p.carry);
+    if (carrier) this.showSnap(carrier);
+    else this.ghost.visible = false;
+    if (this.mode !== "flat") sfx.listen(head.pos, head.quat, now);
 
     // The dock can follow lazily (a setting): it only turns with you once you've looked well away.
     for (const [panel, slot] of this.slots) {
-      if (!this.settings.dockFollows || slot !== "dock" || !panel.open || this.pointers.size === 0 || [...this.pointers.values()].some((p) => p.carry?.panel === panel)) continue;
+      if (!this.settings.dockFollows || slot !== "dock" || !panel.open || this.stuck.has(panel) || this.pointers.size === 0 || [...this.pointers.values()].some((p) => p.carry?.panel === panel)) continue;
       let d = head.yaw - this.dockYaw;
       d = Math.atan2(Math.sin(d), Math.cos(d));
       if (Math.abs(d) > 0.6) this.place(panel, "dock");
@@ -1516,6 +2150,8 @@ export class Engine {
 
     // The table: its anchor followed, and its edges found.
     if (xrFrame && this.mode === "ar") this.trackTable(xrFrame);
+    if (xrFrame) this.placeResting(xrFrame);
+    this.drawOutline();
 
     // AR placement: the reticle sits where the ray meets a real surface.
     if (this.placing && xrFrame && this.hitSource) {
@@ -1537,6 +2173,7 @@ export class Engine {
     this.world.updateMatrixWorld();
     const eyeLocal = this.map.root.worldToLocal(head.pos.clone());
     this.map.update(eyeLocal, now, 1 / this.world.scale.x);
+    this.sortPanels(eyeLocal, now);
 
     this.h.onFrame?.();
     for (const panel of this.panels) panel.render();
@@ -1550,21 +2187,116 @@ export class Engine {
     this.draw(target);
   };
 
-  /** The map (bloomed, if bloom is on) and the overlay over it. */
+  /**
+   * Which open panels the map stands in front of. One goes behind the map
+   * once a few of the lit bodies over it are nearer you than it is, and comes
+   * back in front once (almost) none are, so one body passing by doesn't make
+   * it flicker. A panel in your hand is always in front: you're using it.
+   * Worked in the map's own space, where the bodies are.
+   */
+  private sortPanels(eye: THREE.Vector3, now: number) {
+    if (now - this.sortedAt < 150) return;
+    this.sortedAt = now;
+    const toMap = new THREE.Matrix4().copy(this.map.root.matrixWorld).invert();
+    const held = new Set([...this.pointers.values()].map((o) => o.carry?.panel));
+    const m = new THREE.Matrix4();
+    const c = new THREE.Vector3();
+    const r = new THREE.Vector3();
+    const u = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    for (const p of this.panels) {
+      let back = false;
+      if (p.open && !held.has(p)) {
+        p.mesh.updateMatrixWorld();
+        m.multiplyMatrices(toMap, p.mesh.matrixWorld);
+        c.setFromMatrixPosition(m);
+        // The panel's own axes, a metre long in its own units.
+        r.setFromMatrixColumn(m, 0);
+        u.setFromMatrixColumn(m, 1);
+        n.crossVectors(r, u);
+        const r2 = r.lengthSq();
+        const u2 = u.lengthSq();
+        const hw = p.widthM / 2;
+        const hh = p.heightM / 2;
+        const cn = (c.x - eye.x) * n.x + (c.y - eye.y) * n.y + (c.z - eye.z) * n.z;
+        let over = 0;
+        let nearer = 0;
+        this.map.litBodies((x, y, z) => {
+          const bx = x - eye.x, by = y - eye.y, bz = z - eye.z;
+          const bn = bx * n.x + by * n.y + bz * n.z;
+          // Where the line from your eye to the body crosses the panel's plane: t of the way there.
+          const t = cn / bn;
+          if (!(t > 0) || !Number.isFinite(t)) return;
+          const px = eye.x + bx * t - c.x, py = eye.y + by * t - c.y, pz = eye.z + bz * t - c.z;
+          if (Math.abs((px * r.x + py * r.y + pz * r.z) / r2) > hw || Math.abs((px * u.x + py * u.y + pz * u.z) / u2) > hh) return;
+          over++;
+          // Past the body before reaching the panel: the body is nearer.
+          if (t > 1) nearer++;
+        });
+        back = this.behind.has(p) ? nearer > Math.max(1, over * 0.05) : nearer >= Math.max(3, over * 0.1);
+      }
+      if (back === this.behind.has(p)) continue;
+      if (back) this.behind.add(p);
+      else this.behind.delete(p);
+      (back ? this.under : this.hud).add(p.mesh);
+    }
+  }
+
+  /** The room (sky, floor, table) without the map, or the map without the room. */
+  private only(part: "room" | "map") {
+    const room = part === "room";
+    this.world.visible = !room;
+    for (const o of [this.backdrop, this.floor, this.surface.mesh, this.stars]) o.userData.shown ??= o.visible;
+    for (const o of [this.backdrop, this.floor, this.surface.mesh, this.stars]) o.visible = room && (o.userData.shown as boolean);
+    this.scene.background = room ? this.sky : null;
+  }
+
+  /** Back to the whole scene, as the rest of the engine knows it. */
+  private whole() {
+    this.world.visible = true;
+    for (const o of [this.backdrop, this.floor, this.surface.mesh, this.stars]) {
+      o.visible = o.userData.shown as boolean;
+      delete o.userData.shown;
+    }
+    this.scene.background = this.sky;
+  }
+
+  /**
+   * In order: the room, the panels the map is in front of, the map (bloomed,
+   * if bloom is on) over them, and the overlay (the rest of the panels,
+   * hands, rays) over everything.
+   */
   private draw(target: THREE.WebGLRenderTarget | null) {
     const tu = this.map.tuning;
     const bloom = this.settings.bloom && !!tu && tu.bloomStrength > 0;
     this.map.setGlow(this.settings.bodyGlow, bloom);
+    const r = this.renderer;
+    this.sky = this.scene.background;
+    const under = () => {
+      r.setRenderTarget(target);
+      this.only("room");
+      r.render(this.scene, this.camera);
+      r.autoClear = false;
+      if (this.under.children.length) r.render(this.under, this.camera);
+      this.only("map");
+    };
+    const over = () => {
+      r.setRenderTarget(target);
+      r.autoClear = false;
+      r.clearDepth();
+      r.render(this.overlay, this.camera);
+      r.autoClear = true;
+    };
     if (bloom) {
-      this.bloom ??= new Bloom(this.renderer);
-      this.bloom.render(this.renderer, this.scene, this.overlay, this.camera, target, { strength: tu.bloomStrength, radius: tu.bloomRadius, threshold: tu.bloomThreshold });
-      return;
+      this.bloom ??= new Bloom(r);
+      this.only("map");
+      this.bloom.render(r, this.scene, this.camera, target, { strength: tu.bloomStrength, radius: tu.bloomRadius, threshold: tu.bloomThreshold }, under);
+    } else {
+      under();
+      r.render(this.scene, this.camera);
     }
-    this.renderer.setRenderTarget(target);
-    this.renderer.render(this.scene, this.camera);
-    this.renderer.autoClear = false;
-    this.renderer.render(this.overlay, this.camera);
-    this.renderer.autoClear = true;
+    this.whole();
+    over();
   }
 
   /**
@@ -1599,7 +2331,8 @@ export class Engine {
       if (id && at) {
         // Hold it where it is along the ray; from here on it rides the ray.
         const w = this.map.toWorld(at);
-        p.press = { kind: "body", id, dist: Math.max(0.05, w.sub(p.origin).dot(p.dir)), hit: press.hit, trail: [], pin: false };
+        sfx.play("grab", w);
+        p.press = { kind: "body", id, dist: Math.max(0.05, w.clone().sub(p.origin).dot(p.dir)), hit: press.hit, trail: [], pin: false };
         this.haptic(p, 0.35, 20);
       } else {
         p.press = { kind: "grab", from: press.from, moved: true };
@@ -1662,7 +2395,10 @@ export class Engine {
     if (!panelHit && !p.hoverHandle && !p.carry && !(p.press?.kind === "grab" && this.grabs.length) && p.press?.kind !== "body" && p.press?.kind !== "lasso") mapHit = this.map.pick(p.origin, p.dir);
     const hoverKey = (h: MapHit | null) => (h ? `${h.kind}:${h.id}` : null);
     if (hoverKey(mapHit) !== hoverKey(p.hoverMap) && mapHit) {
-      if (p.lastHapticId !== hoverKey(mapHit)) this.haptic(p, 0.12, 8);
+      if (p.lastHapticId !== hoverKey(mapHit)) {
+        this.haptic(p, 0.12, 8);
+        sfx.play("hover", this.hitPoint(p, mapHit), this.hitKey(mapHit));
+      }
       p.lastHapticId = hoverKey(mapHit);
     }
     p.hoverMap = mapHit;
@@ -1828,6 +2564,16 @@ export class Engine {
   }
 }
 
+/** How far over the table top a panel lies on it: enough not to flicker into it. */
+const LIFT = 0.004;
+
+/** Lying flat, face up, its top edge pointing `top` (level). */
+function flatOn(top: THREE.Vector3) {
+  const up = top.clone().setY(0).normalize();
+  const right = new THREE.Vector3().crossVectors(up, Y).normalize();
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, Y));
+}
+
 /** How far the map's middle is from the camera, for turning mouse pixels into metres. */
 function pivotDistance(world: THREE.Group, camera: THREE.Camera) {
   return Math.max(0.3, world.position.distanceTo(tmpV.setFromMatrixPosition(camera.matrixWorld)));
@@ -1873,50 +2619,6 @@ function makeFloor() {
   floor.renderOrder = -4;
   floor.visible = false;
   return floor;
-}
-
-/**
- * The table top the map sits on: a faint glassy disc with a brighter rim, so
- * the surface reads in the headset without hiding anything under it (it
- * writes no depth, and the map draws over it).
- */
-function makeSurface() {
-  const mat = new THREE.ShaderMaterial({
-    uniforms: { uOpacity: { value: 0.6 }, uColor: { value: new THREE.Color(C.static).multiplyScalar(0.6) } },
-    vertexShader: /* glsl */ `
-      varying vec2 vR;
-      void main() {
-        vR = position.xz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      uniform float uOpacity;
-      uniform vec3 uColor;
-      varying vec2 vR;
-      float ring(float r, float at, float w) {
-        return 1.0 - smoothstep(w, w + fwidth(r) * 1.5, abs(r - at));
-      }
-      void main() {
-        float r = length(vR);
-        // The top: a faint fill, a touch brighter in the middle where the map stands.
-        float top = (0.07 + 0.08 * (1.0 - smoothstep(0.0, 0.9, r))) * (1.0 - smoothstep(0.95, 0.97, r));
-        float rim = ring(r, 0.97, 0.008);
-        float inner = ring(r, 0.62, 0.002) * 0.3;
-        float alpha = (top + rim * 0.75 + inner) * uOpacity;
-        gl_FragColor = vec4(uColor * (0.5 + rim * 0.7), alpha);
-        #include <colorspace_fragment>
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const surface = new THREE.Mesh(new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2), mat);
-  // Over the floor grid, under the map.
-  surface.renderOrder = -3;
-  surface.visible = false;
-  return surface;
 }
 
 /** The pill under each panel that carries it. */

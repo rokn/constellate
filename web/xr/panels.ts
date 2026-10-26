@@ -1,11 +1,12 @@
 import type { Frame, Layer, Story } from "../../shared/types";
 import { clock, liveDiagrams, storyMs, absMs, wordAt } from "../lib/story";
 import type { Actions, KeyboardMode, Model } from "./model";
-import { CodeView, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
+import { CodeView, DiffBlock, Gap, Heading, RichText, Rows, viewBlocks, type Block, type Links } from "./blocks";
 import type { Engine } from "./engine";
 import { FilterPanel, FocusBar } from "./filter";
-import { Shelf, TableMenu, WristPanel } from "./table";
+import { OutlinePanel, Shelf, TableMenu, WristPanel } from "./table";
 import { HintsPanel, TunePanel } from "./tune";
+import { ViewsPanel } from "./views";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
 
 /**
@@ -16,6 +17,11 @@ import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } 
  */
 
 const PAD = 34;
+
+const ago = (at: number) => {
+  const h = (Date.now() - at) / 3_600_000;
+  return h < 1 ? "just now" : h < 24 ? `${Math.round(h)}h ago` : h < 48 ? "yesterday" : `${Math.round(h / 24)} days ago`;
+};
 
 /* ----------------------------- scroll panel ----------------------------- */
 
@@ -91,8 +97,10 @@ abstract class ScrollPanel extends Panel {
 /** Under your gaze: what's going on, what the voice is saying, and the way to the menu. */
 export class DockPanel extends Panel {
   m: Model | null = null;
+  /** Opens the menu on its Branches tab; the room wires it to the menu. */
+  openBranches = () => {};
   constructor(private a: Actions) {
-    super("dock", 0.8, 0.15);
+    super("dock", 0.88, 0.15);
   }
   update(m: Model) {
     const p = this.m;
@@ -110,7 +118,11 @@ export class DockPanel extends Panel {
       p.hintsOpen !== m.hintsOpen ||
       p.repoName !== m.repoName ||
       p.placing !== m.placing ||
-      p.visibleCount !== m.visibleCount
+      p.visibleCount !== m.visibleCount ||
+      p.viewsOpen !== m.viewsOpen ||
+      p.table !== m.table ||
+      p.branch !== m.branch ||
+      p.checkedOut !== m.checkedOut
     )
       this.invalidate();
   }
@@ -124,10 +136,14 @@ export class DockPanel extends Panel {
     ctx.fillStyle = C.text;
     ctx.fillText(fit(ctx, m.repoName ?? "Constellate", 300), PAD, 56);
     ctx.font = sans(21);
+    const files = `${m.visibleCount} files${m.filter.active ? " (filtered)" : ""}`;
+    const b = m.branch;
     const status =
-      m.status === "scanning" ? "scanning…" : m.status === "analyzing" ? "charting the modules…" : m.status === "error" ? "error" : m.status === "idle" ? "no repository open" : `${m.visibleCount} files${m.filter.active ? " (filtered)" : ""}`;
-    ctx.fillStyle = m.status === "error" ? C.bad : C.muted;
+      m.status === "scanning" ? "scanning…" : m.status === "analyzing" ? "charting the modules…" : m.status === "error" ? "error" : m.status === "idle" ? "no repository open" : b ? `⑂ ${b.agent ?? b.name}` : m.checkedOut ? `${m.checkedOut} · ${files}` : files;
+    ctx.fillStyle = m.status === "error" ? C.bad : b ? C.course : C.muted;
     ctx.fillText(fit(ctx, status, 300), PAD, 92);
+    // Which branch the map is: pointing here is the way to another.
+    if (m.status !== "idle" && m.status !== "scanning") this.row(ctx, "branch", PAD - 14, 18, 328, this.H - 36, this.openBranches);
     if (m.busy) {
       ctx.fillStyle = C.course;
       ctx.beginPath();
@@ -137,7 +153,7 @@ export class DockPanel extends Panel {
 
     // Middle: the voice, a tour caption, a toast, or what the navigator is doing.
     const midX = 360;
-    const midW = W - midX - 620;
+    const midW = W - midX - 734;
     ctx.font = sans(23);
     let line = "";
     let color = C.text;
@@ -153,10 +169,12 @@ export class DockPanel extends Panel {
     lines.forEach((l, i) => ctx.fillText(l, midX, 52 + i * 32 + (3 - lines.length) * 16));
     if (m.toast?.undo) this.button(ctx, "undo", midX + midW - 100, this.H - 64, "Undo", m.toast.undo, { size: 22, w: 100 });
 
-    // Right: menu, tune, voice, ask, hints.
-    let x = W - PAD - 596;
+    // Right: menu, views, tune, voice, ask, hints.
+    let x = W - PAD - 710;
     const y = (this.H - 64) / 2;
     x = this.button(ctx, "menu", x, y, "Menu", this.a.toggleMenu, { w: 112, h: 64, active: m.menuOpen }) + 10;
+    // On a table the views already lie on it.
+    x = this.button(ctx, "views", x, y, "Views", this.a.toggleViews, { w: 104, h: 64, active: m.viewsOpen || m.table, accent: C.course, disabled: m.table }) + 10;
     x = this.button(ctx, "tune", x, y, "Tune", this.a.toggleTune, { w: 104, h: 64, active: m.tuneOpen }) + 10;
     const v = m.voice.state;
     const voiceLabel = v === "listening" ? "Listening" : v === "speaking" ? "Speaking" : v === "connecting" ? "…" : "Voice";
@@ -168,7 +186,9 @@ export class DockPanel extends Panel {
 
 /* --------------------------------- menu --------------------------------- */
 
-type Tab = "map" | "modules" | "answers" | "stories" | "agents" | "repo";
+type Row = { id: string; label: string; detail?: string; color?: string; active?: boolean; onClick: () => void; extra?: { label: string; onClick: () => void; active?: boolean }[] };
+
+type Tab = "map" | "modules" | "answers" | "stories" | "agents" | "branches" | "repo";
 
 export class MenuPanel extends Panel {
   m: Model | null = null;
@@ -180,6 +200,21 @@ export class MenuPanel extends Panel {
   private disarm = 0;
   constructor(private a: Actions) {
     super("menu", 0.78, 0.6);
+  }
+
+  /** When Remove surfaces was pressed once, waiting for the second press; 0 when it isn't. */
+  private clearArmed = 0;
+  /** Removing your surfaces: the first press arms it, the second, a moment later, removes them. */
+  private pressClear() {
+    if (this.clearArmed && performance.now() - this.clearArmed < 400) return;
+    if (this.clearArmed) {
+      this.clearArmed = 0;
+      this.a.clearSurfaces();
+    } else {
+      this.clearArmed = performance.now();
+      window.setTimeout(() => ((this.clearArmed = 0), this.invalidate()), 4000);
+    }
+    this.invalidate();
   }
 
   /** Reloading starts the page over: the first press arms it, the second, a moment later, reloads. */
@@ -197,7 +232,7 @@ export class MenuPanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story"] as const).some((k) => p[k] !== m[k])) this.invalidate();
+    if (!p || (["layers", "lensId", "lenses", "legend", "frames", "stories", "agents", "branch", "branches", "checkedOut", "repos", "mode", "filter", "visibleCount", "tour", "voice", "overview", "status", "frameId", "story", "placing", "outlining", "surfaces", "table"] as const).some((k) => p[k] !== m[k])) this.invalidate();
   }
   protected draw(ctx: CanvasRenderingContext2D) {
     const m = this.m;
@@ -209,6 +244,7 @@ export class MenuPanel extends Panel {
       ["answers", `Answers${m.frames.length ? ` ${m.frames.length}` : ""}`],
       ["stories", `Stories${m.stories.length ? ` ${m.stories.length}` : ""}`],
       ...(m.agentsOn ? ([["agents", `Agents${m.agents.length ? ` ${m.agents.length}` : ""}`]] as [Tab, string][]) : []),
+      ["branches", "Branches"],
       ["repo", "Repo"],
     ];
     let x = PAD;
@@ -219,6 +255,63 @@ export class MenuPanel extends Panel {
     const top = 112;
     if (this.tab === "map") this.mapTab(ctx, m, top);
     else this.listTab(ctx, m, top);
+  }
+
+  /** Opened on a tab, at its top. */
+  showTab(t: Tab) {
+    this.tab = t;
+    this.scrollY = 0;
+    this.invalidate();
+  }
+
+  /**
+   * The branches with work of their own, newest first: pick one and the map
+   * becomes the code on it, lit against where it forked. An agent's goes by
+   * its title, and shows against where it started.
+   */
+  private branchRows(m: Model): Row[] {
+    const a = this.a;
+    const b = m.branch;
+    const rows: Row[] = [];
+    const here = m.checkedOut ?? "the checked-out code";
+    if (b) {
+      const size = b.error ?? (b.loading ? "building its map…" : `${b.commits} commits · ${b.files} files · +${b.add} −${b.del}`);
+      rows.push({ id: "shown", label: `On the map: ${b.agent ?? b.name}`, detail: `${b.agent ? `${b.name} · ` : ""}${size}`, color: b.error ? C.bad : C.course, active: true, onClick: () => {} });
+      rows.push({
+        id: "only",
+        label: b.changedOnly ? "Show the whole map" : "Show only what it changed",
+        detail: b.changedOnly ? `Only its ${b.files} changed files are on the map` : "The files it didn't touch step off the map",
+        active: b.changedOnly,
+        onClick: () => a.setChangedOnly(!b.changedOnly),
+      });
+      rows.push({ id: "present", label: `Back to ${here}`, detail: "The map as it's checked out now", onClick: a.closeBranch });
+    }
+    const list = m.branches;
+    const agentOf = new Map(m.agents.map((g) => [g.branch, g]));
+    for (const x of list?.list ?? []) {
+      if (x.name === list!.base || x.ahead === 0) continue;
+      const ag = agentOf.get(x.name);
+      const shown = b?.name === x.name;
+      if (shown) continue;
+      const where = [`${x.ahead} ahead`, x.behind ? `${x.behind} behind` : "", x.current ? "checked out" : "", x.remote ? "remote" : "", ago(x.at)].filter(Boolean).join(" · ");
+      rows.push({
+        id: `b:${x.name}`,
+        label: ag ? ag.title : x.name,
+        detail: `${ag ? `${x.name} · ` : ""}${where} · ${x.subject}`,
+        color: ag ? C.runtime : x.remote ? C.muted : C.static,
+        onClick: () => (ag ? a.showAgent(ag.id) : a.showBranch(x.name, list!.base)),
+      });
+    }
+    if (!list) rows.push({ id: "loading", label: "Listing the branches…", onClick: () => {} });
+    else if (rows.length === (b ? 2 : 0)) rows.push({ id: "none", label: `No branches ahead of ${list.base}`, detail: list.error ?? "Start an agent, or fetch to see others' branches.", onClick: () => {} });
+    else if (list.error) rows.push({ id: "err", label: "Not all of them", detail: list.error, color: C.bad, onClick: () => {} });
+    rows.push({
+      id: "fetch",
+      label: list?.fetching ? "Fetching…" : "Fetch from the remote",
+      detail: "Others' branches as they are now",
+      onClick: () => !list?.fetching && a.fetchBranches(),
+    });
+    return rows;
   }
 
   private section(ctx: CanvasRenderingContext2D, label: string, y: number) {
@@ -273,6 +366,7 @@ export class MenuPanel extends Panel {
     x = this.button(ctx, "docs", x, y, "Hide docs & config", () => a.setFilter({ hideDocs: !m.filter.hideDocs }), { size: 24, active: m.filter.hideDocs }) + 10;
     x = this.button(ctx, "clear", x, y, "Show everything", a.clearFilter, { size: 24, disabled: !m.filter.active }) + 10;
     x = this.button(ctx, "morefilter", x, y, "More…", a.toggleFilter, { size: 24, accent: C.static }) + 10;
+    if (!m.table) x = this.button(ctx, "views", x, y, "Views…", a.toggleViews, { size: 24, accent: C.course, active: m.viewsOpen }) + 10;
     if (m.filter.label) {
       ctx.font = sans(20);
       ctx.fillStyle = C.muted;
@@ -283,23 +377,35 @@ export class MenuPanel extends Panel {
     this.section(ctx, "View", y);
     y += 14;
     x = PAD;
-    if (m.mode !== "vr" && m.canVR) x = this.button(ctx, "vr", x, y, "Enter VR", () => a.enter("vr"), { size: 24, accent: C.course }) + 10;
-    if (m.mode !== "ar" && m.canAR) x = this.button(ctx, "ar", x, y, "Passthrough (AR)", () => a.enter("ar"), { size: 24, accent: C.course }) + 10;
-    if (m.mode === "ar") x = this.button(ctx, "place", x, y, "Place on a surface", a.placeMap, { size: 24, active: m.placing }) + 10;
-    x = this.button(ctx, "recenter", x, y, "Recenter panels", a.recenterPanels, { size: 24 }) + 10;
-    x = this.button(ctx, "tune", x, y, "Tune…", a.toggleTune, { size: 24 }) + 10;
-    x = this.button(ctx, "hints", x, y, "Controls", a.toggleHints, { size: 24 }) + 10;
+    // A row that runs on to the next line when it's full.
+    const add = (id: string, label: string, run: () => void, o: { active?: boolean; accent?: string } = {}) => {
+      ctx.font = cond(24, 600);
+      if (x + ctx.measureText(label).width + 36 > this.W - PAD) (x = PAD), (y += 70);
+      x = this.button(ctx, id, x, y, label, run, { size: 24, ...o }) + 10;
+    };
+    if (m.mode !== "vr" && m.canVR) add("vr", "Enter VR", () => a.enter("vr"), { accent: C.course });
+    if (m.mode !== "ar" && m.canAR) add("ar", "Passthrough (AR)", () => a.enter("ar"), { accent: C.course });
+    if (m.mode === "ar") add("place", "Place on a surface", a.placeMap, { active: m.placing });
+    if (m.mode === "ar" && m.table) add("lift", "Off the table", a.leaveTable);
+    if (m.mode === "ar") add("outline", "Trace the table", a.outlineTable, { active: m.outlining?.kind === "table" });
+    if (m.mode === "ar") add("surface", "Add a surface", a.addSurface, { active: m.outlining?.kind === "surface" });
+    if (m.mode === "ar" && m.surfaces) {
+      const armed = !!this.clearArmed;
+      add("clearsurfaces", armed ? "Sure? Remove them" : `Remove surfaces (${m.surfaces})`, () => this.pressClear(), { active: armed, accent: C.bad });
+    }
+    add("recenter", "Recenter panels", a.recenterPanels);
+    add("tune", "Tune…", a.toggleTune);
+    add("hints", "Controls", a.toggleHints);
     if (m.mode !== "flat") {
       const armed = !!this.reloadArmed;
-      x = this.button(ctx, "reload", x, y, armed ? "Sure? Reload" : "↻ Reload", () => this.pressReload(), { size: 24, active: armed, accent: C.bad }) + 10;
-      x = this.button(ctx, "exit", x, y, "Exit", a.exitXR, { size: 24 }) + 10;
+      add("reload", armed ? "Sure? Reload" : "↻ Reload", () => this.pressReload(), { active: armed, accent: C.bad });
+      add("exit", "Exit", a.exitXR);
     }
   }
 
   private listTab(ctx: CanvasRenderingContext2D, m: Model, top: number) {
     const a = this.a;
     const rowH = 66;
-    type Row = { id: string; label: string; detail?: string; color?: string; active?: boolean; onClick: () => void; extra?: { label: string; onClick: () => void; active?: boolean }[] };
     let rows: Row[] = [];
     if (this.tab === "modules") {
       rows = m.legend.rows.map((r) => ({
@@ -362,11 +468,14 @@ export class MenuPanel extends Panel {
           label: ag.title,
           detail: `${ag.files.length} files${ag.pr ? ` · PR #${ag.pr.number}${ag.pr.state === "open" ? "" : ` ${ag.pr.state}`}` : ""} · ${what}`,
           color: dot[ag.status],
-          onClick: () => a.focusAgent(ag.id),
+          active: m.branch?.name === ag.branch,
+          onClick: () => a.showAgent(ag.id),
           extra,
         };
       });
       rows.push({ id: "new", label: "Start an agent…", detail: "It changes the code on a branch of its own. Or just ask the voice.", onClick: () => a.openKeyboard("agent") });
+    } else if (this.tab === "branches") {
+      rows = this.branchRows(m);
     } else {
       rows = [];
       if (m.library) {
@@ -432,7 +541,9 @@ export class FilePanel extends ScrollPanel {
     this.m = m;
     const f = m.file;
     const d = m.fileData && f && m.fileData.path === f.path ? m.fileData : null;
-    const key = `${f?.path}:${f?.line}:${f?.endLine}:${!!d}`;
+    const c = m.fileChange;
+    const diff = m.fileDiff === undefined ? "…" : m.fileDiff === null ? "x" : m.fileDiff.length;
+    const key = `${f?.path}:${f?.line}:${f?.endLine}:${!!d}:${c ? `${c.from}..${c.to}:${diff}` : ""}`;
     if (key !== this.key) {
       this.key = key;
       this.build(m, d);
@@ -443,14 +554,26 @@ export class FilePanel extends ScrollPanel {
     this.blocks = [];
     this.code = null;
     if (!f) return;
+    // Changed on the branch or in the span on the map: its diff comes first.
+    const c = m.fileChange;
+    if (c) {
+      const what = c.status === "A" ? "Added" : c.status === "D" ? "Deleted" : "Changed";
+      this.blocks.push(new Heading(`${what}${c.label ? ` on ${c.label}` : ""} · +${c.add} −${c.del}`, { size: 24, color: C.course }));
+      const diff = m.fileDiff;
+      if (diff) this.blocks.push(new DiffBlock(diff, d?.lang ?? f.path.split(".").pop() ?? "text", () => this.invalidate()));
+      else this.blocks.push(new RichText(diff === undefined ? "_Reading the diff…_" : diff === null ? "The diff couldn't be read." : "_No changes to this file._", null, { color: C.muted }));
+      this.blocks.push(new Gap(14));
+    }
     if (!d) {
-      this.blocks = [new RichText("_Loading…_", null, { color: C.muted })];
+      // A file only the branch has isn't in the checked-out code: the diff is all there is.
+      if (!c) this.blocks = [new RichText("_Loading…_", null, { color: C.muted })];
       return this.invalidate();
     }
     const row = (p: string, names?: string[], line?: number) => ({
       id: `go:${p}`,
-      label: p.split("/").pop()!,
-      detail: names?.length ? `${names.slice(0, 6).join(", ")}${names.length > 6 ? " …" : ""}` : p,
+      label: p,
+      path: true,
+      detail: names?.length ? `${names.slice(0, 6).join(", ")}${names.length > 6 ? " …" : ""}` : undefined,
       onClick: () => this.a.openFile(p, line),
     });
     const imports = (d.importLinks ?? d.imports.map((p) => ({ path: p, names: [] as string[], line: undefined }))).map((l) => row(l.path, l.names, undefined));
@@ -459,6 +582,7 @@ export class FilePanel extends ScrollPanel {
     if (importers.length) this.blocks.push(new Heading(`Imported by ${importers.length}`, { size: 22, color: C.static }), new Rows(importers.slice(0, 12), 58));
     if (d.externals.length) this.blocks.push(new RichText(`Packages: ${d.externals.slice(0, 12).map((e) => `\`${e}\``).join(" ")}`, null, { size: 21, color: C.muted }));
     this.blocks.push(new Gap(14));
+    if (c) this.blocks.push(new Heading(`Source${m.checkedOut ? ` as on ${m.checkedOut}` : ""}`, { size: 22, color: C.muted }));
     const hl = new Set<number>();
     if (f.line) for (let n = f.line; n <= (f.endLine ?? f.line); n++) hl.add(n);
     // What comes before the code, so we can scroll to a line.
@@ -785,6 +909,10 @@ export class KeyboardPanel extends Panel {
             ? "Only paths matching (comma-separated: internal/**, *.go, auth)"
             : this.mode === "exclude"
               ? "Hide paths matching (comma-separated)"
+              : this.mode === "view"
+                ? "Name this view (the same name replaces it)"
+              : this.mode === "preset"
+                ? "Name this Tune preset (the same name replaces it)"
               : this.target === "story"
                 ? "Write a story about…"
                 : "Ask the navigator, or jump to a file";
@@ -834,7 +962,7 @@ export class KeyboardPanel extends Panel {
     bx = this.button(ctx, "shift", bx, y, "⇧", () => ((this.shift = !this.shift), this.invalidate()), { w: keyW * 1.3, h: keyH, active: this.shift, size: 26 }) + 10;
     bx = this.button(ctx, "space", bx, y, "space", () => this.press(" "), { w: keyW * 5, h: keyH, size: 24 }) + 10;
     bx = this.button(ctx, "back", bx, y, "⌫", () => this.backspace(), { w: keyW * 1.3, h: keyH, size: 26 }) + 10;
-    const go = this.mode === "note" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
+    const go = this.mode === "note" || this.mode === "view" || this.mode === "preset" ? "Save" : this.mode === "repo" ? "Open" : this.mode === "agent" ? "Start" : this.mode === "include" || this.mode === "exclude" ? "Apply" : "Ask";
     this.button(ctx, "enter", bx, y, go, () => this.submit(), { w: W - PAD - bx, h: keyH, size: 26, accent: C.course, active: !!this.text.trim() });
   }
   private press(s: string) {
@@ -867,7 +995,11 @@ export class Panels {
   readonly tableMenu: TableMenu;
   readonly shelf: Shelf;
   readonly wrist: WristPanel;
+  readonly views: ViewsPanel;
+  readonly outline: OutlinePanel;
   private lastKeyboard: Model["keyboard"] = null;
+  private menuOpen = false;
+  private m: Model | null = null;
 
   constructor(
     private engine: Engine,
@@ -876,6 +1008,10 @@ export class Panels {
     const links: Links = { isFile: a.isFile, open: (p, l, e) => a.openFile(p, l, e) };
     this.dock = new DockPanel(a);
     this.menu = new MenuPanel(a);
+    this.dock.openBranches = () => {
+      this.menu.showTab("branches");
+      if (!this.menuOpen) a.toggleMenu();
+    };
     this.file = new FilePanel(a, links);
     this.answer = new AnswerPanel(a, links);
     this.story = new StoryPanel(a, links);
@@ -887,17 +1023,38 @@ export class Panels {
     this.tableMenu = new TableMenu(a);
     this.shelf = new Shelf(a);
     this.wrist = new WristPanel(a);
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist]) engine.addPanel(p);
+    this.views = new ViewsPanel(a);
+    this.outline = new OutlinePanel(a);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.keyboard, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views, this.outline]) engine.addPanel(p);
     // The wrist menu comes and goes with your palm, and the shelf takes bodies dropped on it: both the engine's to run.
     engine.wrist = this.wrist;
     engine.shelf = this.shelf;
+    // Thrown away, a panel closes: the same as its ✕. The dock and the table's own stay.
+    const closers = new Map<Panel, () => void>([
+      [this.menu, a.toggleMenu],
+      [this.tune, a.toggleTune],
+      [this.hints, a.toggleHints],
+      [this.filter, a.toggleFilter],
+      [this.file, a.closeFile],
+      [this.answer, a.closeFrame],
+      [this.story, a.closeStory],
+      [this.keyboard, a.closeKeyboard],
+      [this.outline, a.cancelOutline],
+    ]);
+    engine.closePanel = (p) => {
+      const close = closers.get(p) ?? (p === this.views && !this.m?.table ? a.toggleViews : null);
+      if (!close) return false;
+      close();
+      return true;
+    };
   }
 
   update(m: Model) {
+    this.m = m;
     const e = this.engine;
-    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist]) p.update(m);
+    for (const p of [this.dock, this.menu, this.file, this.answer, this.story, this.tune, this.hints, this.filter, this.focusBar, this.tableMenu, this.shelf, this.wrist, this.views, this.outline]) p.update(m);
     e.show(this.dock, "dock");
-    // On a real table: controls along its front edge, and what's off the map along its right.
+    // On a real table: controls along its front edge, what's off the map along its right, and the saved views along its left.
     if (m.table) {
       e.show(this.tableMenu, "table");
       e.show(this.shelf, "shelf");
@@ -905,6 +1062,9 @@ export class Panels {
       e.hide(this.tableMenu);
       e.hide(this.shelf);
     }
+    if (m.table || m.viewsOpen) e.show(this.views, "views");
+    else e.hide(this.views);
+    this.menuOpen = m.menuOpen;
     if (m.menuOpen) e.show(this.menu, "center");
     else e.hide(this.menu);
     if (m.tuneOpen) e.show(this.tune, "tune");
@@ -913,6 +1073,8 @@ export class Panels {
     else e.hide(this.hints);
     if (m.filterOpen) e.show(this.filter, "filter");
     else e.hide(this.filter);
+    if (m.outlining) e.show(this.outline, "outline");
+    else e.hide(this.outline);
     if (m.focus) e.show(this.focusBar, "focusbar");
     else e.hide(this.focusBar);
     if (m.file) e.show(this.file, "right");

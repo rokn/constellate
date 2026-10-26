@@ -84,9 +84,15 @@ export class FilterPanel extends Panel {
       y += 46;
     }
 
+    const same = (a: MapFilter, b: MapFilter) => JSON.stringify({ ...EMPTY_FILTER, ...a }) === JSON.stringify({ ...EMPTY_FILTER, ...b });
+    const current = m.savedFilters.find((v) => same(v.filter, f));
+    // Saving names it on the room's keyboard; the views themselves are on the table, or behind the dock's Views.
+    if (m.filter.active && !current) {
+      this.button(ctx, "saveview", W - PAD - 220, y, "Save as a view…", () => this.a.openKeyboard("view", undefined, f.label ?? ""), { size: 20, w: 220, h: 38, accent: C.course });
+      if (!m.savedFilters.length) y += 58;
+    }
     if (m.savedFilters.length) {
       heading("Saved views");
-      const same = (a: MapFilter, b: MapFilter) => JSON.stringify({ ...EMPTY_FILTER, ...a }) === JSON.stringify({ ...EMPTY_FILTER, ...b });
       chips(
         m.savedFilters.map((v) => {
           const on = same(v.filter, f);
@@ -177,7 +183,7 @@ export class FocusBar extends Panel {
   m: Model | null = null;
 
   constructor(private a: Actions) {
-    super("focusbar", 0.82, 0.09);
+    super("focusbar", 1.02, 0.09);
   }
 
   update(m: Model) {
@@ -185,7 +191,7 @@ export class FocusBar extends Panel {
     this.m = m;
     const a = p?.focus;
     const b = m.focus;
-    if (!p || a?.label !== b?.label || a?.depth !== b?.depth || a?.count !== b?.count || a?.more !== b?.more || a?.only !== b?.only) this.invalidate();
+    if (!p || a?.label !== b?.label || a?.depth !== b?.depth || a?.count !== b?.count || a?.more !== b?.more || a?.only !== b?.only || a?.dir !== b?.dir) this.invalidate();
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
@@ -195,11 +201,17 @@ export class FocusBar extends Panel {
     const H = this.H;
     ctx.font = cond(28, 600);
     ctx.fillStyle = C.text;
-    const ring = f.depth === 0 ? "just it" : `${f.depth} ring${f.depth > 1 ? "s" : ""} of connections`;
+    const way = f.dir === "in" ? "inbound " : f.dir === "out" ? "outbound " : "";
+    const ring = f.depth === 0 ? "just it" : `${f.depth} ring${f.depth > 1 ? "s" : ""} of ${way}connections`;
     ctx.fillText(fit(ctx, f.label, 330), PAD, H / 2 - 2);
     ctx.font = sans(20);
     ctx.fillStyle = C.muted;
     ctx.fillText(fit(ctx, `${ring} · ${f.count} files`, 330), PAD, H / 2 + 28);
+    // Which connections: what imports it, what it imports, or both.
+    let d = PAD + 350;
+    const y0 = (H - 60) / 2;
+    for (const [dir, label] of [["both", "Both"], ["in", "Inbound"], ["out", "Outbound"]] as const)
+      d = this.button(ctx, `dir:${dir}`, d, y0, label, () => this.a.focusDirection(dir), { w: dir === "both" ? 100 : 136, h: 60, size: 22, active: f.dir === dir, disabled: f.only }) + 8;
     // Showing only these, the rest of the map is off, so there's no ring to widen to.
     let x = this.W - PAD - 630;
     const y = (H - 60) / 2;

@@ -1,4 +1,5 @@
-import { DEFAULT_TUNING, FORCE_KNOBS, PRESETS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
+import { BUILT_IN, presetOn } from "../../shared/knobs";
+import { DEFAULT_TUNING, FORCE_KNOBS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
 import { DEFAULT_XR, XR_SECTIONS, type XRKnob, type XRSettings } from "../lib/xrSettings";
 import type { Actions, Model } from "./model";
 import { C, Panel, cond, fit, mono, sans, wrap } from "./ui";
@@ -25,10 +26,13 @@ type AnyKnob = Knob | XRKnob;
 export class TunePanel extends Panel {
   m: Model | null = null;
   tab: Tab = "map";
-  private expanded: Record<string, boolean> = { glow: true, bodies: true, sight: true, passthrough: true, floor: true, comfort: true, sound: true };
+  private expanded: Record<string, boolean> = { glow: true, bodies: true, sight: true, passthrough: true, floor: true, comfort: true, hands: true, sound: true };
   /** Values being dragged, not yet (all) sent. */
   private drafts = new Map<string, number>();
   private sentAt = 0;
+  /** The preset whose ✕ was pressed once, waiting for the second press. */
+  private armedDelete: string | null = null;
+  private disarm = 0;
 
   constructor(private a: Actions) {
     super("tune", 0.74, 0.92);
@@ -37,7 +41,7 @@ export class TunePanel extends Panel {
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || p.tuning !== m.tuning || p.settings !== m.settings || p.mode !== m.mode) this.invalidate();
+    if (!p || p.tuning !== m.tuning || p.settings !== m.settings || p.mode !== m.mode || p.tunePresets !== m.tunePresets) this.invalidate();
   }
 
   private value(tab: Tab, key: string): number | boolean {
@@ -66,27 +70,42 @@ export class TunePanel extends Panel {
     this.button(ctx, "tab:headset", x, 24, "The headset", () => this.setTab("headset"), { active: this.tab === "headset", size: 25 });
     this.button(ctx, "close", W - PAD - 58, 22, "✕", this.a.toggleTune, { w: 58, h: 52 });
 
-    // Second row: presets (map) and the resets.
+    // Presets: the built-in looks, then yours (◐: saved in the headset, so it sets the headset's knobs too).
     let y = 96;
     x = PAD;
-    if (this.tab === "map") {
-      const presetOn = (patch: Partial<Tuning>) => (Object.keys(DEFAULT_TUNING) as (keyof Tuning)[]).every((k) => m.tuning[k] === (patch[k] ?? DEFAULT_TUNING[k]));
-      for (const p of PRESETS) {
-        ctx.font = cond(22, 600);
-        const w = ctx.measureText(p.title).width + 32;
-        if (x + w > W - PAD) break;
-        x = this.button(ctx, `preset:${p.id}`, x, y, p.title, () => this.a.setTuning({ ...DEFAULT_TUNING, ...p.patch }), { size: 22, w, active: presetOn(p.patch), accent: C.course }) + 8;
+    const all = [...BUILT_IN.map((p) => ({ p, mine: false })), ...m.tunePresets.map((p) => ({ p, mine: true }))];
+    let rows = 1;
+    for (const { p, mine } of all) {
+      const on = presetOn(p, m.tuning, m.settings);
+      const label = `${p.name}${p.headset ? " ◐" : ""}`;
+      ctx.font = cond(22, 600);
+      const w = Math.min(300, ctx.measureText(label).width + 32);
+      const del = mine && on ? 58 : 0;
+      if (x + w + del > W - PAD) {
+        if (rows === 2) break;
+        rows++;
+        x = PAD;
+        y += 56;
       }
-      y += 60;
-      x = PAD;
+      x = this.button(ctx, `preset:${mine ? "mine:" : ""}${p.name}`, x, y, fit(ctx, label, w - 32), () => this.a.applyTunePreset(p), { size: 22, w, active: on, accent: C.course }) + 6;
+      // Yours can go: the ✕ by the one that's on, pressed twice.
+      if (del) {
+        const armed = this.armedDelete === p.name;
+        x = this.button(ctx, `del:${p.name}`, x, y, armed ? "Sure?" : "✕", () => this.pressDelete(p.name), { size: 20, w: armed ? 90 : 48, active: armed, accent: C.bad }) + 12;
+      } else x += 2;
+    }
+    y += 60;
+    x = PAD;
+    x = this.button(ctx, "save", x, y, "+ Save as preset", () => this.a.openKeyboard("preset"), { size: 22, accent: C.course }) + 8;
+    if (this.tab === "map") {
       x = this.button(ctx, "relayout", x, y, "Re-layout", this.a.relayout, { size: 22 }) + 8;
       this.button(ctx, "reset", x, y, "Reset all", () => this.a.setTuning(DEFAULT_TUNING), { size: 22 });
     } else {
       // The hints are worth leaving as they were.
-      this.button(ctx, "reset", x, y, "Reset all", () => this.a.setXR({ ...DEFAULT_XR, hintsSeen: m.settings.hintsSeen }), { size: 22 });
+      x = this.button(ctx, "reset", x, y, "Reset all", () => this.a.setXR({ ...DEFAULT_XR, hintsSeen: m.settings.hintsSeen }), { size: 22 }) + 8;
       ctx.font = sans(21);
       ctx.fillStyle = C.muted;
-      ctx.fillText(fit(ctx, m.mode === "ar" ? "In passthrough now." : m.mode === "vr" ? "In VR now." : "", W - x - 200), x + 150, y + 30);
+      ctx.fillText(fit(ctx, m.mode === "ar" ? "In passthrough now." : m.mode === "vr" ? "In VR now." : "", W - x - PAD), x + 10, y + 30);
     }
     y += 64;
     ctx.fillStyle = C.line;
@@ -157,6 +176,19 @@ export class TunePanel extends Panel {
     ctx.fillStyle = C.muted;
     const lines = wrap(ctx, hint ?? "Point at a knob to see what it does. Drag a slider with the trigger; the stick scrolls.", W - PAD * 2).slice(0, 2);
     lines.forEach((l, i) => ctx.fillText(l, PAD, bottom + 38 + i * 28));
+  }
+
+  /** Deleting a preset: the first press arms it, the second (a moment later, within a few seconds) deletes it. */
+  private pressDelete(name: string) {
+    window.clearTimeout(this.disarm);
+    if (this.armedDelete === name) {
+      this.armedDelete = null;
+      this.a.deleteTunePreset(name);
+    } else {
+      this.armedDelete = name;
+      this.disarm = window.setTimeout(() => ((this.armedDelete = null), this.invalidate()), 4000);
+    }
+    this.invalidate();
   }
 
   private setTab(t: Tab) {
@@ -237,6 +269,7 @@ const HINTS: HintGroup[] = [
       ["Grip on a panel, or trigger on its handle", "Carry the panel"],
       ["Stick while carrying a panel", "Push it away, pull it closer"],
       ["Other grip on a carried code, answers or story panel", "Pull apart or together to resize it"],
+      ["Throw a carried panel away and let go", "Close it"],
     ],
   },
   {
@@ -260,6 +293,7 @@ const HINTS: HintGroup[] = [
       ["A", "Menu"],
       ["B", "Back"],
       ["Stick click on a body", "Focus on it; again for a ring more of its connections"],
+      ["The bar over the dock", "Inbound, Outbound or Both; Only these to isolate it"],
       ["Stick click on open sky", "Frame the selection"],
     ],
   },
@@ -278,6 +312,7 @@ const HINTS: HintGroup[] = [
       ["Left palm up", "Wrist menu; touch it with your right hand"],
       ["Both hands in an L, framing", "Light up what's in the frame (all of it: the whole map)"],
       ["Trigger on a panel's handle", "Pinch it to carry the panel"],
+      ["Throw a carried panel away and let go", "Close it"],
     ],
   },
   {
@@ -287,8 +322,15 @@ const HINTS: HintGroup[] = [
     rows: [
       ["Strip on the near edge", "Back, the whole map, menus, voice"],
       ["Shelf on the right edge", "What's off the map: press one to put it back"],
+      ["Views on the left edge", "Your saved filters: press one to switch to it"],
+      ["Tap a panel on the table", "Press its buttons with a fingertip, against the table"],
+      ["Carry a panel down to the table, or up to a wall", "Let go when the green outline shows: it snaps flat onto it"],
       ["Drop a dragged body on the shelf", "Take it off the map"],
+      ["Menu → Recenter panels", "Put the table's panels back on its edges"],
       ["Menu → Place on a surface", "Move the map to another table"],
+      ["Off table (on the strip), or say so", "Take the map off the table, back in front of you"],
+      ["Menu → Trace the table", "Touch its corners to give it its real shape"],
+      ["Menu → Add a surface", "Trace a shelf or a stretch of wall: panels snap onto it too"],
     ],
   },
 ];

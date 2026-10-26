@@ -1,5 +1,6 @@
-import type { Activity, AgentRun, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story } from "../../shared/types";
+import type { Activity, AgentRun, Frame, Layer, LibraryRepo, MapFilter, Overview, SavedFilter, Story, TunePreset } from "../../shared/types";
 import type { FileData } from "../lib/api";
+import type { FileChange } from "../components/FilePanel";
 import type { Tuning } from "../lib/tuning";
 import type { XRSettings } from "../lib/xrSettings";
 import type { Stage } from "../lib/story";
@@ -7,7 +8,7 @@ import type { VoiceState } from "../lib/useVoice";
 import type { Mode } from "./engine";
 import type { MapHit } from "./map";
 
-export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent";
+export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "agent" | "view" | "preset";
 
 /**
  * What the headset's panels show, in one object. The desktop app (App.tsx)
@@ -17,6 +18,9 @@ export type KeyboardMode = "ask" | "note" | "repo" | "include" | "exclude" | "ag
  */
 
 export type LegendRow = { id: string; label: string; color?: string; count: number; isolated?: "in" | "out" };
+
+/** A branch with work of its own, as /api/branches lists it. */
+export type BranchRow = { name: string; current: boolean; remote: boolean; ahead: number; behind: number; subject: string; at: number };
 
 export type Model = {
   status: string;
@@ -33,6 +37,9 @@ export type Model = {
   pointer: { viewId?: string; nodeIds?: string[]; lines?: number[] } | null;
   file: { path: string; line?: number; endLine?: number } | null;
   fileData: FileData | null;
+  /** The open file's change on the branch or in the span on the map; its diff, once read (null: it couldn't be). */
+  fileChange: (FileChange & { label?: string }) | null;
+  fileDiff: string | null | undefined;
   /** The desktop's Intro card: shown until you've asked, opened or toured something. */
   intro: boolean;
   voice: { available: boolean; state: VoiceState; caption: string; heard: string; error: string | null };
@@ -55,6 +62,12 @@ export type Model = {
   /** Coding agents, and whether this server lets you start them. */
   agents: AgentRun[];
   agentsOn: boolean;
+  /** The branch checked out: the map shows it when no other branch is on. */
+  checkedOut?: string;
+  /** The branch on the map, lit against its base (an agent's: where it started); `loading` while its maps build. */
+  branch: { name: string; base?: string; agent?: string; commits: number; files: number; add: number; del: number; loading: boolean; error?: string; changedOnly: boolean } | null;
+  /** The repo's branches, fetched while the menu is open; `fetching` while the remotes are being fetched. */
+  branches: { base: string; list: BranchRow[]; fetching: boolean; error?: string } | null;
   story: { story: Story; beat: number; ms: number; playing: boolean; stage: Stage } | null;
   repos: LibraryRepo[];
   mode: Mode;
@@ -66,16 +79,27 @@ export type Model = {
   /** The desktop's map knobs, the same object its Tune panel edits. */
   tuning: Tuning;
   settings: XRSettings;
+  /** Tune presets you saved (the built-in ones are the panel's own). */
+  tunePresets: TunePreset[];
   tuneOpen: boolean;
   hintsOpen: boolean;
   filterOpen: boolean;
+  /** The saved views panel, away from a table (on one, it lies along the left edge). */
+  viewsOpen: boolean;
   /** On a real table (passthrough, placed): its menu and shelf are out. */
   table: boolean;
+  /** Tracing the table (or a surface of your own) by hand: the corners touched so far; null when not. */
+  outlining: { kind: "table" | "surface"; corners: number } | null;
+  /** How many surfaces of your own there are (passthrough): panels snap onto them as onto the table. */
+  surfaces: number;
   /** What you're holding: the controls page lists what these can do. */
   inputs: { hands: boolean; controllers: boolean };
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
-  focus: { label: string; depth: number; count: number; more: boolean; only: boolean } | null;
+  focus: { label: string; depth: number; count: number; more: boolean; only: boolean; dir: FocusDir } | null;
 };
+
+/** Which of a focus's connections light: what imports it (in), what it imports (out), or both. */
+export type FocusDir = "in" | "out" | "both";
 
 export type Jump = { kind: "file" | "module" | "symbol"; label: string; detail?: string; path?: string; id?: string; line?: number };
 
@@ -116,24 +140,43 @@ export type Actions = {
   /** Reload the page, and go back into the headset after if the browser allows it. */
   reload: () => void;
   placeMap: () => void;
+  /** Take the map off the table: back in front of you, the table forgotten. */
+  leaveTable: () => void;
+  /** Trace the table's outline by hand, corner by corner (passthrough). */
+  outlineTable: () => void;
+  undoOutline: () => void;
+  finishOutline: () => void;
+  cancelOutline: () => void;
+  /** Trace a surface of your own, for panels to lie on. */
+  addSurface: () => void;
+  clearSurfaces: () => void;
   recenterPanels: () => void;
   toggleTune: () => void;
   toggleHints: () => void;
   /** Merged into the desktop's tuning (a whole Tuning replaces it: presets, reset). */
   setTuning: (patch: Partial<Tuning>) => void;
   setXR: (patch: Partial<XRSettings>) => void;
+  /** Keep the knobs as they are now under a name; `withHeadset`: the headset's own knobs too. */
+  saveTunePreset: (name: string, withHeadset: boolean) => void;
+  applyTunePreset: (p: TunePreset) => void;
+  deleteTunePreset: (name: string) => void;
   relayout: () => void;
   toggleFilter: () => void;
   /** Replace the whole filter. */
   setMapFilter: (f: MapFilter) => void;
+  /** Replace the saved views (the desktop's Filter panel keeps the same list). */
+  setSavedFilters: (list: SavedFilter[]) => void;
+  toggleViews: () => void;
   /**
    * Light a body (a file, a module's files, a folder's) and `depth` rings of
    * its import neighbours; fly there. Says what it lit, and whether there's a
    * further ring.
    */
-  focusAround: (hit: MapHit, depth: number) => { label: string; count: number; more: boolean; paths: string[]; core: string[] };
+  focusAround: (hit: MapHit, depth: number, dir?: FocusDir) => { label: string; count: number; more: boolean; paths: string[]; core: string[] };
   focusWider: () => void;
   focusNarrower: () => void;
+  /** Light the focus's inbound connections, its outbound ones, or both (from the first ring on). */
+  focusDirection: (dir: FocusDir) => void;
   /** Show only what the focus lights, or, when that's on, the map as it was. */
   focusOnly: () => void;
   /** Throw something off the map (a fling): it's hidden, with an undo. */
@@ -143,14 +186,22 @@ export type Actions = {
   startAgent: (task: string) => void;
   /** Light up these files and fly there (a lasso or a frame made by hand), under this name. */
   focusPaths: (paths: string[], label: string) => void;
-  /** Light up an agent's files and fly there. */
-  focusAgent: (id: string) => void;
+  /** Put an agent's branch on the map, lit against where it started, and fly to what it changed. */
+  showAgent: (id: string) => void;
+  /** Put a branch on the map, lit against `base` (the default branch when left out). */
+  showBranch: (name: string, base?: string) => void;
+  /** Back to the map as it's checked out. */
+  closeBranch: () => void;
+  /** Show only the files the branch on the map changed, or the whole map again. */
+  setChangedOnly: (on: boolean) => void;
+  /** Fetch the remotes, so others' branches (and agents' pushed elsewhere) are listed. */
+  fetchBranches: () => void;
   agentAction: (id: string, action: "stop" | "pr" | "merge" | "rebase") => void;
   isFile: (p: string) => boolean;
 };
 
 /** What the desktop app provides; the rest of the model is the headset's own (useXR fills it in). */
-export type AppModel = Omit<Model, "fileData" | "story" | "repos" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "focus" | "table" | "inputs">;
+export type AppModel = Omit<Model, "fileData" | "fileDiff" | "story" | "repos" | "branches" | "mode" | "canVR" | "canAR" | "placing" | "menuOpen" | "keyboard" | "tuneOpen" | "hintsOpen" | "filterOpen" | "viewsOpen" | "focus" | "table" | "inputs" | "outlining" | "surfaces">;
 
 /** The headset's own actions (menu, keyboard, sessions) are useXR's; the rest are the desktop's. */
 export type AppActions = Omit<
@@ -165,14 +216,24 @@ export type AppActions = Omit<
   | "exitXR"
   | "reload"
   | "placeMap"
+  | "leaveTable"
+  | "outlineTable"
+  | "undoOutline"
+  | "finishOutline"
+  | "cancelOutline"
+  | "addSurface"
+  | "clearSurfaces"
   | "recenterPanels"
   | "toggleTune"
   | "toggleHints"
   | "relayout"
   | "toggleFilter"
+  | "toggleViews"
   | "focusWider"
   | "focusNarrower"
+  | "focusDirection"
   | "focusOnly"
+  | "fetchBranches"
 > & {
   addNote: (path: string, text: string) => void;
   /** A local path, or on a server that keeps GitHub repos, owner/name. */

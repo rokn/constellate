@@ -43,14 +43,16 @@ export function OrganizeBar({
       <div className="flex flex-wrap items-center gap-1" role="radiogroup" aria-label="Organize the map by">
         <span className="mr-1 text-[12.5px] text-muted">Organize by</span>
         {options.map((o) => {
-          const lens = lenses.find((l) => l.id === o.id);
+          const found = lenses.find((l) => l.id === o.id);
+          // One built from the code (the Go apps) comes back with every scan, so it has no ✕.
+          const lens = found?.derived ? undefined : found;
           const on = lensId === o.id;
           return (
             <span
               key={o.id}
               className={`group inline-flex items-center rounded-full text-[12.5px] ${on ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
             >
-              <button role="radio" aria-checked={on} onClick={() => onPick(o.id)} className={`py-0.5 pl-2.5 ${lens ? "pr-1" : "pr-2.5"}`} title={lens?.description}>
+              <button role="radio" aria-checked={on} onClick={() => onPick(o.id)} className={`py-0.5 pl-2.5 ${lens ? "pr-1" : "pr-2.5"}`} title={found?.description}>
                 {o.title}
               </button>
               {lens && (

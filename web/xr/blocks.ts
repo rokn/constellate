@@ -1,7 +1,8 @@
 import dagre from "@dagrejs/dagre";
 import { codeToTokens, type BundledLanguage } from "shiki";
 import type { DiagramEdge, DiagramNode, View } from "../../shared/types";
-import { C, Panel, cond, fit, mono, roundRect, sans, withAlpha, wrap } from "./ui";
+import { parseDiff } from "../components/DiffView";
+import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
 
 /**
  * What goes on a scrolling panel: blocks that measure themselves for a width
@@ -314,33 +315,82 @@ export class CodeView implements Block {
 
 /* -------------------------------- diffs -------------------------------- */
 
+/**
+ * A unified diff as the desktop's DiffView draws it: the change in diff
+ * colours, both line numbers, and the code still syntax-highlighted.
+ */
 export class DiffBlock implements Block {
-  private lines: string[];
-  constructor(diff: string) {
-    this.lines = diff.split("\n").filter((l) => !/^(diff --git|index |--- |\+\+\+ )/.test(l));
+  private rows: ReturnType<typeof parseDiff>["rows"];
+  private tokens: Tok[][] | null = null;
+  private lineH = 30;
+  constructor(diff: string, lang = "text", onReady?: () => void) {
+    this.rows = parseDiff(diff).rows;
+    // Every changed and context line as one block: hunks are pieces of the same file, so the grammar mostly stays in step.
+    const code = this.rows.filter((r) => r.kind !== "hunk").map((r) => r.text);
+    void tokenize(code.join("\n"), lang).then((t) => {
+      this.tokens = t;
+      onReady?.();
+    });
   }
   measure() {
-    return this.lines.length * 28 + 8;
+    return this.rows.length * this.lineH + 8;
   }
   draw(ctx: CanvasRenderingContext2D, x0: number, y0: number, width: number, clip: Clip) {
+    const gutter = 128;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, Math.max(y0, clip.top), width, clip.bottom - Math.max(y0, clip.top));
+    ctx.clip();
     ctx.fillStyle = "rgba(0, 0, 0, 0.32)";
     ctx.fillRect(x0, y0, width, this.measure());
-    ctx.font = mono(19);
+    ctx.font = mono(20);
     let y = y0 + 4;
-    for (const l of this.lines) {
-      if (y + 28 >= clip.top && y <= clip.bottom) {
-        const add = l.startsWith("+");
-        const del = l.startsWith("-");
-        const hunk = l.startsWith("@@");
-        if (add || del) {
-          ctx.fillStyle = add ? "rgba(110, 231, 168, 0.12)" : "rgba(255, 107, 107, 0.12)";
-          ctx.fillRect(x0, y, width, 28);
+    let i = 0;
+    for (const r of this.rows) {
+      const visible = y + this.lineH >= clip.top && y <= clip.bottom;
+      if (r.kind === "hunk") {
+        if (visible) {
+          ctx.fillStyle = withAlpha(C.static, 0.1);
+          ctx.fillRect(x0, y, width, this.lineH);
+          ctx.fillStyle = C.muted;
+          ctx.fillText(fit(ctx, r.text || "…", width - 20), x0 + 10, y + 22);
         }
-        ctx.fillStyle = add ? C.good : del ? C.bad : hunk ? C.static : "#a9b1d6";
-        ctx.fillText(fit(ctx, l.replace(/\t/g, "    "), width - 16), x0 + 10, y + 21);
+        y += this.lineH;
+        continue;
       }
-      y += 28;
+      const toks = this.tokens?.[i];
+      i++;
+      if (visible) {
+        const add = r.kind === "add";
+        const del = r.kind === "del";
+        if (add || del) {
+          ctx.fillStyle = add ? "rgba(110, 231, 168, 0.12)" : "rgba(255, 107, 107, 0.13)";
+          ctx.fillRect(x0, y, width, this.lineH);
+          ctx.fillStyle = add ? C.good : C.bad;
+          ctx.fillRect(x0, y, 4, this.lineH);
+        }
+        ctx.fillStyle = "#3b4a6b";
+        ctx.textAlign = "right";
+        ctx.fillText(r.old !== undefined ? String(r.old) : "", x0 + 52, y + 22);
+        ctx.fillText(r.neu !== undefined ? String(r.neu) : "", x0 + 102, y + 22);
+        ctx.textAlign = "left";
+        ctx.fillStyle = add ? C.good : del ? C.bad : "#3b4a6b";
+        ctx.fillText(add ? "+" : del ? "−" : "", x0 + 110, y + 22);
+        ctx.globalAlpha = del ? 0.75 : 1;
+        let x = x0 + gutter;
+        for (const t of toks ?? [{ content: r.text }]) {
+          if (x > x0 + width) break;
+          const text = t.content.replace(/\t/g, "    ");
+          ctx.fillStyle = t.color ?? "#a9b1d6";
+          ctx.fillText(text, x, y + 22);
+          x += ctx.measureText(text).width;
+        }
+        ctx.globalAlpha = 1;
+      }
+      y += this.lineH;
+      if (y > clip.bottom) break;
     }
+    ctx.restore();
   }
 }
 
@@ -505,7 +555,8 @@ export class Heading implements Block {
 /** A list of clickable rows: a label and a muted detail line. */
 export class Rows implements Block {
   constructor(
-    private rows: { id: string; label: string; detail?: string; color?: string; active?: boolean; onClick: () => void }[],
+    /** `path`: the label is a file path, cut from the left so the name shows, its folder dimmed. */
+    private rows: { id: string; label: string; detail?: string; color?: string; active?: boolean; path?: boolean; onClick: () => void }[],
     private rowH = 64,
   ) {}
   measure() {
@@ -525,7 +576,15 @@ export class Rows implements Block {
       const tx = x + (r.color ? 30 : 4);
       ctx.font = cond(26, 600);
       ctx.fillStyle = C.text;
-      ctx.fillText(fit(ctx, r.label, width - (tx - x) - 8), tx, y + (r.detail ? 28 : this.rowH / 2 + 9));
+      const ty = y + (r.detail ? 28 : this.rowH / 2 + 9);
+      if (r.path) {
+        const shown = fitPath(ctx, r.label, width - (tx - x) - 8);
+        const cut = shown.lastIndexOf("/") + 1;
+        ctx.fillStyle = C.muted;
+        ctx.fillText(shown.slice(0, cut), tx, ty);
+        ctx.fillStyle = C.text;
+        ctx.fillText(shown.slice(cut), tx + ctx.measureText(shown.slice(0, cut)).width, ty);
+      } else ctx.fillText(fit(ctx, r.label, width - (tx - x) - 8), tx, ty);
       if (r.detail) {
         ctx.font = sans(19);
         ctx.fillStyle = C.muted;
@@ -565,7 +624,7 @@ export function viewBlocks(v: View, links: Links | null, o: { highlight?: Set<nu
     }
     case "diff":
       if (v.note) out.push(new RichText(v.note, links, { size: 22, color: C.muted }));
-      out.push(new DiffBlock(v.diff));
+      out.push(new DiffBlock(v.diff, v.lang, o.onReady));
       break;
     case "custom":
       out.push(new RichText("_An interactive view — open the desktop map to run it._", null, { size: 22, color: C.muted }));

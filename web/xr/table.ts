@@ -3,10 +3,11 @@ import { C, Panel, cond, fit, roundRect, sans, wrap } from "./ui";
 
 /**
  * Panels for a map set down on a real table (passthrough), and the one on
- * your wrist. They lie on the table itself, where your hands already are: a
- * strip of controls along the edge nearest you, and on the right-hand edge
+ * your wrist. They lie flat on the table itself, where your hands already
+ * are: a strip of controls along the edge nearest you, on the right-hand edge
  * the modules you've thrown off the map, each waiting, collapsed, to be put
- * back with a press. All of them can be poked with a fingertip.
+ * back with a press, and on the left the saved views (views.ts). All of them
+ * are pressed with a fingertip, against the table.
  */
 
 const PAD = 22;
@@ -39,6 +40,7 @@ export class TableMenu extends Panel {
       { id: "voice", label: v === "listening" ? "Listening" : v === "speaking" ? "Speaking" : "Voice", run: this.a.toggleVoice, active: v !== "idle" && v !== "error", accent: C.course, disabled: !m.voice.available },
       { id: "ask", label: "Ask", run: () => this.a.openKeyboard("ask") },
       { id: "hints", label: "?", run: this.a.toggleHints, active: m.hintsOpen },
+      { id: "lift", label: "Off table", run: this.a.leaveTable },
     ];
     const gap = 10;
     const h = this.H - PAD * 2;
@@ -131,13 +133,13 @@ export class WristPanel extends Panel {
   m: Model | null = null;
 
   constructor(private a: Actions) {
-    super("wrist", 0.21, 0.13);
+    super("wrist", 0.27, 0.13);
   }
 
   update(m: Model) {
     const p = this.m;
     this.m = m;
-    if (!p || p.menuOpen !== m.menuOpen || p.filterOpen !== m.filterOpen || p.hintsOpen !== m.hintsOpen || p.voice !== m.voice) this.invalidate();
+    if (!p || p.menuOpen !== m.menuOpen || p.filterOpen !== m.filterOpen || p.viewsOpen !== m.viewsOpen || p.hintsOpen !== m.hintsOpen || p.voice !== m.voice || p.table !== m.table) this.invalidate();
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
@@ -151,12 +153,57 @@ export class WristPanel extends Panel {
       { id: "overview", label: "Whole map", run: this.a.overview },
       { id: "ask", label: "Ask", run: () => this.a.openKeyboard("ask") },
       { id: "filter", label: "Filter", run: this.a.toggleFilter, active: m.filterOpen },
+      { id: "views", label: "Views", run: this.a.toggleViews, active: m.viewsOpen || m.table, accent: C.course, disabled: m.table },
       { id: "hints", label: "?", run: this.a.toggleHints, active: m.hintsOpen },
     ];
     const gap = 8;
     const pad = 14;
-    const w = (this.W - pad * 2 - gap * 2) / 3;
+    const cols = 4;
+    const w = (this.W - pad * 2 - gap * (cols - 1)) / cols;
     const h = (this.H - pad * 2 - gap) / 2;
-    cells.forEach((c, i) => this.button(ctx, `w:${c.id}`, pad + (i % 3) * (w + gap), pad + Math.floor(i / 3) * (h + gap), c.label, c.run, { w, h, size: 24, active: c.active, accent: c.accent, disabled: c.disabled }));
+    cells.forEach((c, i) => this.button(ctx, `w:${c.id}`, pad + (i % cols) * (w + gap), pad + Math.floor(i / cols) * (h + gap), c.label, c.run, { w, h, size: 24, active: c.active, accent: c.accent, disabled: c.disabled }));
+  }
+}
+
+/** While you trace the table by hand: what to do, and Undo / Done / Cancel. */
+export class OutlinePanel extends Panel {
+  m: Model | null = null;
+
+  constructor(private a: Actions) {
+    super("outline", 0.62, 0.26);
+  }
+
+  update(m: Model) {
+    const p = this.m;
+    this.m = m;
+    if (!p || p.outlining !== m.outlining || p.inputs !== m.inputs) this.invalidate();
+  }
+
+  protected draw(ctx: CanvasRenderingContext2D) {
+    const m = this.m;
+    if (!m || !m.outlining) return;
+    this.frame(ctx, C.good);
+    const n = m.outlining.corners;
+    const what = m.outlining.kind === "table" ? "the table" : "the surface";
+    const press = m.inputs.hands && !m.inputs.controllers ? "pinch" : "pull the trigger";
+    ctx.font = cond(34, 600);
+    ctx.fillStyle = C.text;
+    ctx.fillText(n ? `${n} corner${n > 1 ? "s" : ""}` : m.outlining.kind === "table" ? "Trace your table" : "Trace a surface for panels", PAD, 58);
+    ctx.font = sans(23);
+    ctx.fillStyle = C.muted;
+    const say =
+      n < 3
+        ? `Touch each corner of ${what} in turn and ${press} right there. Three corners make a rectangle.`
+        : n === 3
+          ? `Done makes a rectangle of these three corners, or go on round ${what} to trace its shape.`
+          : "Done when you've been all the way round.";
+    wrap(ctx, say, this.W - PAD * 2)
+      .slice(0, 2)
+      .forEach((l, i) => ctx.fillText(l, PAD, 98 + i * 30));
+    const y = this.H - PAD - 64;
+    let x = PAD;
+    x = this.button(ctx, "done", x, y, "Done", this.a.finishOutline, { w: 170, h: 64, active: n >= 3, accent: C.good, disabled: n < 3 }) + 12;
+    x = this.button(ctx, "undo", x, y, "Undo", this.a.undoOutline, { w: 150, h: 64, disabled: !n }) + 12;
+    this.button(ctx, "cancel", x, y, "Cancel", this.a.cancelOutline, { w: 170, h: 64 });
   }
 }

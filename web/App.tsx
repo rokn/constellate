@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, UiCommand, ViewSettings } from "../shared/types";
+import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, TunePreset, UiCommand, ViewSettings } from "../shared/types";
+import { changed, presetValues } from "../shared/knobs";
 import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type HeatEntry, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
 import { NoteEditor, NotesPanel, describeTarget } from "./components/Notes";
@@ -18,7 +19,7 @@ import { TuningPanel } from "./components/TuningPanel";
 import { DEFAULT_TUNING, loadTuning, saveTuning, type Tuning } from "./lib/tuning";
 import { loadXR, saveXR, sound, type XRSettings } from "./lib/xrSettings";
 import { Dossier, type Pointer } from "./components/Dossier";
-import { FilePanel } from "./components/FilePanel";
+import { FilePanel, type FileChange } from "./components/FilePanel";
 import { CommandBar, type Jump } from "./components/CommandBar";
 import { ActivityTicker, Destinations, Intro, Landing, TourCaption, VoiceDock, rememberRepo } from "./components/Overlays";
 import { StoryPlayer, type StoryControl } from "./components/StoryPlayer";
@@ -43,6 +44,7 @@ type Stop =
 
 const TOUR_STEP_MS = 7000;
 const NO_ACTIVITY: never[] = [];
+const NO_PRESETS: TunePreset[] = [];
 
 export function App() {
   const { state } = useSession();
@@ -172,6 +174,30 @@ export function App() {
     saveXR(xrSettings);
     sound.volume = xrSettings.voiceVolume;
   }, [xrSettings]);
+  /** Whether the headset is on (and how), for the voice: it says what a preset saved now keeps. */
+  const [headsetMode, setHeadsetMode] = useState<"flat" | "vr" | "ar">("flat");
+  // Tune presets you saved, kept on the server for every device.
+  const tunePresets = state?.tunePresets ?? NO_PRESETS;
+  const presetsRef = useRef(tunePresets);
+  presetsRef.current = tunePresets;
+  const knobsRef = useRef({ tuning, xrSettings });
+  knobsRef.current = { tuning, xrSettings };
+  /** The knobs as they are now, under this name (replacing one of the same name); in the headset, its own knobs too. */
+  const saveTunePreset = useCallback((name: string, withHeadset: boolean) => {
+    const n = name.trim();
+    if (!n) return;
+    const { tuning: t, xrSettings: x } = knobsRef.current;
+    const p: TunePreset = { name: n, map: changed("map", t), ...(withHeadset ? { headset: changed("headset", x) } : {}) };
+    void post("/api/tune-presets", { presets: [...presetsRef.current.filter((q) => q.name.toLowerCase() !== n.toLowerCase()), p] });
+  }, []);
+  const deleteTunePreset = useCallback((name: string) => {
+    void post("/api/tune-presets", { presets: presetsRef.current.filter((q) => q.name !== name) });
+  }, []);
+  const applyTunePreset = useCallback((p: TunePreset) => {
+    const v = presetValues(p);
+    setTuning(v.map);
+    if (v.headset) setXRSettings((x) => ({ ...x, ...v.headset }));
+  }, []);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [storiesOpen, setStoriesOpen] = useState(false);
@@ -453,6 +479,21 @@ export function App() {
     [branchSum],
   );
 
+  /** What the open file went through on the branch or in the span on the map, and where its diff is read. */
+  const fileChange = useMemo((): FileChange | undefined => {
+    if (!file) return undefined;
+    if (branchMap) {
+      const h = branchHeat?.get(file.path);
+      if (!h || !branchSum) return undefined;
+      const q = new URLSearchParams(branchSum.agent ? { agent: branchSum.agent.id } : { branch: branchSum.branch, base: branchSum.base });
+      q.set("path", file.path);
+      // Keyed by the tip, so a working agent's next commit reads the diff again.
+      return { from: branchSum.mergeBase, to: branchSum.head, add: h.add, del: h.del, status: h.status, label: branchSum.agent ? `"${branchSum.agent.title}"` : branchSum.branch, diffUrl: `/api/branch-diff?${q}` };
+    }
+    const h = heat?.get(file.path);
+    if (!h || !range) return undefined;
+    return { from: range.from, to: range.to, add: h.add, del: h.del, status: h.status, label: range.label };
+  }, [file, branchMap, branchHeat, branchSum, heat, range]);
   const shownTime = branchMap ? branchShown : range ? (timeMap ?? lastTimeMap.current) : null;
   const mapGraph = shownTime?.graph ?? graph;
 
@@ -464,7 +505,19 @@ export function App() {
 
   /* ------------------------------ map shape ------------------------------- */
 
-  const visible = useMemo(() => (mapGraph ? applyFilter(mapGraph.files, filter) : null), [mapGraph, filter]);
+  /**
+   * Only what changed: while a branch (or a span of history) is on the map,
+   * the files it didn't touch step off it. Kept across branches, so stepping
+   * from one to the next stays on just their changes.
+   */
+  const [changedOnly, setChangedOnly] = useState(false);
+  const changeHeat = branchMap ? branchHeat : range ? heat : null;
+  const visible = useMemo(() => {
+    if (!mapGraph) return null;
+    const kept = applyFilter(mapGraph.files, filter);
+    if (!changedOnly || !changeHeat?.size) return kept;
+    return new Set(mapGraph.files.map((f) => f.path).filter((p) => changeHeat.has(p) && (!kept || kept.has(p))));
+  }, [mapGraph, filter, changedOnly, changeHeat]);
 
   const grouping: Grouping | null = useMemo(() => {
     if (lensId === "modules" && overview) return { key: "modules", groups: overview.modules, edges: overview.edges };
@@ -643,6 +696,18 @@ export function App() {
       m.get(e.to)!.add(e.from);
     }
     return m;
+  }, [graph]);
+  // The same, one way: what each file imports, and what imports it.
+  const [importsOf, importersOf] = useMemo(() => {
+    const out = new Map<string, Set<string>>();
+    const into = new Map<string, Set<string>>();
+    for (const e of graph?.imports ?? []) {
+      if (!out.has(e.from)) out.set(e.from, new Set());
+      if (!into.has(e.to)) into.set(e.to, new Set());
+      out.get(e.from)!.add(e.to);
+      into.get(e.to)!.add(e.from);
+    }
+    return [out, into];
   }, [graph]);
 
   const openFile = useCallback(
@@ -830,7 +895,7 @@ export function App() {
       touring: tour !== null,
       lens: lensTitle,
       lensId,
-      branch: branchMap ? { name: branchMap.branch, base: branchMap.base, agent: branchMap.agent } : undefined,
+      branch: branchMap ? { name: branchMap.branch, base: branchMap.base, agent: branchMap.agent, changedOnly } : undefined,
       range: branchMap
         ? branchSum?.agent
           ? `what the agent "${branchSum.agent.title}" changed on ${branchSum.branch} since it started: ${branchSum.commits.length} commits, ${branchSum.files.length} files changed${branchSum.agent.live ? ", some not committed yet" : ""}`
@@ -849,8 +914,9 @@ export function App() {
           : lastStory
             ? { id: lastStory.id, beat: lastStory.beat, playing: false, closed: true }
             : undefined,
+      tune: { map: changed("map", tuning), headset: changed("headset", xrSettings), mode: headsetMode === "flat" ? undefined : headsetMode },
     }),
-    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, story, storyAt, parked, lastStory],
+    [file, frameId, focusLabel, selection, tour, lensTitle, lensId, filter, visible, range, rangeCommits, branchMap, branchSum, changedOnly, story, storyAt, parked, lastStory, tuning, xrSettings, headsetMode],
   );
 
   /** Pause the open story and set it aside, so an answer can take the stage; Resume brings it back. */
@@ -1092,6 +1158,8 @@ export function App() {
     clearTimeout(landing.current);
     landing.current = setTimeout(() => buzz([14, 60, 14]), tuning.flySeconds * 1000);
   }, [tuning.flySeconds]);
+  /** The headset's camera, once useXR (below) has made it: commands reach the room through it. */
+  const xrCamera = useRef<XR["camera"] | null>(null);
   const run = useCallback(
     (c: UiCommand) => {
       switch (c.cmd) {
@@ -1147,6 +1215,14 @@ export function App() {
           return startPlay();
         case "show_branch":
           return showBranch(c.branch, c.base, c.agent);
+        case "close_branch":
+          return closeBranch();
+        case "leave_table":
+          return void xrCamera.current?.leaveTable();
+        case "focus_direction":
+          return void xrCamera.current?.focusDirection(c.dir);
+        case "changed_only":
+          return setChangedOnly(c.on);
         case "renamed": {
           // The server moved everything it keeps; this is what the page keeps.
           const to = renamer(c.renames);
@@ -1155,9 +1231,15 @@ export function App() {
           setFile((f) => (f && to(f.path) !== f.path ? { ...f, path: to(f.path) } : f));
           return setEmphasis((ps) => (ps.some((p) => to(p) !== p) ? [...new Set(ps.map(to))] : ps));
         }
+        case "tune":
+          if (c.map) setTuning((t) => ({ ...t, ...(c.map as Partial<Tuning>) }));
+          if (c.headset) setXRSettings((x) => ({ ...x, ...(c.headset as Partial<XRSettings>) }));
+          return;
+        case "apply_preset":
+          return applyTunePreset(c.preset);
       }
     },
-    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch],
+    [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch, closeBranch, applyTunePreset],
   );
   const runRef = useRef(run);
   runRef.current = run;
@@ -1447,7 +1529,9 @@ export function App() {
     (): MapInput | null => (mapGraph ? { graph: mapGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning } : null),
     [mapGraph, overview, grouping, visible, notes, shownOverlays, tuning],
   );
-  const xrStyle = useMemo((): MapStyle => ({ emphasis, active: file?.path ?? null, layers }), [emphasis, file?.path, layers]);
+  // A branch or a span of history wears its changes in the headset too.
+  const xrHeat = branchMap ? branchHeat : range ? heat : null;
+  const xrStyle = useMemo((): MapStyle => ({ emphasis, active: file?.path ?? null, layers, heat: xrHeat }), [emphasis, file?.path, layers, xrHeat]);
   /** What's under a folder on the map. */
   const filesUnder = (dir: string) => (mapGraph?.files ?? []).map((f) => f.path).filter((p) => (dir === "." ? !p.includes("/") : p.startsWith(`${dir}/`)));
   /** The files and name behind something pointed at on the map in the headset. */
@@ -1476,6 +1560,23 @@ export function App() {
     const j = (await r.json().catch(() => ({}))) as { error?: string };
     setToast({ text: r.ok ? ok : j.error ?? "That didn't work." });
   };
+  /** The branch on the map, for the headset's dock and Branches tab. */
+  const xrBranch = useMemo((): XRFeed["model"]["branch"] => {
+    if (!branchMap) return null;
+    const files = branchSum?.files ?? [];
+    return {
+      name: branchMap.branch,
+      base: branchSum?.base ?? branchMap.base,
+      agent: branchSum?.agent?.title ?? state?.agents.find((a) => a.id === branchMap.agent)?.title,
+      commits: branchSum?.commits.length ?? 0,
+      files: files.length,
+      add: files.reduce((n, f) => n + f.add, 0),
+      del: files.reduce((n, f) => n + f.del, 0),
+      loading: !branchShown,
+      changedOnly,
+      error: branchError || undefined,
+    };
+  }, [branchMap, branchSum, branchShown, branchError, state?.agents, changedOnly]);
   const recenterRef = useRef(recenter);
   recenterRef.current = recenter;
   const xr = useXR({
@@ -1507,8 +1608,12 @@ export function App() {
       stories,
       agents: state?.agents ?? NO_ACTIVITY,
       agentsOn: !!state?.agentsOn,
+      checkedOut: state?.repo?.branch,
+      fileChange: fileChange ?? null,
+      branch: xrBranch,
       tuning,
       settings: xrSettings,
+      tunePresets,
       mapFilter: filter,
       savedFilters,
       langs: xrLangs,
@@ -1571,35 +1676,46 @@ export function App() {
       reanalyze: () => void post("/api/reanalyze"),
       startAgent: (task) =>
         void agentCall({ action: "start", task }, "The agent is on it. Its files light up as it works."),
-      focusAgent: (id) => {
+      // As the desktop's Agents panel does: its branch on the map, flown to what it changed.
+      showAgent: (id) => {
         const a = state?.agents.find((x) => x.id === id);
-        const paths = a?.files.filter((p) => onMap.has(p)) ?? [];
-        if (a && paths.length) focus(paths, a.title);
-        else setToast({ text: "It hasn't changed anything on the map yet." });
+        if (!a) return;
+        if (!a.commits && !a.files.length) return setToast({ text: "It hasn't changed anything yet." });
+        showBranch(a.branch, a.base === "HEAD" ? a.baseSha : a.base, a.id);
       },
+      showBranch: (name, base) => showBranch(name, base),
+      setChangedOnly,
+      closeBranch,
       agentAction: (id, action) => void agentCall({ action, id }, { pr: "Pull request opened.", merge: "Merged.", rebase: "Rebased onto its base.", stop: "Stopped." }[action]),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
       isFile: (p) => onMap.has(p),
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),
       setXR: (patch) => setXRSettings((x) => ({ ...x, ...patch })),
+      saveTunePreset,
+      applyTunePreset,
+      deleteTunePreset,
       setMapFilter: (f) => setFilter(f),
-      focusAround: (h, depth) => {
+      setSavedFilters: (list) => setSavedFilters(list),
+      focusAround: (h, depth, dir = "both") => {
         const { paths, label } = filesOfHit(h);
         const shown = (p: string) => (visible ? visible.has(p) : onMap.has(p));
         const lit = new Set(paths.filter(shown));
+        // Which way the rings go: what it imports (out), what imports it (in), or both.
+        const step = dir === "out" ? importsOf : dir === "in" ? importersOf : neighbours;
         // Ring by ring out along the imports.
         let ring = [...lit];
         for (let d = 0; d < depth && ring.length; d++) {
           const next: string[] = [];
-          for (const p of ring) for (const n of neighbours.get(p) ?? []) if (!lit.has(n) && shown(n)) lit.add(n), next.push(n);
+          for (const p of ring) for (const n of step.get(p) ?? []) if (!lit.has(n) && shown(n)) lit.add(n), next.push(n);
           ring = next;
         }
-        const more = ring.some((p) => [...(neighbours.get(p) ?? [])].some((n) => !lit.has(n) && shown(n)));
+        const more = ring.some((p) => [...(step.get(p) ?? [])].some((n) => !lit.has(n) && shown(n)));
         const out = [...lit];
         // The links worth lighting reach in from the last ring, not across it.
         const outer = new Set(depth ? ring : []);
         const core = out.filter((p) => !outer.has(p));
-        if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}` : label);
+        const way = dir === "both" ? "" : dir === "in" ? " in" : " out";
+        if (out.length) focus(out, depth ? `${label} + ${depth} ring${depth > 1 ? "s" : ""}${way}` : label);
         return { label, count: out.length, more, paths: out, core };
       },
       focusPaths: (paths, label) => focus(paths, label),
@@ -1672,11 +1788,13 @@ export function App() {
       return s && at ? { story: s, ...at } : null;
     },
   });
+  xrCamera.current = xr.camera;
   xrRef.current = xr;
   // While you're in the headset the desktop map doesn't draw, so it needn't
   // regroup either: a fling there would otherwise rebuild it underneath you.
   const deskVisible = useRef(visible);
   if (!xr.presenting) deskVisible.current = visible;
+  useEffect(() => setHeadsetMode(xr.mode), [xr.mode]);
   // In the headset, the desktop map stops drawing. Coming back out, it frames
   // whatever you were on in there, so the desktop picks up where you were.
   const wasPresenting = useRef(false);
@@ -2305,11 +2423,7 @@ export function App() {
             path={file.path}
             line={file.line}
             endLine={file.endLine}
-            change={(() => {
-              const h = heat?.get(file.path);
-              if (!h || !range) return undefined;
-              return { from: range.from, to: range.to, add: h.add, del: h.del, status: h.status, label: range.label };
-            })()}
+            change={fileChange}
             onClose={() => setFile(null)}
             onNavigate={(p, l) => openFile(p, l)}
             onAsk={(r) => askNavigator(r)}
@@ -2445,7 +2559,16 @@ export function App() {
 
       {!minimal && tuneOpen && (
         <div className="pointer-events-none absolute bottom-28 right-4 top-4 z-40 w-[min(360px,calc(100%-2rem))]">
-          <TuningPanel tuning={tuning} onChange={setTuning} onRelayout={() => space.current?.relayout()} onClose={() => setTuneOpen(false)} />
+          <TuningPanel
+            tuning={tuning}
+            onChange={setTuning}
+            presets={tunePresets}
+            onSavePreset={(name) => saveTunePreset(name, false)}
+            onApplyPreset={applyTunePreset}
+            onDeletePreset={deleteTunePreset}
+            onRelayout={() => space.current?.relayout()}
+            onClose={() => setTuneOpen(false)}
+          />
         </div>
       )}
 
@@ -2471,6 +2594,8 @@ export function App() {
             onCodeDiff={() => branchSum && setBranchDiff({ branch: branchSum.branch, base: branchSum.base, agent: branchSum.agent?.id })}
             onExplain={() => branchSum && void post("/api/stories/branch", { branch: branchSum.branch, base: branchSum.base, settings: "mine" })}
             onClose={closeBranch}
+            changedOnly={changedOnly}
+            onChangedOnly={setChangedOnly}
           />
         )}
         {historyOpen && gitHistory?.available && graph && (

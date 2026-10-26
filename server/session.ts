@@ -12,14 +12,17 @@ import type {
   Note,
   NoteTarget,
   Overview,
+  RuntimeMap,
   SessionState,
   Story,
   StorySettings,
   ViewSettings,
+  TunePreset,
   UiCommand,
   View,
 } from "../shared/types";
 import { promisify } from "node:util";
+import { GO_APPS, goApps, withRuntime } from "../shared/goApps";
 import { movedDirs, renameInFilter, renamer, type Renames } from "../shared/renames";
 import { indexGraph, repoName, scanRepo, type GraphIndex } from "./scan";
 
@@ -64,6 +67,7 @@ export const session: Session = {
     frames: [],
     stories: [],
     storySettings: DEFAULT_STORY_SETTINGS,
+    tunePresets: [],
     activity: [],
     commands: [],
     busy: false,
@@ -83,6 +87,13 @@ export function subscribe(fn: Listener) {
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function emit() {
+  emitLive();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => void persist(), 800);
+}
+
+/** Tell the page without saving: for what is kept elsewhere (the runtime layer keeps its own file). */
+export function emitLive() {
   for (const fn of listeners) {
     try {
       fn(session.state);
@@ -90,8 +101,11 @@ export function emit() {
       /* a dead connection must not stop the navigator */
     }
   }
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => void persist(), 800);
+}
+
+/** The file a repo's saved state goes in, named for its path; `suffix` for what else is kept beside it. */
+export function cacheFile(root: string, suffix = "") {
+  return path.join(CACHE_DIR, `${createHash("sha1").update(root).digest("hex").slice(0, 16)}${suffix}.json`);
 }
 
 /* ------------------------------ mutations ------------------------------ */
@@ -121,7 +135,7 @@ export function setOverview(o: Overview) {
 /** Removes a grouping; returns it, so it can be restored. */
 export function removeLens(id: string): Lens | undefined {
   const lens = session.state.lenses.find((l) => l.id === id);
-  if (!lens) return undefined;
+  if (!lens || lens.derived) return undefined;
   session.state.lenses = session.state.lenses.filter((l) => l.id !== id);
   emit();
   return lens;
@@ -139,6 +153,21 @@ export function setModules(modules: Overview["modules"], edges: Overview["edges"
   if (!session.state.overview) return;
   session.state.overview = { ...session.state.overview, modules, edges };
   emit();
+}
+
+/** The traces the Go apps were last drawn with, kept for the rescans in between. */
+let goRuntime: RuntimeMap | null = null;
+
+/**
+ * The Go apps grouping, built afresh from the graph (and what the traces say,
+ * when `runtime` is given or was last time): first among the groupings, or
+ * gone when no executable is left. Doesn't emit.
+ */
+export function refreshGoApps(graph: GraphIndex["graph"], runtime?: RuntimeMap | null) {
+  if (runtime !== undefined) goRuntime = runtime;
+  const built = goApps(graph);
+  const apps = built && goRuntime ? withRuntime(built, goRuntime) : built;
+  session.state.lenses = [...(apps ? [apps] : []), ...session.state.lenses.filter((l) => l.id !== GO_APPS)];
 }
 
 /** Adds a lens, replacing one with the same title so a redo doesn't pile up. */
@@ -313,6 +342,26 @@ export async function setStorySettings(patch: Partial<StorySettings>) {
   await writeFile(SETTINGS_FILE, JSON.stringify(session.state.storySettings, null, 2));
 }
 
+/** Tune presets are yours too: one file beside the story settings. */
+const PRESETS_FILE = path.join(CACHE_DIR, "tune-presets.json");
+
+export async function loadTunePresets() {
+  try {
+    const saved = JSON.parse(await readFile(PRESETS_FILE, "utf8")) as TunePreset[];
+    if (Array.isArray(saved)) session.state.tunePresets = saved;
+    emit();
+  } catch {
+    /* none saved yet */
+  }
+}
+
+export async function setTunePresets(list: TunePreset[]) {
+  session.state.tunePresets = list;
+  emit();
+  await mkdir(CACHE_DIR, { recursive: true });
+  await writeFile(PRESETS_FILE, JSON.stringify(list, null, 2));
+}
+
 let viewSeq = 0;
 /** Ids are assigned here — asking a model for unique ids invites collisions. */
 const VIEW_PREFIX: Record<View["kind"], string> = { text: "t", code: "c", diagram: "d", diff: "f", custom: "x" };
@@ -362,6 +411,7 @@ export function resetSession(abs: string, name: string) {
     frames: [],
     stories: [],
     storySettings: session.state.storySettings,
+    tunePresets: session.state.tunePresets,
     activity: [],
     commands: [],
     busy: false,
@@ -372,6 +422,7 @@ export function resetSession(abs: string, name: string) {
     agentsOn: session.state.agentsOn,
   };
   session.idx = undefined;
+  goRuntime = null;
   session.agentSessionId = undefined;
   session.chartedHead = undefined;
   emit();
@@ -400,6 +451,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
   const cached = await loadCache(graph.root);
   if (cached) {
     session.state.lenses = cached.lenses ?? [];
+    refreshGoApps(graph);
     session.state.overlays = cached.overlays ?? [];
     session.state.notes = cached.notes ?? [];
     session.state.view = cached.view;
@@ -427,6 +479,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     }
   }
 
+  refreshGoApps(graph);
   session.state.status = "analyzing";
   emit();
 }
@@ -518,6 +571,7 @@ export function rescan(): Promise<void> {
     const had = new Set([...before.files.map((f) => f.path), ...(moved?.files.map(([, to]) => to) ?? [])]);
     const added = graph.files.map((f) => f.path).filter((p) => !had.has(p));
     session.state.repo = { name: graph.name, root: graph.root, branch: graph.branch };
+    refreshGoApps(graph);
     session.state.graphVersion++;
     // The chart is out of date once the code moved on from where it was drawn.
     if (session.state.overview && session.state.status === "ready") {
@@ -654,9 +708,6 @@ type Cached = {
   agentSessionId?: string;
 };
 
-function cacheFile(root: string) {
-  return path.join(CACHE_DIR, `${createHash("sha1").update(root).digest("hex").slice(0, 16)}.json`);
-}
 
 async function loadCache(root: string): Promise<Cached | null> {
   try {

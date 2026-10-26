@@ -33,6 +33,25 @@ Or one container for any GitHub repo: set `CODEFLIGHT_REPOS_DIR=/data/repos` ins
 
 It has no login of its own, so put it behind an authenticating proxy before exposing it.
 
+## Go apps
+
+In a Go repository, **Organize by → Go apps** (on the desktop, in the headset's menu, or
+"organize by Go apps" to the voice) turns each executable, every `package main`, into an
+app. An app holds the packages only it imports, directly or through others; the packages
+two or more apps import are the shared libraries between them, and the lines between
+groups show which app imports which library. Packages no executable reaches gather under
+"in no app". It's built from the imports alone, so it's there before the navigator has
+charted anything, and it's rebuilt with every scan.
+
+With traces coming in (see [Traces](#traces)), the same view says what runs. Each service
+is matched to its app by its executable's name (else its own name, else where its spans
+ran). Import lines between groups read **ran N×** or **not seen running**. Calls no import
+explains get lines of their own: **http**, **rpc** or **messages** between the apps that
+sent and served them, whichever library made the call, and **runtime only** for in-process
+calls through an interface or a callback. Each app's card names its service, its spans
+and errors, and what it calls most, databases and hosts outside the repo included.
+Groups no trace reached say so.
+
 ## Agents
 
 Constellate can also change the code. Ask for it ("add retries to the uploader") by voice
@@ -61,6 +80,35 @@ the menu's **Agents** tab lists them, starts new ones, rebases them, and merges 
 
 An agent can read and edit files only inside its worktree, and has no
 shell unless you turn one on (see `.env.example`). Worktrees live under the cache directory.
+
+## Traces
+
+Constellate takes OpenTelemetry traces in and works out what the code really calls when
+it runs. Point an app's exporter at it (`OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:4318`):
+it takes OTLP/HTTP on port 4318, protobuf or JSON, gzipped or not, and on `/v1/traces` of
+the main port too. Without a repo open it answers 503, which exporters retry. To pull
+from a backend instead, set `CONSTELLATE_TEMPO_URL` or `CONSTELLATE_JAEGER_URL` (see
+`.env.example`). A test run's traces can be posted too: a collector's file exporter
+output (JSON lines) works as-is.
+
+Each span is pinned to the file it ran in. The server tries its `code.file.path` attribute
+first, then its qualified function name (for Go, `pkg/path.(*Type).Method`), then a tracer
+named for one of the repo's packages (`otel.Tracer("github.com/you/app/internal/store")`),
+and last its name if that's a symbol defined in only one file. Each step from a span to
+its child in another file, in another service, or out to a database or a host adds to
+a runtime edge. A file-to-file edge gets a verdict: **confirmed** when an import backs it,
+**package** when both files are in one Go package, and **runtime-only** when nothing static
+explains it.
+
+| | |
+| --- | --- |
+| `GET /api/runtime` | Services (with the executable and the files each ran), edges, external endpoints, imports never seen used, and the span names that couldn't be pinned. `?service=a,b` and `?path=` narrow it. |
+| `GET /api/traces` | Recent traces, kept whole in memory (`?service=`, `?limit=`) |
+| `GET /api/traces/<id>` | One trace's spans, each with its location |
+| `DELETE /api/runtime` | Forget this repo's traces |
+
+The session stream carries `runtime` (a version, counts, services and the sources'
+health) so the page knows when to refetch. Totals are kept per repo, next to its session.
 
 ## In a headset
 
