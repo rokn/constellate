@@ -171,7 +171,7 @@ export const AGENT_ACTIONS: Action[] = [
           ok: true,
           status: "awaiting_confirmation",
           merged: false,
-          would_merge: a.pr ? `PR #${a.pr.number} into ${a.pr.base}` : `${a.branch} (a PR is opened first)`,
+          would_merge: a.pr?.state === "open" ? `PR #${a.pr.number} into ${a.pr.base}` : `${a.branch} (a PR is opened first)`,
           say: "Not merged yet. A Merge button is on the answer (and in the Agents panel) for them to confirm.",
         };
       }

@@ -42,7 +42,7 @@ import {
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { cleanPreset } from "../shared/knobs";
 import { attachVoice } from "./voice";
-import { AGENTS_ON, agentDiff, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents } from "./agents";
+import { AGENTS_ON, agentDiff, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents, syncPullRequests } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
 import { branchDiff, branchFileDiff, fetchRemotes, listBranches } from "./branch";
@@ -169,6 +169,8 @@ async function open(root: string) {
   try {
     await openRepo(root);
     await openTraces();
+    // Its agents' PRs may have been merged or closed on GitHub while it was away.
+    void syncPullRequests();
     // A freshly charted repo gets its intro stories written right after.
     // (A repo charted before stories existed can ask for them in Stories.)
     if (session.state.status === "analyzing") {
@@ -647,7 +649,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       return true;
     }
     case "POST /api/agents": {
-      // Coding agents: start one, tell one more, stop one, rebase its branch, open a PR for it, or throw its work away.
+      // Coding agents: start one, tell one more, stop one, rebase its branch, open a PR for it, check their PRs on GitHub, or throw its work away.
       const b = await body<{ action?: string; id?: string; task?: string; title?: string; text?: string }>(req);
       try {
         switch (b.action) {
@@ -663,6 +665,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
             return json(res, 200, { ok: true, pr: await openPullRequest(b.id ?? "") }), true;
           case "merge":
             return json(res, 200, { ok: true, pr: await mergePullRequest(b.id ?? "") }), true;
+          case "sync":
+            await syncPullRequests();
+            return json(res, 200, { ok: true }), true;
           case "discard":
             if (!getAgent(b.id ?? "")) return json(res, 404, { error: "No such agent." }), true;
             await discardAgent(b.id!);

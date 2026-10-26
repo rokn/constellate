@@ -488,9 +488,11 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
   if (!root) throw new Error("No repository is open.");
   if (!TOKEN()) throw new Error("No GitHub token on the server (GIT_TOKEN), so it can't open pull requests.");
   const repo = await githubRepo(root);
+  // GitHub has the last word on whether its PR is still open to push to.
+  const known = a.pr?.state === "open" ? await syncPullRequest(id).catch(() => a.pr) : a.pr;
 
   const head = await git(root, ["rev-parse", `refs/heads/${a.branch}`]);
-  if (a.pr?.pushedSha !== head) {
+  if (known?.pushedSha !== head) {
     patch(id, { activity: "Pushing its branch" });
     try {
       // A rebase rewrote it since the last push: --force-with-lease lets that
@@ -507,7 +509,7 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
     }
   }
 
-  let pr = a.pr;
+  let pr = known;
   if (!pr || pr.state !== "open") {
     const info = await github<{ default_branch?: string; message?: string }>("GET", `/repos/${repo}`);
     if (info.status !== 200) throw new Error(`GitHub: ${info.data.message ?? info.status}`);
@@ -538,10 +540,20 @@ export async function openPullRequest(id: string): Promise<NonNullable<AgentRun[
  */
 export async function mergePullRequest(id: string): Promise<NonNullable<AgentRun["pr"]>> {
   if (live.has(id)) throw new Error("It's still working; wait for it to finish.");
+  const before = getAgent(id);
+  if (!before) throw new Error("No such agent.");
+  const root = session.state.repo?.root;
+  if (!root) throw new Error("No repository is open.");
+  // Merged on GitHub meanwhile, with nothing new since: there's nothing left
+  // to merge, and no fresh PR to open for it.
+  const known = before.pr?.state === "open" ? await syncPullRequest(id).catch(() => before.pr) : before.pr;
+  if (known?.state === "merged") {
+    const head = await git(root, ["rev-parse", `refs/heads/${before.branch}`]).catch(() => "");
+    if (head === known.pushedSha) return known;
+  }
   // Brings the PR up to date with the branch (or opens it, if it has none yet).
   const pr = await openPullRequest(id);
   const a = getAgent(id)!;
-  const root = session.state.repo!.root;
   const repo = await githubRepo(root);
   patch(id, { activity: "Merging its PR" });
   try {
@@ -567,6 +579,58 @@ export async function mergePullRequest(id: string): Promise<NonNullable<AgentRun
     patch(id, { activity: undefined });
   }
 }
+
+/**
+ * Read an agent's pull request back from GitHub, so one merged, closed,
+ * reopened or retargeted there shows as it is here. Returns it as it stands.
+ */
+export async function syncPullRequest(id: string): Promise<AgentRun["pr"]> {
+  const a = getAgent(id);
+  if (!a?.pr) return a?.pr;
+  const root = session.state.repo?.root;
+  if (!root) throw new Error("No repository is open.");
+  const repo = await githubRepo(root);
+  type Pull = { state?: string; merged?: boolean; merged_at?: string | null; html_url?: string; base?: { ref?: string }; message?: string };
+  const res = await github<Pull>("GET", `/repos/${repo}/pulls/${a.pr.number}`);
+  if (res.status !== 200) throw new Error(`GitHub: ${res.data.message ?? res.status}`);
+  // Changed here while GitHub answered (merged, pushed, a new one opened): what's here is newer.
+  const now = getAgent(id);
+  if (!now?.pr || now.pr !== a.pr) return now?.pr;
+  const pr: NonNullable<AgentRun["pr"]> = {
+    ...now.pr,
+    state: res.data.merged || res.data.merged_at ? "merged" : res.data.state === "closed" ? "closed" : "open",
+    url: res.data.html_url ?? now.pr.url,
+    base: res.data.base?.ref ?? now.pr.base,
+  };
+  if (pr.state === now.pr.state && pr.url === now.pr.url && pr.base === now.pr.base) return now.pr;
+  patch(id, { pr });
+  return pr;
+}
+
+/**
+ * Keeps every agent's PR in step with GitHub: checked every
+ * CONSTELLATE_PR_SYNC_SECONDS (two minutes by default, 0 turns it off), when
+ * a repo opens, and when the Agents panel does. A merged PR is settled; a
+ * closed one can still be reopened.
+ */
+const SYNC_EVERY = Number(process.env.CONSTELLATE_PR_SYNC_SECONDS ?? 120) * 1000;
+
+let syncing: Promise<void> | null = null;
+export function syncPullRequests(): Promise<void> {
+  if (syncing) return syncing;
+  syncing = (async () => {
+    if (!TOKEN() || !session.state.repo) return;
+    for (const a of agents().filter((x) => x.pr && x.pr.state !== "merged")) {
+      // Offline, or GitHub refused: the next round tries again, and opening or
+      // merging it says why.
+      await syncPullRequest(a.id).catch(() => {});
+    }
+  })().finally(() => {
+    syncing = null;
+  });
+  return syncing;
+}
+if (AGENTS_ON && SYNC_EVERY > 0) setInterval(() => void syncPullRequests(), SYNC_EVERY).unref();
 
 /* ------------------------------ rebasing ------------------------------ */
 
