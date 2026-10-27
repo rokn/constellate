@@ -119,6 +119,14 @@ const FOLLOW_UP_SETTLE_MS = 400;
 const SYNC_MIN_MS = 2000;
 /** How long after they stop talking to wait for the reply to their turn before asking for one. */
 const NUDGE_AFTER_SPEECH_MS = 1500;
+/**
+ * Inworld bills for the audio streamed to it, heard or not, so a session
+ * nobody has spoken to in this long is closed. The browser stops its mic on
+ * the same clock; this is the backstop for a tab that never does.
+ */
+const VOICE_IDLE_MS = 10 * 60_000;
+/** A browser that stops answering pings (a headset gone to sleep, a dropped network) is cut off. */
+const PING_MS = 30_000;
 
 /* ---------------------------- instructions ---------------------------- */
 
@@ -300,6 +308,25 @@ function bridge(client: WebSocket) {
   let closed = false;
   let attempt = 0;
   const pending: string[] = [];
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Restarted on every bit of their speech; when it runs out, the session ends. */
+  const stillHere = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      toClient({ type: "proxy.idle" });
+      client.close(4000, "idle");
+      // Don't wait on the close handshake to stop paying.
+      setTimeout(() => client.terminate(), 5000).unref();
+    }, VOICE_IDLE_MS);
+  };
+  stillHere();
+  let alive = true;
+  client.on("pong", () => (alive = true));
+  const pinger = setInterval(() => {
+    if (!alive) return client.terminate();
+    alive = false;
+    client.ping();
+  }, PING_MS);
   let hadOverview = !!session.state.overview;
 
   const toClient = (obj: unknown) => {
@@ -622,6 +649,7 @@ function bridge(client: WebSocket) {
 
       if (msg.type === "input_audio_buffer.speech_started") {
         userSpeaking = true;
+        stillHere();
       } else if (msg.type === "input_audio_buffer.speech_stopped") {
         userSpeaking = false;
         if (nudgeAfterSpeech) {
@@ -732,6 +760,8 @@ function bridge(client: WebSocket) {
 
   client.on("close", () => {
     closed = true;
+    clearTimeout(idleTimer);
+    clearInterval(pinger);
     unsubscribe();
     offAgents();
     clearTimeout(followUp);

@@ -8,6 +8,9 @@ import type { ScreenContext, UiCommand } from "../../shared/types";
  * it what is on screen.
  */
 
+/** Ten minutes without them saying anything turns the voice off: the speech-to-text is billed for every second streamed. */
+const IDLE_MS = 10 * 60_000;
+
 export type VoiceState = "idle" | "connecting" | "listening" | "speaking" | "error";
 export type Turn = { role: "user" | "voice"; text: string };
 
@@ -49,6 +52,7 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
   const onCommandRef = useRef(onCommand);
   onCommandRef.current = onCommand;
   const screenRef = useRef(screen);
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const send = useCallback((obj: unknown) => {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(obj));
@@ -70,6 +74,8 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
   }, []);
 
   const stop = useCallback(() => {
+    clearTimeout(idleTimer.current);
+    idleTimer.current = undefined;
     ws.current?.close();
     ws.current = null;
     mic.current?.getTracks().forEach((t) => t.stop());
@@ -83,9 +89,20 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
     commitVoice();
   }, [commitVoice]);
 
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  const stillHere = useCallback(() => {
+    clearTimeout(idleTimer.current);
+    idleTimer.current = setTimeout(() => {
+      stopRef.current();
+      setError("Voice turned off after 10 minutes of silence.");
+    }, IDLE_MS);
+  }, []);
+
   const start = useCallback(async () => {
     setError(null);
     setState("connecting");
+    stillHere();
     try {
       mic.current = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -108,11 +125,20 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
       const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice`);
       ws.current = socket;
       socket.onopen = () => socket.send(JSON.stringify({ type: "proxy.screen", screen: screenRef.current }));
+      let failed = false;
       socket.onerror = () => {
+        failed = true;
         setError("The voice connection failed.");
         setState("error");
       };
-      socket.onclose = () => setState((s) => (s === "error" ? s : "idle"));
+      // However it closes (the server ends an idle session, the network drops),
+      // the mic goes too: nothing should keep capturing with nowhere to send it.
+      socket.onclose = () => {
+        if (ws.current !== socket) return;
+        ws.current = null;
+        stopRef.current();
+        if (failed) setState("error");
+      };
       socket.onmessage = (e) => {
         const msg = JSON.parse(e.data as string);
         switch (msg.type) {
@@ -129,6 +155,9 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
             setError(msg.message);
             setState("error");
             return;
+          case "proxy.idle":
+            setError("Voice turned off after 10 minutes of silence.");
+            return;
           case "proxy.command":
             onCommandRef.current(msg.cmd as UiCommand);
             return;
@@ -136,6 +165,7 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
             // Barge-in: drop what is queued for playback and cancel the response.
             playback.current?.port.postMessage({ type: "flush" });
             send({ type: "response.cancel" });
+            stillHere();
             commitVoice();
             setState("listening");
             return;
@@ -182,6 +212,7 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
       mute.gain.value = 0;
       capture.connect(mute).connect(ctx.destination);
     } catch (err) {
+      clearTimeout(idleTimer.current);
       setError(
         err instanceof DOMException && err.name === "NotAllowedError"
           ? "Microphone access was denied. Everything else works without it."
@@ -189,7 +220,7 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
       );
       setState("error");
     }
-  }, [send, commitVoice]);
+  }, [send, commitVoice, stillHere]);
 
   useEffect(() => stop, [stop]);
 
