@@ -175,6 +175,12 @@ export type MapFilter = {
   isolate?: Isolated[];
   /** Take off files whose every connection you've marked checked. */
   hideChecked?: boolean;
+  /**
+   * Draw only the imports that cross from one module to another: between
+   * groups when the map is organized by modules or a lens, otherwise between
+   * folders (a Go package, a TypeScript directory). Files stay; lines go.
+   */
+  crossImports?: boolean;
 };
 
 /* ------------------------------ history ------------------------------ */

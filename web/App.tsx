@@ -8,7 +8,7 @@ import { ChartChanges } from "./components/ChartChanges";
 import { RemoteBanner } from "./components/RemoteBanner";
 import { AnswersPanel } from "./components/AnswersPanel";
 import { AgentsPanel } from "./components/AgentsPanel";
-import { EMPTY_FILTER, applyFilter, describe, isActive } from "../shared/filter";
+import { EMPTY_FILTER, applyFilter, crossModuleImports, describe, isActive } from "../shared/filter";
 import { checkedKeys, countChecked, fullyChecked, linkKey, linksOf, type LinkDir, type LinkEnds } from "../shared/checked";
 import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
@@ -529,6 +529,17 @@ export function App() {
     const lens = lenses.find((l) => l.id === lensId);
     return lens ? { key: lens.id, groups: lens.groups, edges: lens.edges } : null;
   }, [lensId, overview, lenses]);
+  // What the map draws: with "only cross-module imports", the imports
+  // within a module (a group, or a folder when organized by folders) go.
+  const drawnGraph = useMemo(() => {
+    if (!mapGraph || !filter.crossImports) return mapGraph;
+    let groupOf: Map<string, string> | null = null;
+    if (grouping) {
+      groupOf = new Map();
+      for (const gr of grouping.groups) for (const p of gr.paths) if (!groupOf.has(p)) groupOf.set(p, gr.id);
+    }
+    return { ...mapGraph, imports: crossModuleImports(mapGraph.imports, groupOf) };
+  }, [mapGraph, filter.crossImports, grouping]);
   // The grouping on screen was deleted (by you or the navigator): back to folders.
   useEffect(() => {
     if (lensId !== "folders" && lensId !== "modules" && graph && !lenses.some((l) => l.id === lensId)) setLensId("folders");
@@ -1256,8 +1267,8 @@ export function App() {
           return setFrameId(null);
         case "filter":
           // A navigator filter replaces the old one; it names what it shows.
-          // What you hid yourself stays hidden.
-          return setFilter((f) => ({ ...EMPTY_FILTER, ...c.filter, hidden: f.hidden }));
+          // What you hid yourself stays hidden, and which imports are drawn stays as you set it.
+          return setFilter((f) => ({ ...EMPTY_FILTER, ...c.filter, hidden: f.hidden, crossImports: f.crossImports }));
         case "clear_filter":
           return setFilter((f) => ({ ...EMPTY_FILTER, hidden: f.hidden }));
         case "set_lens":
@@ -1596,8 +1607,8 @@ export function App() {
     [filter],
   );
   const xrMap = useMemo(
-    (): MapInput | null => (mapGraph ? { graph: mapGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning, checked } : null),
-    [mapGraph, overview, grouping, visible, notes, shownOverlays, tuning, checked],
+    (): MapInput | null => (drawnGraph ? { graph: drawnGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning, checked } : null),
+    [drawnGraph, overview, grouping, visible, notes, shownOverlays, tuning, checked],
   );
   // A branch or a span of history wears its changes in the headset too.
   const xrHeat = branchMap ? branchHeat : range ? heat : null;
@@ -2027,7 +2038,7 @@ export function App() {
       {graph && fontsReady && (
         <Space
           ref={desk}
-          graph={mapGraph!}
+          graph={drawnGraph!}
           overview={overview}
           grouping={grouping}
           overlays={shownOverlays}

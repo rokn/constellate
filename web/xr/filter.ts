@@ -106,6 +106,7 @@ export class FilterPanel extends Panel {
       { id: "tests", label: "Hide tests", on: f.hideTests, onClick: () => this.set({ hideTests: !f.hideTests }) },
       { id: "docs", label: "Hide docs & config", on: f.hideDocs, onClick: () => this.set({ hideDocs: !f.hideDocs }) },
       { id: "checked", label: "Hide checked files", on: !!f.hideChecked, onClick: () => this.set({ hideChecked: !f.hideChecked || undefined }) },
+      { id: "cross", label: "Only cross-module imports", on: !!f.crossImports, onClick: () => this.a.setMapFilter({ ...f, crossImports: !f.crossImports || undefined }) },
     ]);
 
     // Patterns: typed on the room's keyboard.

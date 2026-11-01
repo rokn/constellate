@@ -431,6 +431,7 @@ export function FilterPanel({
         <Chip on={filter.hideTests} onClick={() => set({ hideTests: !filter.hideTests })}>Hide tests</Chip>
         <Chip on={filter.hideDocs} onClick={() => set({ hideDocs: !filter.hideDocs })}>Hide docs and config</Chip>
         <Chip on={!!filter.hideChecked} onClick={() => set({ hideChecked: !filter.hideChecked || undefined })}>Hide checked files</Chip>
+        <Chip on={!!filter.crossImports} onClick={() => onChange({ ...filter, crossImports: !filter.crossImports || undefined })}>Only cross-module imports</Chip>
       </div>
 
       <div>

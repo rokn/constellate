@@ -1,4 +1,4 @@
-import type { FileInfo, MapFilter } from "./types";
+import type { FileInfo, ImportEdge, MapFilter } from "./types";
 
 /**
  * What's on the map. One implementation, used by the browser to draw and by
@@ -49,7 +49,7 @@ export function matcher(pattern: string): (path: string) => boolean {
 export const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 export function isActive(f: MapFilter): boolean {
-  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length || f.isolate?.length || f.hideChecked);
+  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length || f.isolate?.length || f.crossImports || f.hideChecked);
 }
 
 /**
@@ -94,6 +94,21 @@ export function applyFilter(files: FileInfo[], f: MapFilter, checked?: ReadonlyS
   return out;
 }
 
+const dirOf = (p: string) => {
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "." : p.slice(0, i);
+};
+
+/**
+ * The imports that cross a module boundary. A file's module is its group
+ * (`groupOf`, with files in no group together as one) when the map is
+ * organized by groups, otherwise its folder.
+ */
+export function crossModuleImports(imports: ImportEdge[], groupOf?: Map<string, string> | null): ImportEdge[] {
+  const mod = groupOf ? (p: string) => groupOf.get(p) ?? "" : dirOf;
+  return imports.filter((e) => mod(e.from) !== mod(e.to));
+}
+
 /** A short human description, for chips and for the voice. */
 export function describe(f: MapFilter): string {
   const ins = (f.isolate ?? []).filter((i) => !i.exclude);
@@ -101,7 +116,7 @@ export function describe(f: MapFilter): string {
   const only = [ins.length ? `only ${ins.map((i) => i.label).join(", ")}` : "", outs.length ? `not ${outs.map((i) => i.label).join(", ")}` : ""]
     .filter(Boolean)
     .join(" · ");
-  if (f.label) return [only, f.label, f.hideChecked ? "no checked files" : "", f.hidden?.length ? `${f.hidden.length} hidden` : ""].filter(Boolean).join(" · ");
+  if (f.label) return [only, f.label, f.crossImports ? "cross-module imports" : "", f.hideChecked ? "no checked files" : "", f.hidden?.length ? `${f.hidden.length} hidden` : ""].filter(Boolean).join(" · ");
   const bits = [
     only,
     f.include.length ? `only ${f.include.join(", ")}` : "",
@@ -110,6 +125,7 @@ export function describe(f: MapFilter): string {
     f.tops.length ? `in ${f.tops.join(", ")}` : "",
     f.hideTests ? "no tests" : "",
     f.hideDocs ? "no docs/config" : "",
+    f.crossImports ? "cross-module imports" : "",
     f.hideChecked ? "no checked files" : "",
     f.paths ? `${f.paths.length} chosen files` : "",
     f.hidden?.length ? `${f.hidden.length} hidden` : "",
