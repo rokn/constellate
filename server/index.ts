@@ -11,6 +11,7 @@ import { externalGoFile, goRequest, goStatus, stop as stopGo, type GoQuery } fro
 import { changesSince, commitMessage, diffFile, graphAt, loadHistory } from "./history";
 import {
   addNote,
+  clearChecked,
   addOverlay,
   changeOverlays,
   restoreOverlays,
@@ -28,6 +29,7 @@ import {
   removeOverlay,
   rescan,
   restoreNote,
+  setChecked,
   session,
   setView,
   subscribe,
@@ -418,6 +420,18 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       }
       if (b.action === "restore" && b.note?.id && b.note.text && b.note.target) return restoreNote(b.note), json(res, 200, { ok: true }), true;
       return json(res, 400, { error: "Unknown action, or nothing to save." }), true;
+    }
+    case "POST /api/checked": {
+      // Import lines you've reviewed: mark them checked, take the mark off, or clear them all.
+      if (!session.state.repo) return json(res, 400, { error: "No repository open." }), true;
+      const b = await body<{ action?: string; links?: { from?: unknown; to?: unknown }[] }>(req);
+      if (b.action === "clear") return json(res, 200, { ok: true, cleared: clearChecked().length }), true;
+      const links = (Array.isArray(b.links) ? b.links : [])
+        .filter((l): l is { from: string; to: string } => !!l && typeof l.from === "string" && typeof l.to === "string" && !!l.from && !!l.to)
+        .slice(0, 20000)
+        .map((l) => ({ from: l.from, to: l.to }));
+      if ((b.action !== "check" && b.action !== "uncheck") || !links.length) return json(res, 400, { error: "Say check or uncheck, with the links." }), true;
+      return json(res, 200, { ok: true, changed: setChecked(links, b.action === "check") }), true;
     }
     case "POST /api/lenses": {
       // Delete a grouping, or put a deleted one back (undo).

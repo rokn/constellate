@@ -31,6 +31,10 @@ export type Tuning = {
   groupSpokes: number;
   groupBeaconSize: number;
   groupRings: number;
+  // Checked connections
+  showChecked: boolean;
+  checkedBrightness: number;
+  checkedTint: boolean;
   // Layout
   repulsion: number;
   folderPull: number;
@@ -101,6 +105,9 @@ export const DEFAULT_TUNING: Tuning = {
   groupSpokes: 0.22,
   groupBeaconSize: 1,
   groupRings: 0.8,
+  showChecked: true,
+  checkedBrightness: 0.55,
+  checkedTint: true,
   repulsion: 26,
   folderPull: 0.9,
   folderDistance: 14,
@@ -198,6 +205,15 @@ export const SECTIONS: Section[] = [
       r("groupSpokes", "Marker spokes", 0, 1, 0.01, "Lines from a marker's beacon to its files"),
       r("groupBeaconSize", "Group beacon size", 0.3, 3, 0.05),
       r("groupRings", "Marker rings", 0, 1, 0.01, "Rings around marked files, one per marker"),
+    ],
+  },
+  {
+    id: "checked",
+    title: "Checked connections",
+    knobs: [
+      t("showChecked", "Show checked lines", "Import lines you've marked checked; off takes them off the map, so only what's left to review shows"),
+      t("checkedTint", "Tint checked lines", "Draw checked lines green, apart from the ones still to review"),
+      r("checkedBrightness", "Checked brightness", 0, 1, 0.01, "How bright checked lines are; lower lets them step back"),
     ],
   },
   {

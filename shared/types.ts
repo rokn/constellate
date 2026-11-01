@@ -1,3 +1,4 @@
+import type { CheckedLink } from "./checked";
 import type { Renames } from "./renames";
 /**
  * The vocabulary shared by the server, the navigator agent's tools, the voice
@@ -172,6 +173,8 @@ export type MapFilter = {
   label?: string;
   /** Show only these modules and folders (any number of them). */
   isolate?: Isolated[];
+  /** Take off files whose every connection you've marked checked. */
+  hideChecked?: boolean;
 };
 
 /* ------------------------------ history ------------------------------ */
@@ -645,6 +648,8 @@ export type SessionState = {
   /** Groups marked on top of the map, by you or the navigator. */
   overlays: GroupOverlay[];
   notes: Note[];
+  /** Import lines you've marked checked (reviewed, safe). */
+  checked: CheckedLink[];
   frames: Frame[];
   /** Narrated walkthroughs, the intro's three among them. */
   stories: Story[];

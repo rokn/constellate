@@ -2,6 +2,7 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
+import { checkedKeys, fullyChecked } from "../shared/checked";
 import type { Frame, ScreenContext, UiCommand, View } from "../shared/types";
 import { ask, interrupt, storyNote } from "./navigator";
 import { findPath } from "./scan";
@@ -10,6 +11,7 @@ import { AGENTS_ON, onAgentFinished } from "./agents";
 import { AGENT_ACTIONS, agentLines, describe, runAction } from "./actions";
 import { listBranches } from "./branch";
 import { TUNE_ACTIONS, runTune, tuneNote } from "./tune";
+import { CHECK_ACTIONS, runChecked } from "./checked";
 
 /**
  * The voice: an Inworld realtime session, bridged through this server.
@@ -66,6 +68,7 @@ const TOOLS = [
     exclude: { type: "array", items: { type: "string" } },
     hideTests: { type: "boolean" },
     hideDocs: { type: "boolean" },
+    hideChecked: { type: "boolean", description: "Take off files whose every connection is marked checked" },
   }, ["label"]),
   fn("clear_filter", "Show the whole map again."),
   fn("show_history", "Light up what changed in a span of history on the map: the last commit, the last day/week/month, everything loaded, or the uncommitted changes. Instant. For a specific commit or a question about what changed, ask the navigator.", {
@@ -107,6 +110,9 @@ const TOOLS = [
 
 /** The Tune panel's knobs and presets. Shared with typed Ask (see tune.ts). */
 const TUNE_TOOLS = TUNE_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
+
+/** Marking connections checked. Shared with typed Ask (see checked.ts). */
+const CHECK_TOOLS = CHECK_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
 
 /** Coding agents: only offered when the server allows them. Shared with typed Ask (see actions.ts). */
 const AGENT_TOOLS = AGENT_ACTIONS.map((a) => fn(a.name, describe(a, "voice"), a.properties, a.required));
@@ -195,6 +201,7 @@ function instructions(screen: ScreenContext, branches: Branches | null): string 
     "You have NOT read this code. You only know what is written below. The moment they want to understand something, see something, or ask about code not shown here, call ask_navigator (or focus_topic for a suggested topic). Say a short line first ('let me pull that up'), then stop; when the result arrives, say it in your own words. Never invent how something is wired.",
     "If they just want to go somewhere — 'take me to the auth code', 'open the server' — that's navigation: use fly_to or focus_module yourself, no navigator needed.",
     "Settings are yours too: tune turns any knob of the Tune panel (how the map looks and moves, and the headset's own settings), reset_tune puts them back, use_preset / save_preset / delete_preset work the presets. Do it straight away and say what you changed in a few words.",
+    "They review connections by marking them checked (safe): mark_checked marks one import line, all of a file's (the open one when they say 'this'), or only its inbound or outbound ones; checked_status says what's left. 'Hide checked' means the tune knob showChecked=off for the lines, or filter_map with hideChecked for files fully checked.",
     "",
     AGENTS_ON
       ? "You can also start coding agents (start_agent) when they want the code changed: each works on its own branch, and they review what it did on the map (show_agent). A finished agent's work opens as a pull request on its own; merge_pr merges it, only after they confirm. Questions still go to the navigator."
@@ -284,7 +291,7 @@ function sessionUpdate(text: string, v: VoiceSettings) {
         },
         output: { model: v.ttsModel, voice: v.voiceId, ...(v.speed !== 1 ? { speed: v.speed } : {}) },
       },
-      tools: AGENTS_ON ? [...TOOLS, ...TUNE_TOOLS, ...AGENT_TOOLS] : [...TOOLS, ...TUNE_TOOLS],
+      tools: AGENTS_ON ? [...TOOLS, ...TUNE_TOOLS, ...CHECK_TOOLS, ...AGENT_TOOLS] : [...TOOLS, ...TUNE_TOOLS, ...CHECK_TOOLS],
       providerData: { stt: { voice_profile: false } },
     },
   };
@@ -534,9 +541,10 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
           exclude: arr("exclude"),
           hideTests: args.hideTests === true,
           hideDocs: args.hideDocs === true,
+          hideChecked: args.hideChecked === true || undefined,
           label: str("label") || undefined,
         };
-        const kept = idx ? applyFilter(idx.graph.files, filter) : null;
+        const kept = idx ? applyFilter(idx.graph.files, filter, fullyChecked(idx.graph.imports, checkedKeys(session.state.checked))) : null;
         if (kept && kept.size === 0) return { ok: false, error: "That leaves nothing on the map — loosen it." };
         command(kept ? { cmd: "filter", filter } : { cmd: "clear_filter" });
         return { ok: true, visibleFiles: kept?.size ?? idx?.graph.files.length };
@@ -625,6 +633,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
         // The voice has its yes for a merge out loud before it calls merge_pr, so it merges.
         return (
           runTune(name, args, { surface: "voice", screen, command, report: () => {} }) ??
+          runChecked(name, args, { surface: "voice", screen, command, report: () => {} }) ??
           ((AGENTS_ON &&
             runAction(name, args, {
               surface: "voice",

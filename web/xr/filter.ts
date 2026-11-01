@@ -105,6 +105,7 @@ export class FilterPanel extends Panel {
     chips([
       { id: "tests", label: "Hide tests", on: f.hideTests, onClick: () => this.set({ hideTests: !f.hideTests }) },
       { id: "docs", label: "Hide docs & config", on: f.hideDocs, onClick: () => this.set({ hideDocs: !f.hideDocs }) },
+      { id: "checked", label: "Hide checked files", on: !!f.hideChecked, onClick: () => this.set({ hideChecked: !f.hideChecked || undefined }) },
     ]);
 
     // Patterns: typed on the room's keyboard.
@@ -191,7 +192,7 @@ export class FocusBar extends Panel {
     this.m = m;
     const a = p?.focus;
     const b = m.focus;
-    if (!p || a?.label !== b?.label || a?.depth !== b?.depth || a?.count !== b?.count || a?.more !== b?.more || a?.only !== b?.only || a?.dir !== b?.dir) this.invalidate();
+    if (!p || a?.label !== b?.label || a?.depth !== b?.depth || a?.count !== b?.count || a?.more !== b?.more || a?.only !== b?.only || a?.dir !== b?.dir || a?.checks.done !== b?.checks.done || a?.checks.total !== b?.checks.total) this.invalidate();
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
@@ -212,6 +213,11 @@ export class FocusBar extends Panel {
     const y0 = (H - 60) / 2;
     for (const [dir, label] of [["both", "Both"], ["in", "Inbound"], ["out", "Outbound"]] as const)
       d = this.button(ctx, `dir:${dir}`, d, y0, label, () => this.a.focusDirection(dir), { w: dir === "both" ? 100 : 136, h: 60, size: 22, active: f.dir === dir, disabled: f.only }) + 8;
+    // Mark every connection it lights checked (reviewed, safe), or take the marks off.
+    if (f.checks.total) {
+      const all = f.checks.done === f.checks.total;
+      this.button(ctx, "check", d + 8, y0, all ? "✓ Checked" : `Check ${f.checks.done}/${f.checks.total}`, this.a.checkFocus, { w: 170, h: 60, size: 22, active: all, accent: C.checked });
+    }
     // Showing only these, the rest of the map is off, so there's no ring to widen to.
     let x = this.W - PAD - 630;
     const y = (H - 60) / 2;

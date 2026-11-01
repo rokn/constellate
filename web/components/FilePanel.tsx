@@ -3,6 +3,7 @@ import { fetchFile, type FileData } from "../lib/api";
 import { CodeBlock } from "./CodeBlock";
 import { GoEditor } from "./GoEditor";
 import { DiffStat, DiffView } from "./DiffView";
+import { linkKey } from "../../shared/checked";
 
 /** The open file's change in the span of history shown on the map. */
 export type FileChange = {
@@ -31,6 +32,9 @@ export function FilePanel({
   onAsk,
   onHide,
   onNote,
+  checked,
+  onCheckLink,
+  onCheckAll,
   goEditor,
   onReferences,
   onSelection,
@@ -47,6 +51,12 @@ export function FilePanel({
   onHide: () => void;
   /** Pin a note to this file. */
   onNote?: () => void;
+  /** Import lines marked checked, by linkKey. */
+  checked?: ReadonlySet<string>;
+  /** Mark one of its connections checked, or take the mark off. */
+  onCheckLink?: (from: string, to: string) => void;
+  /** All of its connections: checked (true) or not. */
+  onCheckAll?: (on: boolean) => void;
   /** Use VS Code's editor with gopls for Go files. */
   goEditor?: boolean;
   onReferences?: (name: string, paths: string[]) => void;
@@ -96,6 +106,10 @@ export function FilePanel({
   }, [line, endLine]);
 
   const segs = path.split("/");
+  const isChecked = (from: string, to: string) => !!checked?.has(linkKey(from, to));
+  // Its connections, as the map draws them: each import line once, either way.
+  const total = file ? file.imports.filter((p) => p !== path).length + file.importers.filter((p) => p !== path).length : 0;
+  const done = file ? file.imports.filter((p) => p !== path && isChecked(path, p)).length + file.importers.filter((p) => p !== path && isChecked(p, path)).length : 0;
 
   return (
     <aside className="glass rise pointer-events-auto flex h-full w-full flex-col overflow-hidden rounded-xl shadow-[0_20px_60px_-20px_rgba(0,0,0,.7)]">
@@ -153,7 +167,16 @@ export function FilePanel({
       {file && (file.imports.length > 0 || file.importers.length > 0) && (
         <div className="space-y-1.5 border-b border-line px-4 py-2.5 text-[12.5px]">
           {file.imports.length > 0 && (
-            <Links label="Imports" tone="static" paths={file.imports} links={file.importLinks} verb="takes" onPick={(p) => onNavigate(p)} />
+            <Links
+              label="Imports"
+              tone="static"
+              paths={file.imports}
+              links={file.importLinks}
+              verb="takes"
+              onPick={(p) => onNavigate(p)}
+              checkedOf={(p) => isChecked(path, p)}
+              onCheck={onCheckLink && ((p) => onCheckLink(path, p))}
+            />
           )}
           {file.importers.length > 0 && (
             <Links
@@ -164,7 +187,24 @@ export function FilePanel({
               verb="uses"
               // Land on the line that imports this file.
               onPick={(p, line) => onNavigate(p, line)}
+              checkedOf={(p) => isChecked(p, path)}
+              onCheck={onCheckLink && ((p) => onCheckLink(p, path))}
             />
+          )}
+          {onCheckAll && total > 0 && (
+            <div className="flex items-center gap-2 pt-0.5">
+              <span className={`w-14 shrink-0 font-cond text-[12.5px] ${done === total ? "text-[#a6e35a]" : "text-muted"}`}>Checked</span>
+              <span className="text-[12px] text-muted">
+                {done} of {total}
+              </span>
+              <button
+                onClick={() => onCheckAll(done < total)}
+                title="Mark every connection of this file checked, or take the marks off (c). Shift-click a line on the map, or ✓ above, for one."
+                className="rounded border border-line px-2 py-0.5 text-[12px] text-muted hover:border-[#a6e35a]/60 hover:text-[#a6e35a]"
+              >
+                {done < total ? "Check all" : "Uncheck all"}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -245,6 +285,8 @@ function Links({
   links,
   verb,
   onPick,
+  checkedOf,
+  onCheck,
 }: {
   label: string;
   tone: "static" | "course";
@@ -252,22 +294,41 @@ function Links({
   links?: { path: string; names: string[]; line?: number }[];
   verb: string;
   onPick: (path: string, line?: number) => void;
+  /** Whether the line to this file is marked checked. */
+  checkedOf?: (path: string) => boolean;
+  /** Toggle the line to this file checked. */
+  onCheck?: (path: string) => void;
 }) {
   const byPath = new Map((links ?? []).map((l) => [l.path, l]));
   return (
     <div className="flex items-baseline gap-2">
       <span className={`w-14 shrink-0 font-cond text-[12.5px] ${tone === "static" ? "text-static" : "text-course"}`}>{label}</span>
       <div className="flex min-w-0 flex-wrap gap-x-2.5 gap-y-0.5">
-        {paths.slice(0, 14).map((p) => (
-          <button
-            key={p}
-            onClick={() => onPick(p, byPath.get(p)?.line)}
-            className="font-mono text-[11.5px] text-text/85 hover:text-course"
-            title={byPath.get(p)?.names.length ? `${p}\n${verb}: ${byPath.get(p)!.names.join(", ")}` : p}
-          >
-            {p.split("/").pop()}
-          </button>
-        ))}
+        {paths.slice(0, 14).map((p) => {
+          const on = !!checkedOf?.(p);
+          return (
+            <span key={p} className="inline-flex items-baseline gap-0.5">
+              {onCheck && (
+                <button
+                  onClick={() => onCheck(p)}
+                  aria-pressed={on}
+                  aria-label={on ? `Uncheck the line to ${p}` : `Mark the line to ${p} checked`}
+                  title={on ? "Checked: click to take the mark off" : "Mark this connection checked (reviewed, safe)"}
+                  className={`rounded px-0.5 text-[11px] leading-none ${on ? "text-[#a6e35a]" : "text-muted/50 hover:text-[#a6e35a]"}`}
+                >
+                  {on ? "✓" : "○"}
+                </button>
+              )}
+              <button
+                onClick={() => onPick(p, byPath.get(p)?.line)}
+                className={`font-mono text-[11.5px] hover:text-course ${on ? "text-[#a6e35a]/85" : "text-text/85"}`}
+                title={byPath.get(p)?.names.length ? `${p}\n${verb}: ${byPath.get(p)!.names.join(", ")}` : p}
+              >
+                {p.split("/").pop()}
+              </button>
+            </span>
+          );
+        })}
         {paths.length > 14 && <span className="text-muted">and {paths.length - 14} more</span>}
       </div>
     </div>

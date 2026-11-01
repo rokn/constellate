@@ -430,6 +430,7 @@ export function FilterPanel({
       <div className="flex flex-wrap gap-1.5">
         <Chip on={filter.hideTests} onClick={() => set({ hideTests: !filter.hideTests })}>Hide tests</Chip>
         <Chip on={filter.hideDocs} onClick={() => set({ hideDocs: !filter.hideDocs })}>Hide docs and config</Chip>
+        <Chip on={!!filter.hideChecked} onClick={() => set({ hideChecked: !filter.hideChecked || undefined })}>Hide checked files</Chip>
       </div>
 
       <div>

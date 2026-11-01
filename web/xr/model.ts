@@ -54,6 +54,8 @@ export type Model = {
   filter: { active: boolean; label?: string; hideTests: boolean; hideDocs: boolean };
   /** The whole filter, as the desktop's Filter panel edits it. */
   mapFilter: MapFilter;
+  /** Import lines marked checked (reviewed, safe), by linkKey. */
+  checked: ReadonlySet<string>;
   savedFilters: SavedFilter[];
   /** The repo's languages and top-level folders, most files first: the filter's chips. */
   langs: string[];
@@ -95,7 +97,7 @@ export type Model = {
   /** What you're holding: the controls page lists what these can do. */
   inputs: { hands: boolean; controllers: boolean };
   /** A focus made from the headset: a body, and how many rings of its connections are lit. */
-  focus: { label: string; depth: number; count: number; more: boolean; only: boolean; dir: FocusDir } | null;
+  focus: { label: string; depth: number; count: number; more: boolean; only: boolean; dir: FocusDir; checks: { done: number; total: number } } | null;
 };
 
 /** Which of a focus's connections light: what imports it (in), what it imports (out), or both. */
@@ -179,6 +181,16 @@ export type Actions = {
   focusDirection: (dir: FocusDir) => void;
   /** Show only what the focus lights, or, when that's on, the map as it was. */
   focusOnly: () => void;
+  /** Mark one import line checked (reviewed, safe), or take the mark off. */
+  checkLink: (from: string, to: string) => void;
+  /** All of a file's connections: checked, unchecked, or (left out) toggled. */
+  checkFile: (path: string, on?: boolean) => void;
+  /** Every connection a focus lights (see focusAround's core), toggled together. */
+  checkAmong: (paths: string[], label: string, core?: string[], dir?: FocusDir) => void;
+  /** How many of the connections a focus lights are checked. */
+  countAmong: (paths: string[], core?: string[], dir?: FocusDir) => { done: number; total: number };
+  /** The focus's lit connections, toggled checked together. */
+  checkFocus: () => void;
   /** Throw something off the map (a fling): it's hidden, with an undo. */
   hideHit: (hit: MapHit) => void;
   openRepo: (id: string) => void;
@@ -233,6 +245,7 @@ export type AppActions = Omit<
   | "focusNarrower"
   | "focusDirection"
   | "focusOnly"
+  | "checkFocus"
   | "fetchBranches"
 > & {
   addNote: (path: string, text: string) => void;

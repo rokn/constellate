@@ -225,6 +225,10 @@ export function useXR(feed: XRFeed) {
       // Just the body itself has no direction: one way or the other means its first ring.
       if (f) focusOn(f.hit, dir === "both" ? f.depth : Math.max(1, f.depth));
     },
+    checkFocus: () => {
+      const f = focusRef.current;
+      if (f) feedRef.current.actions.checkAmong(f.paths, f.label, f.core, f.dir);
+    },
     focusOnly: () => {
       const f = focusRef.current;
       const { mapFilter } = feedRef.current.model;
@@ -442,7 +446,7 @@ export function useXR(feed: XRFeed) {
 
   useEffect(() => {
     if (!room || !presenting) return;
-    room.update({ ...feed.model, fileData, fileDiff, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths, dir: focusAt.dir } });
+    room.update({ ...feed.model, fileData, fileDiff, story: null, repos, branches, mode, canVR: support.vr, canAR: support.ar, placing, menuOpen, keyboard, tuneOpen, hintsOpen, filterOpen, viewsOpen, table, outlining, surfaces, inputs, focus: focusAt && { label: focusAt.label, depth: focusAt.depth, count: focusAt.count, more: focusAt.more, only: feed.model.mapFilter.paths === focusAt.paths, dir: focusAt.dir, checks: feed.actions.countAmong(focusAt.paths, focusAt.core, focusAt.dir) } });
   });
 
   /* --------------------------- the desktop's camera --------------------------- */

@@ -12,6 +12,7 @@ import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { Coupling, Heat, MapDelta } from "../lib/history";
 import { buzz, touchFirst } from "../lib/haptics";
 import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
+import { linkKey } from "../../shared/checked";
 
 /**
  * The space you fly through.
@@ -62,13 +63,15 @@ const ADDED = "#6ee7a8";
 /** Import lines brought up by hovering: a brighter, whiter cyan than the lit ones. */
 const BUMP = "#b4f0ff";
 const REMOVED = "#ff6b6b";
+/** Import lines you've marked checked (reviewed, safe): a lime apart from history's added green. */
+const CHECKED = "#a6e35a";
 
 /** How hot a changed file glows: 0 for a one-line touch, 1 for a rewrite. */
 const churnHeat = (add: number, del: number) => Math.min(1, Math.log10(add + del + 1) / 3);
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 /** The hover tag on an import line: who imports whom, where, and what. */
-function importTag(l: L): string {
+function importTag(l: L, checked = false): string {
   const from = typeof l.source === "string" ? l.source : l.source.id;
   const to = typeof l.target === "string" ? l.target : l.target.id;
   const names = l.names ?? [];
@@ -78,7 +81,8 @@ function importTag(l: L): string {
     `<b>${esc(from.split("/").pop()!)}</b>${l.line ? `<span style="opacity:.55">:${l.line}</span>` : ""} → <b>${esc(to.split("/").pop()!)}</b>`,
     `<span style="opacity:.55">${esc(from)} → ${esc(to)}</span>`,
     names.length ? `<span style="color:#5bd6ff">${shown}${names.length > 10 ? ` +${names.length - 10} more` : ""}</span>` : `<span style="opacity:.55">side-effect import</span>`,
-    `<span style="opacity:.45">click to open the import</span>`,
+    ...(checked ? [`<b style="color:${CHECKED}">✓ checked</b>`] : []),
+    `<span style="opacity:.45">click to open the import · shift-click or c to ${checked ? "uncheck" : "mark checked"}</span>`,
   ].join("<br/>");
 }
 
@@ -87,6 +91,7 @@ type Obj = { group: THREE.Group; mesh: THREE.Mesh; base: number; label?: SpriteT
 /** What a held finger is on: a file, a module's (or group's) beacon, or open sky. */
 export type TouchHit =
   | { kind: "file"; path: string }
+  | { kind: "link"; from: string; to: string }
   | { kind: "module"; id: string; label: string; summary?: string; files?: number }
   | { kind: "empty" };
 
@@ -240,6 +245,8 @@ export function Space({
   notes,
   onPickNote,
   onNoteOnLink,
+  checked,
+  onCheckLink,
   onHideOverlay,
   onHide,
   onOpenImport,
@@ -289,6 +296,10 @@ export function Space({
   onPickNote: (id: string, edit: boolean) => void;
   /** Right-click on an import line: write a note on it. */
   onNoteOnLink: (from: string, to: string) => void;
+  /** Import lines marked checked, by linkKey: drawn apart (Tune → Checked connections), or left off. */
+  checked: ReadonlySet<string>;
+  /** Shift-click on an import line: mark it checked, or take the mark off. */
+  onCheckLink: (from: string, to: string) => void;
   /** Right-click on a group's beacon: hide that group from view. */
   onHideOverlay: (id: string) => void;
   /** Right-click: hide this file, or everything under this folder. */
@@ -335,6 +346,7 @@ export function Space({
     clusters: [] as { id: string; label: string; members: string[] }[],
     heat: null as Heat | null,
     delta: null as MapDelta | null,
+    checked: checked as ReadonlySet<string>,
   });
   /** The current knob values, read at the moment of use. */
   const tu = () => state.current.tuning;
@@ -359,8 +371,8 @@ export function Space({
       }
     >(),
   );
-  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture, onSpread });
-  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture, onSpread };
+  const handlers = useRef({ onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onCheckLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture, onSpread });
+  handlers.current = { onPick, onPickModule, onPickDir, onPickOverlay, onPickNote, onNoteOnLink, onCheckLink, onHideOverlay, onHide, onOpenImport, onBackground, onHold, onGesture, onSpread };
   /** Set up with the scene: turns tilt-to-look on or off. */
   const tiltOn = useRef<(on: boolean) => Promise<boolean>>(async () => false);
   /** Files close enough to the camera to be named (Tune -> Name nearby files). */
@@ -487,8 +499,10 @@ export function Space({
         if (beaconJustClicked() || l.type !== "import") return;
         handlers.current.onNoteOnLink(endId(l.source), endId(l.target));
       })
-      .onLinkClick((l) => {
-        if (!beaconJustClicked() && litImport(l)) handlers.current.onOpenImport(endId(l.source), l.line);
+      .onLinkClick((l, e) => {
+        if (beaconJustClicked() || !litImport(l)) return;
+        if (e.shiftKey) handlers.current.onCheckLink(endId(l.source), endId(l.target));
+        else handlers.current.onOpenImport(endId(l.source), l.line);
       })
       .onBackgroundClick(() => {
         if (!beaconJustClicked()) handlers.current.onBackground();
@@ -582,7 +596,7 @@ export function Space({
     window.addEventListener("keydown", onShift);
     window.addEventListener("keyup", onShift);
     /** Whether the pointer is on a body: then the body's tag shows, not a line's. */
-    const onBody = (e: PointerEvent) => {
+    const onBody = (e: { clientX: number; clientY: number }) => {
       const rect = host.getBoundingClientRect();
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
@@ -601,7 +615,7 @@ export function Space({
       }
       return false;
     };
-    const linkNear = (e: PointerEvent): L | null => {
+    const linkNear = (e: { clientX: number; clientY: number }, reach = LINE_HOVER_PX): L | null => {
       if (onBody(e)) return null;
       const rect = host.getBoundingClientRect();
       const px = e.clientX - rect.left;
@@ -610,9 +624,9 @@ export function Space({
       const a = new THREE.Vector3();
       const b = new THREE.Vector3();
       let best: L | null = null;
-      let bestD = LINE_HOVER_PX;
+      let bestD = reach;
       for (const l of g.graphData().links) {
-        if (!litImport(l)) continue;
+        if (!litImport(l) || checkedOff(l)) continue;
         const s = l.source as N;
         const t = l.target as N;
         if (s.x === undefined || t.x === undefined) continue;
@@ -709,7 +723,8 @@ export function Space({
       const link = hoverLink.current;
       if (link && litImport(link)) {
         beaconClickAt.current = performance.now();
-        handlers.current.onOpenImport(endId(link.source), link.line);
+        if (e.shiftKey) handlers.current.onCheckLink(endId(link.source), endId(link.target));
+        else handlers.current.onOpenImport(endId(link.source), link.line);
         return;
       }
       const id = overlayAt(e);
@@ -736,7 +751,7 @@ export function Space({
         }
         if (link) {
           host.style.cursor = g.renderer().domElement.style.cursor = "pointer";
-          return showTip(e, importTag(link));
+          return showTip(e, importTag(link, isChecked(link)));
         }
       }
       if (e.buttons || !overlayObjs.current.size) {
@@ -1016,7 +1031,11 @@ export function Space({
         const d = Math.hypot(sc.x + rect.left - x, sc.y + rect.top - y) - (n.type === "module" ? 14 : 0);
         if (d < 34 && (!best || d < best.d)) best = { n, d };
       }
-      if (!best) return { kind: "empty" };
+      if (!best) {
+        // Open sky under the finger, but a lit import line within a fingertip of it.
+        const l = linkNear({ clientX: x, clientY: y }, 22);
+        return l ? { kind: "link", from: endId(l.source), to: endId(l.target) } : { kind: "empty" };
+      }
       const n = best.n;
       return n.type === "module" ? { kind: "module", id: n.id.slice(4), label: n.label, summary: n.summary, files: n.files } : { kind: "file", path: n.id };
     };
@@ -1803,6 +1822,15 @@ export function Space({
     return !!b.members && b.members.has(from) !== b.members.has(to);
   }
 
+  /** An import line you've marked checked. */
+  function isChecked(l: L) {
+    return l.type === "import" && state.current.checked.has(linkKey(endId(l.source), endId(l.target)));
+  }
+  /** A checked line taken off the map (Tune → Show checked lines off); a history change still shows. */
+  function checkedOff(l: L) {
+    return !tu().showChecked && !l.change && isChecked(l);
+  }
+
   /** An import line both of whose ends are in the focus — the lit ones. */
   function litImport(l: L) {
     const emph = state.current.emphasis;
@@ -1836,7 +1864,7 @@ export function Space({
       l.type === "cochange" ? true
         : l.type === "member" ? false
         : l.type === "logical" ? lay.logical
-          : l.type === "import" ? lay.imports || both(l) || !!l.change || bumped(l)
+          : l.type === "import" ? !checkedOff(l) && (lay.imports || both(l) || !!l.change || bumped(l))
             : lay.folders !== false,
     )
       .linkColor((l) =>
@@ -1845,6 +1873,8 @@ export function Space({
         l === hoverLink.current ? "#eafcff"
         : l.change === "added" ? ADDED
         : l.change === "removed" ? REMOVED
+        // Checked lines in their own colour (or their usual one), as bright as the knob says.
+        : isChecked(l) ? mix("#060b16", tu().checkedTint ? CHECKED : bumped(l) ? BUMP : STATIC, Math.max(0.12, tu().checkedBrightness) * (both(l) || bumped(l) ? 1 : tu().importBrightness * (state.current.delta ? 0.12 : emph.size ? 0.35 : 0.9)))
         : bumped(l) ? BUMP
         : l.type === "cochange" ? (emph.size && !both(l) ? "#2e2447" : COUPLING)
         : l.type === "logical" ? (emph.size ? "#4a3510" : RUNTIME)
@@ -1866,6 +1896,8 @@ export function Space({
         l === hoverLink.current ? 4
           : l.change === "added" ? 3
           : l.change === "removed" ? 0
+          // Checked: nothing left to follow along it.
+          : isChecked(l) ? 0
           : bumped(l) ? Math.min(2, Math.max(1, tu().particles))
           : l.type === "logical" ? (emph.size ? 0 : tu().particles)
             : l.type === "import" && both(l) ? Math.min(2, tu().particles) : 0,
@@ -2062,6 +2094,12 @@ export function Space({
     applyAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [delta]);
+
+  useEffect(() => {
+    state.current.checked = checked;
+    applyAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checked]);
 
   useEffect(() => {
     state.current.emphasis = new Set(emphasis);
