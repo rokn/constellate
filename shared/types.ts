@@ -172,6 +172,12 @@ export type MapFilter = {
   label?: string;
   /** Show only these modules and folders (any number of them). */
   isolate?: Isolated[];
+  /**
+   * Draw only the imports that cross from one module to another: between
+   * groups when the map is organized by modules or a lens, otherwise between
+   * folders (a Go package, a TypeScript directory). Files stay; lines go.
+   */
+  crossImports?: boolean;
 };
 
 /* ------------------------------ history ------------------------------ */
