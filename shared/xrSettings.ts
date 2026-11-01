@@ -1,7 +1,9 @@
 /**
  * The headset's own knobs: how the room looks and feels around the map, as
- * opposed to the map itself (that's tuning.ts, shared with the desktop). Kept
- * per browser, like the tuning: it's how *you* like to stand in it.
+ * opposed to the map itself (that's tuning.ts, shared with the desktop), and
+ * the controls: which gestures are on and how they read, in the headset and
+ * on a touchscreen, and the voice. Kept per browser, not per repo, like the
+ * tuning: it's how *you* like to stand in it and move.
  */
 
 export type XRSettings = {
@@ -55,8 +57,62 @@ export type XRSettings = {
   handModels: boolean;
   /** Draw the controllers. */
   controllerModels: boolean;
-  // Sound
+  // Gestures (tracked hands)
+  /** A pinch held still on open sky draws a lasso round what to light up. */
+  lasso: boolean;
+  /** How long (ms) the pinch is held still before it lassos instead of moving the map. */
+  lassoHold: number;
+  /** How far (cm) a pinch or trigger moves before it drags instead of picking (and before a held pinch stops counting as still). */
+  dragSlop: number;
+  /** Thumb on the middle finger: back (left hand) and forward (right hand). */
+  middlePinch: boolean;
+  /** How close (cm) the thumb and middle fingertips come for it to count. */
+  middlePinchGap: number;
+  /** Left palm up opens the wrist menu. */
+  wristMenu: boolean;
+  /** How long (ms) the palm is held up before the menu shows. */
+  wristMenuHold: number;
+  /** Two Ls framing part of the map light up what's inside. */
+  framing: boolean;
+  /** How long (ms) the frame is held before it picks. */
+  framingHold: number;
+  /** The index fingertip presses panels like a touchscreen. */
+  pokePanels: boolean;
+  /** A pointing fingertip touching a body picks it. */
+  pokeBodies: boolean;
+  /** Two hands on the map turn it as well as scale it. */
+  twoHandRotate: boolean;
+  // Controllers
+  haptics: boolean;
+  hapticStrength: number;
+  /** How far a stick goes before it does anything. */
+  stickDeadzone: number;
+  // Touch (tablets and phones, outside the headset)
+  /** How long (ms) a finger is held still for the ring menu. */
+  touchHold: number;
+  /** Double-tap open sky for the whole map. */
+  doubleTap: boolean;
+  /** Spread two fingers on a module's beacon to open it, pinch them to close it. */
+  spreadOpens: boolean;
+  /** How far apart (× where they started) the fingers spread to open a module. */
+  spreadOpenAt: number;
+  /** How close (× where they started) they pinch to close it. */
+  pinchCloseAt: number;
+  /** Twist two fingers to turn the map. */
+  twist: boolean;
+  /** Three-finger swipes: sideways back and forward, down the whole map, up hides the controls. */
+  threeFingerSwipes: boolean;
+  /** How far (px) a three-finger swipe travels to count. */
+  swipeDistance: number;
+  /** How much the view turns as you tilt the tablet, with Tilt to look on. */
+  tiltSpeed: number;
+  /** Laying the tablet flat shows the map from above. */
+  layFlat: boolean;
+  // Voice
   voiceVolume: number;
+  /** Minutes without hearing you before the voice turns itself off. */
+  voiceIdleMinutes: number;
+  // Sound
   /** Small sounds for what your hands do: presses, picks, snaps, throws. */
   sfx: boolean;
   sfxVolume: number;
@@ -96,7 +152,33 @@ export const DEFAULT_XR: XRSettings = {
   panelDistance: 1,
   handModels: true,
   controllerModels: true,
+  lasso: true,
+  lassoHold: 450,
+  dragSlop: 3.5,
+  middlePinch: true,
+  middlePinchGap: 1.8,
+  wristMenu: true,
+  wristMenuHold: 220,
+  framing: true,
+  framingHold: 350,
+  pokePanels: true,
+  pokeBodies: true,
+  twoHandRotate: true,
+  haptics: true,
+  hapticStrength: 1,
+  stickDeadzone: 0.18,
+  touchHold: 480,
+  doubleTap: true,
+  spreadOpens: true,
+  spreadOpenAt: 1.7,
+  pinchCloseAt: 0.6,
+  twist: true,
+  threeFingerSwipes: true,
+  swipeDistance: 70,
+  tiltSpeed: 1,
+  layFlat: true,
   voiceVolume: 1,
+  voiceIdleMinutes: 10,
   sfx: true,
   sfxVolume: 0.6,
   ambience: true,
@@ -107,7 +189,11 @@ export const DEFAULT_XR: XRSettings = {
 type Range = { key: keyof XRSettings; label: string; min: number; max: number; step: number; hint?: string };
 type Toggle = { key: keyof XRSettings; label: string; toggle: true; hint?: string };
 export type XRKnob = Range | Toggle;
-export type XRSection = { id: string; title: string; knobs: XRKnob[] };
+/**
+ * Where a section is shown: in the headset's Tune panel (the default), in the
+ * desktop's ("flat": a touchscreen's gestures), or both (the voice).
+ */
+export type XRSection = { id: string; title: string; knobs: XRKnob[]; where?: "headset" | "flat" | "both" };
 
 const r = (key: keyof XRSettings, label: string, min: number, max: number, step: number, hint?: string): Range => ({ key, label, min, max, step, hint });
 const t = (key: keyof XRSettings, label: string, hint?: string): Toggle => ({ key, label, toggle: true, hint });
@@ -172,10 +258,62 @@ export const XR_SECTIONS: XRSection[] = [
     ],
   },
   {
+    id: "gestures",
+    title: "Headset · Gestures",
+    knobs: [
+      t("lasso", "Pinch and hold to lasso", "Pinch open sky and hold still, then draw a loop: what's inside lights up. Off: a pinch there only moves the map"),
+      r("lassoHold", "Lasso hold (ms)", 150, 1500, 25, "How long to hold the pinch still before it lassos"),
+      r("dragSlop", "Drag threshold (cm)", 1, 8, 0.25, "How far a pinch or trigger moves before it drags instead of picking, and before a held pinch stops counting as still"),
+      t("twoHandRotate", "Turn with both hands", "Off: pinching with both hands only scales and moves the map, never turns it"),
+      t("middlePinch", "Thumb to middle finger", "Right hand: forward · left hand: back"),
+      r("middlePinchGap", "Middle pinch closeness (cm)", 0.8, 4, 0.1, "How close the thumb and middle fingertips come to count. Higher is easier to trigger, and to trigger by accident"),
+      t("wristMenu", "Wrist menu", "Turn your left palm up to show it"),
+      r("wristMenuHold", "Wrist menu hold (ms)", 0, 1000, 20, "How long the palm is held up before the menu shows"),
+      t("framing", "Frame with two Ls", "Both hands in an L, framing part of the map: what's inside lights up"),
+      r("framingHold", "Frame hold (ms)", 100, 1500, 25, "How long the frame is held before it picks"),
+      t("pokePanels", "Fingertip presses panels", "Touch a panel's buttons with your index finger"),
+      t("pokeBodies", "Fingertip picks bodies", "Point and touch a body to pick it"),
+    ],
+  },
+  {
+    id: "controllers",
+    title: "Headset · Controllers",
+    knobs: [
+      t("haptics", "Vibration", "A buzz in the controller for presses, picks and throws"),
+      r("hapticStrength", "Vibration strength", 0.1, 2, 0.05),
+      r("stickDeadzone", "Stick dead zone", 0.05, 0.5, 0.01, "How far a stick goes before it moves anything"),
+    ],
+  },
+  {
+    id: "touch",
+    title: "Touch",
+    where: "flat",
+    knobs: [
+      r("touchHold", "Hold for the ring menu (ms)", 200, 1500, 20, "How long a finger is held still on the map"),
+      t("doubleTap", "Double-tap for the whole map", "Double-tap open sky"),
+      t("spreadOpens", "Spread to open a module", "Spread two fingers on a module's beacon to open it; pinch them to close it"),
+      r("spreadOpenAt", "Spread to open (×)", 1.2, 3, 0.05, "How far apart the fingers end up, against where they started"),
+      r("pinchCloseAt", "Pinch to close (×)", 0.2, 0.9, 0.05, "How close together the fingers end up, against where they started"),
+      t("twist", "Twist to turn", "Turn two fingers like a dial to turn the map"),
+      t("threeFingerSwipes", "Three-finger swipes", "Sideways: back and forward · down: the whole map · up: hide the controls"),
+      r("swipeDistance", "Swipe distance (px)", 30, 250, 5),
+      r("tiltSpeed", "Tilt to look speed", 0.2, 4, 0.05, "How much the view turns as you tilt the tablet"),
+      t("layFlat", "Lay flat to see from above", "Laying the tablet face up on a table shows the map from overhead"),
+    ],
+  },
+  {
+    id: "voice",
+    title: "Voice",
+    where: "both",
+    knobs: [
+      r("voiceVolume", "Voice volume", 0, 3, 0.05, "The voice and story narration"),
+      r("voiceIdleMinutes", "Turn off after (min)", 1, 60, 1, "Minutes without hearing you before the voice turns itself off. It's billed for every second it listens"),
+    ],
+  },
+  {
     id: "sound",
     title: "Headset · Sound",
     knobs: [
-      r("voiceVolume", "Voice volume", 0, 3, 0.05, "The voice and story narration"),
       t("sfx", "Sound effects", "Presses, picks, panels snapping down, bodies thrown away"),
       r("sfxVolume", "Effects volume", 0, 1.5, 0.05),
       t("ambience", "Ambience", "A quiet hum under the map, and now and then a chime from one of its bodies"),

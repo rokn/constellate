@@ -2,6 +2,10 @@ import { useState } from "react";
 import { BUILT_IN, presetOn } from "../../shared/knobs";
 import type { TunePreset } from "../../shared/types";
 import { DEFAULT_TUNING, FORCE_KNOBS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
+import { DEFAULT_XR, XR_SECTIONS, type XRKnob, type XRSettings } from "../lib/xrSettings";
+
+/** The controls that work off the headset too: touch gestures and the voice. */
+const CONTROL_SECTIONS = XR_SECTIONS.filter((s) => s.where === "flat" || s.where === "both");
 
 /**
  * Every knob on the map. Changes apply live; knobs that rebuild the bodies
@@ -12,6 +16,8 @@ import { DEFAULT_TUNING, FORCE_KNOBS, SECTIONS, SHAPE_KNOBS, type Knob, type Tun
 export function TuningPanel({
   tuning,
   onChange,
+  controls,
+  onControls,
   presets,
   onSavePreset,
   onApplyPreset,
@@ -21,6 +27,9 @@ export function TuningPanel({
 }: {
   tuning: Tuning;
   onChange: (t: Tuning) => void;
+  /** The touch gestures and voice settings: kept per browser with the headset's, not with the repo's view. */
+  controls: XRSettings;
+  onControls: (patch: Partial<XRSettings>) => void;
   presets: TunePreset[];
   onSavePreset: (name: string) => void;
   onApplyPreset: (p: TunePreset) => void;
@@ -125,15 +134,48 @@ export function TuningPanel({
             </section>
           );
         })}
+        <h3 className="px-4 pb-1 pt-4 text-[11.5px] uppercase tracking-wider text-muted">Controls · this browser</h3>
+        {CONTROL_SECTIONS.map((sec) => {
+          const id = `ctl:${sec.id}`;
+          const isOpen = !!open[id];
+          const dirty = sec.knobs.some((k) => controls[k.key] !== DEFAULT_XR[k.key]);
+          return (
+            <section key={id} className="border-b border-line/70">
+              <div className="flex items-center px-4">
+                <button onClick={() => setOpen((o) => ({ ...o, [id]: !isOpen }))} aria-expanded={isOpen} className="flex flex-1 items-center gap-2 py-2.5 text-left">
+                  <span className={`text-[11px] text-muted transition-transform ${isOpen ? "rotate-90" : ""}`}>▶</span>
+                  <span className="font-cond text-[16px] font-semibold">{sec.title}</span>
+                  {dirty && <span className="h-1.5 w-1.5 rounded-full bg-course" title="Changed from default" />}
+                </button>
+                {dirty && (
+                  <button
+                    onClick={() => onControls(Object.fromEntries(sec.knobs.map((k) => [k.key, DEFAULT_XR[k.key]])) as Partial<XRSettings>)}
+                    className="rounded px-1.5 text-[12px] text-muted hover:text-text"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              {isOpen && (
+                <div className="space-y-2.5 px-4 pb-3.5">
+                  {sec.knobs.map((k) => (
+                    <KnobRow key={k.key} knob={k} value={controls[k.key] as number | boolean} onChange={(v) => onControls({ [k.key]: v } as Partial<XRSettings>)} />
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })}
       </div>
     </aside>
   );
 }
 
-function KnobRow({ knob, value, onChange }: { knob: Knob; value: number | boolean; onChange: (v: number | boolean) => void }) {
+function KnobRow({ knob, value, onChange }: { knob: Knob | XRKnob; value: number | boolean; onChange: (v: number | boolean) => void }) {
   // Shape knobs rebuild every body and force knobs reheat the layout: preview
   // the number while dragging, apply once on release.
-  const deferred = SHAPE_KNOBS.includes(knob.key) || FORCE_KNOBS.includes(knob.key);
+  const key = knob.key as keyof Tuning;
+  const deferred = SHAPE_KNOBS.includes(key) || FORCE_KNOBS.includes(key);
   const [draft, setDraft] = useState<number | null>(null);
 
   if ("toggle" in knob) {

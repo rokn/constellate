@@ -78,8 +78,13 @@ export class HandGestures {
 
   constructor(readonly side: Side) {}
 
-  /** Read this frame. Returns true on the frame the middle pinch closes. */
-  update(hand: THREE.XRHandSpace, now: number): { middlePinch: boolean } {
+  /**
+   * Read this frame. Returns true on the frame the middle pinch closes.
+   * `middleGap`: how close (m) the thumb and middle tips come for it;
+   * `palmHold`: how long (ms) the palm is up before the wrist menu shows.
+   */
+  update(hand: THREE.XRHandSpace, now: number, o: { middleGap?: number; palmHold?: number } = {}): { middlePinch: boolean } {
+    const gap = o.middleGap ?? 0.018;
     const p = readHand(hand, this.side);
     this.pose = p;
     if (!p) {
@@ -93,8 +98,8 @@ export class HandGestures {
     const mid = p.thumbTip.distanceTo(p.middleTip);
     const was = this.middlePinch;
     // The index stays clear, so a normal pinch never reads as this one.
-    if (!was && mid < 0.018 && pinch > 0.035) this.middlePinch = true;
-    else if (was && mid > 0.035) this.middlePinch = false;
+    if (!was && mid < gap && pinch > Math.max(0.035, gap * 1.6)) this.middlePinch = true;
+    else if (was && mid > Math.max(0.035, gap * 1.6)) this.middlePinch = false;
 
     // Open hand, palm to the ceiling. Held for a moment to come up, and a little longer to go.
     const open = reach(p, p.indexTip) > 0.13 && reach(p, p.middleTip) > 0.13;
@@ -102,7 +107,7 @@ export class HandGestures {
     if (up) {
       this.downSince = 0;
       this.upSince ||= now;
-      if (now - this.upSince > 220) this.palmUp = true;
+      if (now - this.upSince > (o.palmHold ?? 220)) this.palmUp = true;
     } else {
       this.upSince = 0;
       this.downSince ||= now;
