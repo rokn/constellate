@@ -26,6 +26,7 @@ export function describeFilter(f: MapFilter): string {
   if (f.exclude.length) parts.push(`not ${f.exclude.join(", ")}`);
   if (f.hideTests) parts.push("no tests");
   if (f.hideDocs) parts.push("no docs");
+  if (f.crossImports) parts.push("cross-module imports");
   if (f.hidden?.length) parts.push(`${f.hidden.length} hidden`);
   return parts.join(" · ") || "everything";
 }
