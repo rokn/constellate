@@ -8,6 +8,7 @@ import { OutlinePanel, Shelf, TableMenu, WristPanel } from "./table";
 import { HintsPanel, TunePanel } from "./tune";
 import { ViewsPanel } from "./views";
 import { C, Panel, cond, fit, fitPath, mono, roundRect, sans, withAlpha, wrap } from "./ui";
+import { linkKey } from "../../shared/checked";
 
 /**
  * The panels in the room, and which of them are open. They are the
@@ -547,7 +548,20 @@ export class FilePanel extends ScrollPanel {
     if (key !== this.key) {
       this.key = key;
       this.build(m, d);
+    } else if (p && p.checked !== m.checked && d) {
+      // A connection checked: its row's mark changes, and you stay where you were.
+      const at = this.scrollY;
+      this.build(m, d);
+      this.scrollY = at;
+      this.invalidate();
     } else if (!p || p.voice !== m.voice) this.invalidate();
+  }
+  /** Its connections, and how many are checked. */
+  private checks(m: Model, d: NonNullable<Model["fileData"]>) {
+    const path = d.path;
+    const total = d.imports.filter((p) => p !== path).length + d.importers.filter((p) => p !== path).length;
+    const done = d.imports.filter((p) => p !== path && m.checked.has(linkKey(path, p))).length + d.importers.filter((p) => p !== path && m.checked.has(linkKey(p, path))).length;
+    return { done, total };
   }
   private build(m: Model, d: Model["fileData"]) {
     const f = m.file;
@@ -569,15 +583,21 @@ export class FilePanel extends ScrollPanel {
       if (!c) this.blocks = [new RichText("_Loading…_", null, { color: C.muted })];
       return this.invalidate();
     }
-    const row = (p: string, names?: string[], line?: number) => ({
-      id: `go:${p}`,
-      label: p,
-      path: true,
-      detail: names?.length ? `${names.slice(0, 6).join(", ")}${names.length > 6 ? " …" : ""}` : undefined,
-      onClick: () => this.a.openFile(p, line),
-    });
-    const imports = (d.importLinks ?? d.imports.map((p) => ({ path: p, names: [] as string[], line: undefined }))).map((l) => row(l.path, l.names, undefined));
-    const importers = (d.importerLinks ?? d.importers.map((p) => ({ path: p, names: [] as string[], line: undefined }))).map((l) => row(l.path, l.names, l.line));
+    // Each connection can be marked checked (reviewed, safe) from its row's ✓.
+    const row = (p: string, names: string[] | undefined, line: number | undefined, from: string, to: string) => {
+      const on = m.checked.has(linkKey(from, to));
+      return {
+        id: `go:${from}>${to}`,
+        label: p,
+        path: true,
+        color: on ? C.checked : undefined,
+        detail: [on ? "checked" : "", names?.length ? `${names.slice(0, 6).join(", ")}${names.length > 6 ? " …" : ""}` : ""].filter(Boolean).join(" · ") || undefined,
+        onClick: () => this.a.openFile(p, line),
+        extra: from === to ? undefined : { label: on ? "✓" : "○", active: on, accent: C.checked, onClick: () => this.a.checkLink(from, to) },
+      };
+    };
+    const imports = (d.importLinks ?? d.imports.map((p) => ({ path: p, names: [] as string[], line: undefined }))).map((l) => row(l.path, l.names, undefined, d.path, l.path));
+    const importers = (d.importerLinks ?? d.importers.map((p) => ({ path: p, names: [] as string[], line: undefined }))).map((l) => row(l.path, l.names, l.line, l.path, d.path));
     if (imports.length) this.blocks.push(new Heading(`Imports ${imports.length}`, { size: 22, color: C.static }), new Rows(imports.slice(0, 12), 58));
     if (importers.length) this.blocks.push(new Heading(`Imported by ${importers.length}`, { size: 22, color: C.static }), new Rows(importers.slice(0, 12), 58));
     if (d.externals.length) this.blocks.push(new RichText(`Packages: ${d.externals.slice(0, 12).map((e) => `\`${e}\``).join(" ")}`, null, { size: 21, color: C.muted }));
@@ -615,6 +635,13 @@ export class FilePanel extends ScrollPanel {
     x = this.button(ctx, "frame", x, y, "Connections", this.a.frameSelection, { size: 23 }) + 10;
     x = this.button(ctx, "note", x, y, "Note", () => this.a.openKeyboard("note", f.path), { size: 23, accent: C.note }) + 10;
     x = this.button(ctx, "hide", x, y, "Hide", () => this.a.hide(f.path), { size: 23 }) + 10;
+    if (d?.path === f.path) {
+      const { done, total } = this.checks(m, d);
+      if (total) {
+        const all = done === total;
+        x = this.button(ctx, "checkall", x, y, all ? `✓ All ${total} checked` : `Check all · ${done}/${total}`, () => this.a.checkFile(f.path, !all), { size: 23, accent: C.checked, active: all }) + 10;
+      }
+    }
     ctx.fillStyle = C.line;
     ctx.fillRect(PAD, 206, this.W - PAD * 2, 2);
     return 220;

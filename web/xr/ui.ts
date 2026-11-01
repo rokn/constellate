@@ -27,6 +27,8 @@ export const C = {
   good: "#6ee7a8",
   bad: "#ff6b6b",
   note: "#ffd75e",
+  /** Connections marked checked (reviewed, safe). */
+  checked: "#a6e35a",
 };
 
 export const FONT_COND = '"Barlow Condensed", "Barlow", ui-sans-serif, sans-serif';

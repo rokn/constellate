@@ -14,6 +14,7 @@ import { branchDiff, fileAt } from "./branch";
 import { AGENTS_ON } from "./agents";
 import { AGENT_ACTIONS, agentLines, describe, type Action } from "./actions";
 import { TUNE_ACTIONS, tuneNote } from "./tune";
+import { CHECK_ACTIONS } from "./checked";
 import {
   afterRescan,
   addLens,
@@ -824,7 +825,7 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
   }
 
   if (mode === "ask" && actions && frameId) tools.push(...actionTools(AGENT_ACTIONS, frameId, actions));
-  if (mode === "ask" && tune && frameId) tools.push(...actionTools(TUNE_ACTIONS, frameId, tune));
+  if (mode === "ask" && tune && frameId) tools.push(...actionTools(TUNE_ACTIONS, frameId, tune), ...actionTools(CHECK_ACTIONS, frameId, tune));
 
   const offered = mode === "place" ? tools.filter((t) => PLACE_TOOLS.includes(t.name)) : tools;
   return createSdkMcpServer({ name: "flight", version: "1.0.0", tools: offered, alwaysLoad: true });
@@ -1210,7 +1211,7 @@ async function run(opts: {
   const tools = [
     ...(opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview")),
     ...(opts.mode === "ask" && opts.actions ? AGENT_ACTIONS.map((a) => a.name) : []),
-    ...(opts.mode === "ask" && opts.tune ? TUNE_ACTIONS.map((a) => a.name) : []),
+    ...(opts.mode === "ask" && opts.tune ? [...TUNE_ACTIONS, ...CHECK_ACTIONS].map((a) => a.name) : []),
   ];
   let live = "";
   let answer = "";
@@ -1431,7 +1432,7 @@ export async function ask(
 
   try {
     const res = await run({
-      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : "") + (typed ? `\n\n${tuneNote({ screen: opts.screen ?? {} })}\nIf they ask to change a setting (how the map looks or moves, the headset's settings) or to use, save or delete a preset, do it with tune, reset_tune and the preset tools.` : ""),
+      prompt: prompt + screenNote(opts.screen) + (await branchNote(opts.screen?.branch)) + (actions ? agentsNote() : "") + (typed ? `\n\n${tuneNote({ screen: opts.screen ?? {} })}\nIf they ask to change a setting (how the map looks or moves, the headset's settings) or to use, save or delete a preset, do it with tune, reset_tune and the preset tools. To mark connections checked (reviewed, safe) or say what's left to check, use mark_checked and checked_status.` : ""),
       frameId: frame.id,
       mode: "ask",
       effort: ASK_EFFORT,

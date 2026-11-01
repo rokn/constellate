@@ -556,7 +556,8 @@ export class Heading implements Block {
 export class Rows implements Block {
   constructor(
     /** `path`: the label is a file path, cut from the left so the name shows, its folder dimmed. */
-    private rows: { id: string; label: string; detail?: string; color?: string; active?: boolean; path?: boolean; onClick: () => void }[],
+    /** `extra`: one button at the row's end, for a second action on it. */
+    private rows: { id: string; label: string; detail?: string; color?: string; active?: boolean; path?: boolean; onClick: () => void; extra?: { label: string; onClick: () => void; active?: boolean; accent?: string } }[],
     private rowH = 64,
   ) {}
   measure() {
@@ -574,21 +575,26 @@ export class Rows implements Block {
         ctx.fill();
       }
       const tx = x + (r.color ? 30 : 4);
+      const ew = r.extra ? 100 : 0;
       ctx.font = cond(26, 600);
       ctx.fillStyle = C.text;
       const ty = y + (r.detail ? 28 : this.rowH / 2 + 9);
       if (r.path) {
-        const shown = fitPath(ctx, r.label, width - (tx - x) - 8);
+        const shown = fitPath(ctx, r.label, width - (tx - x) - 8 - ew);
         const cut = shown.lastIndexOf("/") + 1;
         ctx.fillStyle = C.muted;
         ctx.fillText(shown.slice(0, cut), tx, ty);
         ctx.fillStyle = C.text;
         ctx.fillText(shown.slice(cut), tx + ctx.measureText(shown.slice(0, cut)).width, ty);
-      } else ctx.fillText(fit(ctx, r.label, width - (tx - x) - 8), tx, ty);
+      } else ctx.fillText(fit(ctx, r.label, width - (tx - x) - 8 - ew), tx, ty);
       if (r.detail) {
         ctx.font = sans(19);
         ctx.fillStyle = C.muted;
-        ctx.fillText(fit(ctx, r.detail, width - (tx - x) - 8), tx, y + 52);
+        ctx.fillText(fit(ctx, r.detail, width - (tx - x) - 8 - ew), tx, y + 52);
+      }
+      if (r.extra) {
+        const h = Math.min(48, this.rowH - 12);
+        panel.button(ctx, `x:${r.id}`, x + width - 90, y + (this.rowH - h) / 2, r.extra.label, r.extra.onClick, { size: 22, w: 90, h, active: r.extra.active, accent: r.extra.accent });
       }
     });
   }

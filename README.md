@@ -158,6 +158,32 @@ Menu → **Recenter panels** brings them back in front of you.
 
 History, branch view and custom views stay on the desktop for now.
 
+## Checked connections
+
+Reviewing a codebase, mark import lines **checked** (reviewed, safe) as you go: one line
+at a time, or every connection of a file at once. Checked lines turn lime and stop
+carrying particles, so what's left to look at stands out. The marks are kept with the
+repo, beside your notes, and follow files that git sees renamed.
+
+- **Desktop:** hover a lit import line and press `c`, or Shift-click it. With a file open,
+  `c` checks all its connections (again to take the marks off); `Shift+C` checks every line
+  lit in the focus. The code panel marks each import and importer with ✓ (click to toggle)
+  and has **Check all**, with how many are done.
+- **Touch:** press and hold a lit import line for its ring (Mark checked, Open import,
+  Note); hold a file for **Check all**. The code panel's ✓ work by tap too.
+- **Headset:** the file panel has a ✓ on every connection's row and **Check all** in its
+  header (a controller's ray or a fingertip); with a focus made by the stick, the bar over
+  the dock has **Check** for every line it lights.
+- **Voice and Ask:** "mark this file's connections as checked", "the import from the
+  server to the session is safe", "uncheck its inbound ones", "what's left to check here?"
+  (`mark_checked`, `checked_status`).
+
+Tune → **Checked connections** turns them off the map (only what's left shows), drops
+the tint, or dims them. Filter → **Hide checked files** takes off files whose every
+connection is checked, in the headset's filter too. `POST /api/checked` with
+`{"action": "check" | "uncheck", "links": [{"from", "to"}]}` or `{"action": "clear"}`
+does the same from outside.
+
 ## Shortcuts
 
 | Key | |
@@ -171,6 +197,7 @@ History, branch view and custom views stay on the desktop for now.
 | `h` | History: the map at each commit, `↑` `↓` to step |
 | `a` | Answers so far |
 | `n` | Note on the open file or hovered import |
+| `c` | Mark the hovered import line checked, else all of the open file's connections; `Shift+C`: every line in the focus |
 | `s` | Stories |
 | `t` | Guided tour of the modules |
 | `i` / `l` | Imports / runtime layer |

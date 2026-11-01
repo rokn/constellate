@@ -49,11 +49,14 @@ export function matcher(pattern: string): (path: string) => boolean {
 export const splitList = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 export function isActive(f: MapFilter): boolean {
-  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length || f.isolate?.length || f.crossImports);
+  return !!(f.include.length || f.exclude.length || f.hideTests || f.hideDocs || f.langs.length || f.tops.length || f.paths || f.hidden?.length || f.isolate?.length || f.crossImports || f.hideChecked);
 }
 
-/** The files a filter keeps, or null when the filter keeps everything. */
-export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null {
+/**
+ * The files a filter keeps, or null when the filter keeps everything.
+ * `checked`: the files whose every connection is checked (see shared/checked), for hideChecked.
+ */
+export function applyFilter(files: FileInfo[], f: MapFilter, checked?: ReadonlySet<string>): Set<string> | null {
   if (!isActive(f)) return null;
   const inc = f.include.map(matcher);
   const exc = f.exclude.map(matcher);
@@ -79,6 +82,7 @@ export function applyFilter(files: FileInfo[], f: MapFilter): Set<string> | null
     if (isOut?.(file.path)) continue;
     if (only && !only.has(file.path)) continue;
     if (hidden.has(file.path)) continue;
+    if (f.hideChecked && checked?.has(file.path)) continue;
     if (langs.size && !langs.has(file.lang)) continue;
     if (tops.size && !tops.has(file.top)) continue;
     if (f.hideTests && isTest(file.path)) continue;
@@ -112,7 +116,7 @@ export function describe(f: MapFilter): string {
   const only = [ins.length ? `only ${ins.map((i) => i.label).join(", ")}` : "", outs.length ? `not ${outs.map((i) => i.label).join(", ")}` : ""]
     .filter(Boolean)
     .join(" · ");
-  if (f.label) return [only, f.label, f.crossImports ? "cross-module imports" : "", f.hidden?.length ? `${f.hidden.length} hidden` : ""].filter(Boolean).join(" · ");
+  if (f.label) return [only, f.label, f.crossImports ? "cross-module imports" : "", f.hideChecked ? "no checked files" : "", f.hidden?.length ? `${f.hidden.length} hidden` : ""].filter(Boolean).join(" · ");
   const bits = [
     only,
     f.include.length ? `only ${f.include.join(", ")}` : "",
@@ -122,6 +126,7 @@ export function describe(f: MapFilter): string {
     f.hideTests ? "no tests" : "",
     f.hideDocs ? "no docs/config" : "",
     f.crossImports ? "cross-module imports" : "",
+    f.hideChecked ? "no checked files" : "",
     f.paths ? `${f.paths.length} chosen files` : "",
     f.hidden?.length ? `${f.hidden.length} hidden` : "",
   ].filter(Boolean);

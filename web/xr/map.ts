@@ -6,6 +6,7 @@ import type { Tuning } from "../lib/tuning";
 import type { FromWorker, LayoutLink, LayoutNode, LayoutParams, ToWorker } from "./layout.worker";
 import LayoutWorker from "./layout.worker?worker";
 import { C, FONT_COND, FONT_MONO, cond, fit, roundRect } from "./ui";
+import { linkKey } from "../../shared/checked";
 
 /**
  * The map, as it is on the desktop (web/components/Space.tsx), drawn for a
@@ -33,6 +34,8 @@ export type MapInput = {
   notes: Note[];
   overlays: Overlay[];
   tuning: Tuning;
+  /** Import lines marked checked (reviewed, safe), by linkKey: drawn apart, or (Tune) left off. */
+  checked?: ReadonlySet<string>;
 };
 export type MapStyle = {
   emphasis: string[];
@@ -48,6 +51,8 @@ export type MapStyle = {
 
 const ADDED = new THREE.Color("#6ee7a8");
 const REMOVED = new THREE.Color("#ff6b6b");
+/** Checked import lines: the desktop's lime. */
+const CHECKED = "#a6e35a";
 const WARM = new THREE.Color("#ffd27a");
 const HOT = new THREE.Color("#ff4a2e");
 /** 0..1 by lines touched, on a log scale: as the desktop sizes and colours churn. */
@@ -237,7 +242,7 @@ export class MapView {
   private importLines: THREE.LineSegments;
   private importShown: number[] = [];
   private tubes: THREE.InstancedMesh;
-  private tubeShown: { l: number; color: THREE.Color; width: number }[] = [];
+  private tubeShown: { l: number; color: THREE.Color; width: number; still?: boolean }[] = [];
   private particles: THREE.InstancedMesh;
   private arcs: THREE.LineSegments;
   private arrows: THREE.InstancedMesh;
@@ -679,14 +684,24 @@ export class MapView {
     this.tubeShown = [];
     const lineColors: number[] = [];
     const rest = mix(NIGHT, STATIC, tu.importBrightness * (emphOn ? 0.35 : 0.9) + 0.15);
+    const checked = this.input?.checked;
+    const cb = Math.max(0.12, tu.checkedBrightness);
     this.links.forEach((l, k) => {
       if (l.type !== "import") return;
+      const done = !!checked?.has(linkKey(this.nodes[l.s].id, this.nodes[l.t].id));
+      // Checked and taken off the map (Tune): only what's left to review shows.
+      if (done && !tu.showChecked) return;
       const lit = this.both(l);
       const bump = this.bumped(l);
-      if (lit || bump) this.tubeShown.push({ l: k, color: new THREE.Color(bump ? BUMP : STATIC), width: tu.importWidth });
-      else if (lay.imports) {
+      if (lit || bump) {
+        const base = bump ? BUMP : STATIC;
+        // Checked lines: their own colour (or their usual one) at the knob's brightness, and no particles.
+        const color = done ? mix(NIGHT, tu.checkedTint ? CHECKED : base, cb) : new THREE.Color(base);
+        this.tubeShown.push({ l: k, color, width: tu.importWidth, still: done });
+      } else if (lay.imports) {
         this.importShown.push(k);
-        lineColors.push(rest.r, rest.g, rest.b, rest.r, rest.g, rest.b);
+        const c = done ? mix(NIGHT, tu.checkedTint ? CHECKED : STATIC, cb * (tu.importBrightness * (emphOn ? 0.35 : 0.9) + 0.15)) : rest;
+        lineColors.push(c.r, c.g, c.b, c.r, c.g, c.b);
       }
     });
     if (this.tubeShown.length > this.tubes.instanceMatrix.count) this.tubeShown.length = this.tubes.instanceMatrix.count;
@@ -964,8 +979,8 @@ export class MapView {
       tmpS.set(0.32 * t.width, len, 0.32 * t.width);
       tmpM.compose(tmpV2.addVectors(A, B).multiplyScalar(0.5), tmpQ, tmpS);
       this.tubes.setMatrixAt(k, tmpM);
-      // Particles run from importer to imported, as on the desktop.
-      const n = Math.min(2, Math.max(1, tu.particles));
+      // Particles run from importer to imported, as on the desktop; a checked line has none.
+      const n = t.still ? 0 : Math.min(2, Math.max(1, tu.particles));
       for (let j = 0; j < n; j++) {
         const f = ((now * 0.012 * tu.particleSpeed * 60) / 1000 / Math.max(0.2, len / 40) + j / n) % 1;
         particle(tmpV2.lerpVectors(A, B, f), 0.7 * tu.particleSize, t.color);

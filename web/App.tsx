@@ -9,6 +9,7 @@ import { RemoteBanner } from "./components/RemoteBanner";
 import { AnswersPanel } from "./components/AnswersPanel";
 import { AgentsPanel } from "./components/AgentsPanel";
 import { EMPTY_FILTER, applyFilter, crossModuleImports, describe, isActive } from "../shared/filter";
+import { checkedKeys, countChecked, fullyChecked, linkKey, linksOf, type LinkDir, type LinkEnds } from "../shared/checked";
 import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
@@ -353,6 +354,8 @@ export function App() {
   const lenses = useMemo(() => state?.lenses ?? [], [state?.lenses]);
   const overlays = useMemo(() => state?.overlays ?? [], [state?.overlays]);
   const notes = useMemo(() => state?.notes ?? [], [state?.notes]);
+  /** Import lines you've marked checked (reviewed, safe), by linkKey. */
+  const checked = useMemo(() => checkedKeys(state?.checked), [state?.checked]);
   /** Hide, show or delete every marker one answer made; a delete can be undone. */
   const markersOf = useCallback(
     (frameId: string, action: "hide" | "show" | "delete") => {
@@ -512,12 +515,14 @@ export function App() {
    */
   const [changedOnly, setChangedOnly] = useState(false);
   const changeHeat = branchMap ? branchHeat : range ? heat : null;
+  /** Files whose every connection is checked: what "Hide checked files" takes off. */
+  const doneFiles = useMemo(() => (mapGraph && filter.hideChecked ? fullyChecked(mapGraph.imports, checked) : undefined), [mapGraph, checked, filter.hideChecked]);
   const visible = useMemo(() => {
     if (!mapGraph) return null;
-    const kept = applyFilter(mapGraph.files, filter);
+    const kept = applyFilter(mapGraph.files, filter, doneFiles);
     if (!changedOnly || !changeHeat?.size) return kept;
     return new Set(mapGraph.files.map((f) => f.path).filter((p) => changeHeat.has(p) && (!kept || kept.has(p))));
-  }, [mapGraph, filter, changedOnly, changeHeat]);
+  }, [mapGraph, filter, changedOnly, changeHeat, doneFiles]);
 
   const grouping: Grouping | null = useMemo(() => {
     if (lensId === "modules" && overview) return { key: "modules", groups: overview.modules, edges: overview.edges };
@@ -545,7 +550,7 @@ export function App() {
   // The legend counts without the isolation, so what you haven't isolated
   // stays listed for adding. It's the map on screen: a branch's or a moment
   // in history's files, when one is shown.
-  const unisolated = useMemo(() => (mapGraph ? applyFilter(mapGraph.files, { ...filter, isolate: undefined }) : null), [mapGraph, filter]);
+  const unisolated = useMemo(() => (mapGraph ? applyFilter(mapGraph.files, { ...filter, isolate: undefined }, doneFiles) : null), [mapGraph, filter, doneFiles]);
   const legend = useMemo(() => {
     if (!mapGraph) return null;
     if (!grouping) {
@@ -785,6 +790,63 @@ export function App() {
       });
     },
     [filter.hidden, file, emphasis],
+  );
+
+  /**
+   * Mark import lines checked (reviewed, safe), or take the mark off, with an
+   * undo. `on` left out toggles: all checked turns them off, else on.
+   */
+  const markChecked = useCallback(
+    (links: LinkEnds[], what: string, on?: boolean) => {
+      if (!links.length) return setToast({ text: `${what} has no connections to check` });
+      const done = countChecked(links, checked);
+      const check = on ?? done < links.length;
+      // Only the ones that change, so the undo puts back exactly what was.
+      const moved = links.filter((l) => checked.has(linkKey(l.from, l.to)) !== check);
+      if (!moved.length) return;
+      void post("/api/checked", { action: check ? "check" : "uncheck", links: moved });
+      const n = links.length === 1 ? "" : ` (${links.length})`;
+      setToast({
+        text: check ? `Checked ${what}${n}` : `Unchecked ${what}${n}`,
+        undo: () => void post("/api/checked", { action: check ? "uncheck" : "check", links: moved }),
+      });
+    },
+    [checked],
+  );
+  /** A file's connections (one way or both), toggled together. */
+  const markFileChecked = useCallback(
+    (path: string, dir: LinkDir = "both", on?: boolean) => {
+      const way = dir === "in" ? "inbound connections of " : dir === "out" ? "outbound connections of " : "connections of ";
+      markChecked(linksOf(graph?.imports ?? [], path, dir), `${way}${path.split("/").pop()}`, on);
+    },
+    [markChecked, graph],
+  );
+  const markLinkChecked = useCallback(
+    (from: string, to: string, on?: boolean) => markChecked([{ from, to }], `${from.split("/").pop()} → ${to.split("/").pop()}`, on),
+    [markChecked],
+  );
+  /**
+   * The connections a focus lights: both ends in it, and with `core` (the
+   * headset's rings), reaching out of the core (out), into it (in) or either.
+   */
+  const linksAmong = useCallback(
+    (paths: string[], core?: string[], dir: LinkDir = "both"): LinkEnds[] => {
+      const inside = new Set(paths);
+      const c = core && new Set(core);
+      const out = new Map<string, LinkEnds>();
+      for (const e of graph?.imports ?? []) {
+        if (e.from === e.to || !inside.has(e.from) || !inside.has(e.to)) continue;
+        if (c && !(dir === "out" ? c.has(e.from) : dir === "in" ? c.has(e.to) : c.has(e.from) || c.has(e.to))) continue;
+        out.set(linkKey(e.from, e.to), { from: e.from, to: e.to });
+      }
+      return [...out.values()];
+    },
+    [graph],
+  );
+  /** Every connection lit in a focus, toggled together. */
+  const markAmongChecked = useCallback(
+    (paths: string[], label: string, on?: boolean, core?: string[], dir?: LinkDir) => markChecked(linksAmong(paths, core, dir), `connections in ${label}`, on),
+    [markChecked, linksAmong],
   );
 
   /** Back to what you had selected — the open file, else the focus, else everything. */
@@ -1464,6 +1526,14 @@ export function App() {
         if (link) setNoteEdit({ target: { kind: "link", ...link } });
         else if (file) setNoteEdit({ target: { kind: "file", path: file.path } });
         else openPanel("notes");
+      } else if (e.key === "c" || e.key === "C") {
+        // Checked: the import line under the pointer, else all of the open
+        // file's connections (Shift: everything lit in the focus).
+        const link = space.current?.hoveredLink();
+        if (link && !e.shiftKey) markLinkChecked(link.from, link.to);
+        else if (e.shiftKey && emphasis.length > 1) markAmongChecked(emphasis, focusLabel ?? "the focus");
+        else if (file) markFileChecked(file.path);
+        else setToast({ text: "Point at an import line, or open a file, to mark it checked" });
       } else if (e.key === " " || e.code === "Space") {
         // Space recenters even if a button has focus — it shouldn't also press it.
         e.preventDefault();
@@ -1501,7 +1571,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
     // openPanel only calls setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, answersOpen, frames, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange, filter]);
+  }, [tour, pointer, frameId, file, emphasis, overview, voiceAvailable, voice, toOverview, back, filterOpen, groupsOpen, storiesOpen, answersOpen, frames, recenter, startVoice, hide, forward, panelFull, playing, range, historyOpen, listed, step, showRange, filter, markLinkChecked, markAmongChecked, markFileChecked, focusLabel]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -1537,8 +1607,8 @@ export function App() {
     [filter],
   );
   const xrMap = useMemo(
-    (): MapInput | null => (drawnGraph ? { graph: drawnGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning } : null),
-    [drawnGraph, overview, grouping, visible, notes, shownOverlays, tuning],
+    (): MapInput | null => (drawnGraph ? { graph: drawnGraph, overview, grouping, visible, notes, overlays: shownOverlays, tuning, checked } : null),
+    [drawnGraph, overview, grouping, visible, notes, shownOverlays, tuning, checked],
   );
   // A branch or a span of history wears its changes in the headset too.
   const xrHeat = branchMap ? branchHeat : range ? heat : null;
@@ -1626,6 +1696,7 @@ export function App() {
       settings: xrSettings,
       tunePresets,
       mapFilter: filter,
+      checked,
       savedFilters,
       langs: xrLangs,
       tops: xrTops,
@@ -1699,6 +1770,13 @@ export function App() {
       closeBranch,
       agentAction: (id, action) => void agentCall({ action, id }, { pr: "Pull request opened.", merge: "Merged.", rebase: "Rebased onto its base.", stop: "Stopped." }[action]),
       addNote: (path, text) => void post("/api/notes", { action: "add", text, target: { kind: "file", path } }),
+      checkLink: (from, to) => markLinkChecked(from, to),
+      checkFile: (path, on) => markFileChecked(path, "both", on),
+      checkAmong: (paths, label, core, dir) => markAmongChecked(paths, label, undefined, core, dir),
+      countAmong: (paths, core, dir) => {
+        const links = linksAmong(paths, core, dir);
+        return { done: countChecked(links, checked), total: links.length };
+      },
       isFile: (p) => onMap.has(p),
       setTuning: (patch) => setTuning((t) => ({ ...t, ...patch })),
       setXR: (patch) => setXRSettings((x) => ({ ...x, ...patch })),
@@ -1873,6 +1951,23 @@ export function App() {
           { label: "Note", run: () => setNoteEdit({ target: { kind: "file", path: hit.path } }) },
           { label: "Hide", run: () => hide([hit.path], name) },
           { label: "Fly here", run: () => space.current?.flyTo(hit.path) },
+          (() => {
+            const links = linksOf(graph?.imports ?? [], hit.path);
+            const all = links.length > 0 && countChecked(links, checked) === links.length;
+            return { label: all ? "Uncheck all" : "Check all", run: () => markFileChecked(hit.path, "both", !all) };
+          })(),
+        ],
+      };
+    }
+    if (hit.kind === "link") {
+      const on = checked.has(linkKey(hit.from, hit.to));
+      return {
+        title: `${hit.from.split("/").pop()} → ${hit.to.split("/").pop()}`,
+        detail: on ? "checked" : "not checked yet",
+        items: [
+          { label: on ? "Uncheck" : "Mark checked", run: () => markLinkChecked(hit.from, hit.to, !on) },
+          { label: "Open import", run: () => openFile(hit.from, graph?.imports.find((e) => e.from === hit.from && e.to === hit.to)?.line) },
+          { label: "Note", run: () => setNoteEdit({ target: { kind: "link", from: hit.from, to: hit.to } }) },
         ],
       };
     }
@@ -1972,6 +2067,8 @@ export function App() {
             openFile(t.from, edge?.line);
           }}
           onNoteOnLink={(from, to) => setNoteEdit({ target: { kind: "link", from, to } })}
+          checked={checked}
+          onCheckLink={(from, to) => markLinkChecked(from, to)}
           onPickModule={pickModule}
           onOpenImport={(from, line) => openFile(from, line)}
           onHideOverlay={(id) => {
@@ -2066,7 +2163,7 @@ export function App() {
           <ul className="mt-2 space-y-1.5 text-[14px] leading-snug text-text/90">
             <li>Two fingers pinch to zoom, drag to pan, or twist to spin the sky. Whatever they start doing, they keep doing.</li>
             <li>Spread two fingers on a module to open it up on its own. Pinch it shut for everything again.</li>
-            <li>Press and hold on a file, a module or open sky for its actions. Slide to one and lift.</li>
+            <li>Press and hold on a file, a module, a lit import line or open sky for its actions. Slide to one and lift. A line's ring marks it checked; a file's checks all of its connections.</li>
             <li>Double-tap open sky to see the whole map, or lay the tablet flat to see it from above.</li>
             <li>Swipe with three fingers: sideways for back and forward, down for the whole map, up to hide the controls.</li>
           </ul>
@@ -2441,6 +2538,9 @@ export function App() {
             onAsk={(r) => askNavigator(r)}
             onHide={() => hide([file.path], file.path.split("/").pop()!)}
             onNote={() => setNoteEdit({ target: { kind: "file", path: file.path } })}
+            checked={checked}
+            onCheckLink={(from, to) => markLinkChecked(from, to)}
+            onCheckAll={(on) => markFileChecked(file.path, "both", on)}
             goEditor={goplsReady}
             onReferences={(name, paths) => {
               // Light who uses it on the map, without moving the camera off the code.

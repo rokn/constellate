@@ -22,6 +22,7 @@ import type {
   View,
 } from "../shared/types";
 import { promisify } from "node:util";
+import { linkKey, type CheckedLink, type LinkEnds } from "../shared/checked";
 import { GO_APPS, goApps, withRuntime } from "../shared/goApps";
 import { movedDirs, renameInFilter, renamer, type Renames } from "../shared/renames";
 import { indexGraph, repoName, scanRepo, type GraphIndex } from "./scan";
@@ -64,6 +65,7 @@ export const session: Session = {
     lenses: [],
     overlays: [],
     notes: [],
+    checked: [],
     frames: [],
     stories: [],
     storySettings: DEFAULT_STORY_SETTINGS,
@@ -228,6 +230,43 @@ export function removeNote(id: string): Note | undefined {
 export function restoreNote(note: Note) {
   session.state.notes = [...session.state.notes.filter((n) => n.id !== note.id), note];
   emit();
+}
+
+/**
+ * Marks import lines checked (reviewed, safe), or takes the mark off. Returns
+ * how many changed. Lines already as asked are left alone, so a mark keeps
+ * the time it was first made.
+ */
+export function setChecked(links: LinkEnds[], on: boolean): number {
+  const keys = new Set(links.map((l) => linkKey(l.from, l.to)));
+  const had = new Set(session.state.checked.map((c) => linkKey(c.from, c.to)));
+  let changed = 0;
+  if (on) {
+    const now = Date.now();
+    const add: CheckedLink[] = [];
+    for (const l of links) {
+      const k = linkKey(l.from, l.to);
+      if (had.has(k)) continue;
+      had.add(k);
+      add.push({ from: l.from, to: l.to, at: now });
+    }
+    changed = add.length;
+    if (changed) session.state.checked = [...session.state.checked, ...add];
+  } else {
+    const kept = session.state.checked.filter((c) => !keys.has(linkKey(c.from, c.to)));
+    changed = session.state.checked.length - kept.length;
+    if (changed) session.state.checked = kept;
+  }
+  if (changed) emit();
+  return changed;
+}
+
+/** Takes every checked mark off. Returns them, so they can be put back. */
+export function clearChecked(): CheckedLink[] {
+  const was = session.state.checked;
+  session.state.checked = [];
+  emit();
+  return was;
 }
 
 export function removeOverlay(id: string) {
@@ -408,6 +447,7 @@ export function resetSession(abs: string, name: string) {
     lenses: [],
     overlays: [],
     notes: [],
+    checked: [],
     frames: [],
     stories: [],
     storySettings: session.state.storySettings,
@@ -454,6 +494,7 @@ export async function openRepo(root: string, opts: { rechart?: boolean } = {}) {
     refreshGoApps(graph);
     session.state.overlays = cached.overlays ?? [];
     session.state.notes = cached.notes ?? [];
+    session.state.checked = cached.checked ?? [];
     session.state.view = cached.view;
     session.state.frames = (cached.frames ?? []).map((f) =>
       f.state === "working" ? { ...f, state: "error", error: "Interrupted by a restart." } : f,
@@ -541,6 +582,7 @@ export function applyRenames(r: Renames) {
     ...n,
     target: n.target.kind === "file" ? { ...n.target, path: to(n.target.path) } : { ...n.target, from: to(n.target.from), to: to(n.target.to) },
   }));
+  s.checked = s.checked.map((c) => ({ ...c, from: to(c.from), to: to(c.to) }));
   s.frames = s.frames.map((f) => ({ ...f, focus: all(f.focus) }));
   if (s.view) {
     s.view = {
@@ -702,6 +744,7 @@ type Cached = {
   lenses?: Lens[];
   overlays?: GroupOverlay[];
   notes?: Note[];
+  checked?: CheckedLink[];
   frames: Frame[];
   stories?: Story[];
   agents?: AgentRun[];
@@ -733,7 +776,7 @@ async function persist() {
   // Nothing to keep until something has been made; and never write while a
   // repo is still being opened, or an empty state would overwrite a saved one.
   if (!s.repo || !session.idx || s.status === "scanning") return;
-  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.frames.length && !s.stories.length && !s.agents.length && !s.view) return;
+  if (!s.overview && !s.lenses.length && !s.overlays.length && !s.notes.length && !s.checked.length && !s.frames.length && !s.stories.length && !s.agents.length && !s.view) return;
   const body: Cached = {
     head: session.chartedHead,
     overview: s.overview,
@@ -741,6 +784,7 @@ async function persist() {
     lenses: s.lenses,
     overlays: s.overlays,
     notes: s.notes,
+    checked: s.checked,
     frames: s.frames,
     stories: s.stories,
     agents: s.agents,
