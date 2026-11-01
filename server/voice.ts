@@ -125,6 +125,16 @@ const NUDGE_AFTER_SPEECH_MS = 1500;
  * the same clock; this is the backstop for a tab that never does.
  */
 const VOICE_IDLE_MS = 10 * 60_000;
+/** What the browser may ask for instead (its setting), within these minutes. */
+const VOICE_IDLE_MIN = 1;
+const VOICE_IDLE_MAX = 60;
+
+/** The idle limit a connection asked for (`?idle=<minutes>`), or the default. */
+function idleMs(req?: IncomingMessage): number {
+  const n = Number(new URL(req?.url ?? "/", "http://x").searchParams.get("idle"));
+  if (!Number.isFinite(n) || n <= 0) return VOICE_IDLE_MS;
+  return Math.min(VOICE_IDLE_MAX, Math.max(VOICE_IDLE_MIN, Math.round(n))) * 60_000;
+}
 /** A browser that stops answering pings (a headset gone to sleep, a dropped network) is cut off. */
 const PING_MS = 30_000;
 
@@ -282,7 +292,8 @@ function sessionUpdate(text: string, v: VoiceSettings) {
 
 /* ------------------------------- bridge ------------------------------- */
 
-function bridge(client: WebSocket) {
+function bridge(client: WebSocket, req?: IncomingMessage) {
+  const idleAfter = idleMs(req);
   const key = process.env.INWORLD_API_KEY?.trim();
   if (!key) {
     client.send(JSON.stringify({ type: "proxy.error", message: "INWORLD_API_KEY is not set — voice is off, everything else works." }));
@@ -317,7 +328,7 @@ function bridge(client: WebSocket) {
       client.close(4000, "idle");
       // Don't wait on the close handshake to stop paying.
       setTimeout(() => client.terminate(), 5000).unref();
-    }, VOICE_IDLE_MS);
+    }, idleAfter);
   };
   stillHere();
   let alive = true;

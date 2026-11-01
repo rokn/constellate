@@ -11,6 +11,7 @@ import { FORCE_KNOBS, SHAPE_KNOBS, type Tuning } from "../lib/tuning";
 import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { Coupling, Heat, MapDelta } from "../lib/history";
 import { buzz, touchFirst } from "../lib/haptics";
+import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
 
 /**
  * The space you fly through.
@@ -228,6 +229,7 @@ export function Space({
   insetBottom = 0,
   couplings,
   tuning,
+  gestures = DEFAULT_XR,
   layers,
   emphasis,
   active,
@@ -269,6 +271,8 @@ export function Space({
   /** Files that change together, drawn as threads that don't pull on the layout. */
   couplings: Coupling[];
   tuning: Tuning;
+  /** Which touch gestures are on, and how they read (kept with the headset's controls). */
+  gestures?: XRSettings;
   layers: Record<Layer, boolean>;
   /** Files to keep lit; everything else dims. Empty means nothing dims. */
   emphasis: string[];
@@ -334,6 +338,10 @@ export function Space({
   });
   /** The current knob values, read at the moment of use. */
   const tu = () => state.current.tuning;
+  const gestureRef = useRef(gestures);
+  gestureRef.current = gestures;
+  /** The touch gestures' settings, read at the moment of use. */
+  const ge = () => gestureRef.current;
   const bloomRef = useRef<UnrealBloomPass | null>(null);
   const starMat = useRef<THREE.PointsMaterial | null>(null);
   const overlayObjs = useRef(
@@ -990,13 +998,9 @@ export function Space({
     let three: { x: number; y: number; dx: number; dy: number } | null = null;
     let hold: { id: number; x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null = null;
     let lastTap: { x: number; y: number; at: number } | null = null;
-    const HOLD_MS = 480;
     const TOUCH_SLOP = 10;
     /** How far two fingers move before it's decided what they're doing. */
     const LOCK_PX = 14;
-    /** Spread this much on a beacon opens the module; pinched to this, it closes. */
-    const OPEN_AT = 1.7;
-    const CLOSE_AT = 0.6;
 
     /** The body or beacon nearest a point on screen, within a fingertip. */
     const touchHit = (x: number, y: number): TouchHit => {
@@ -1086,7 +1090,7 @@ export function Space({
             hold.fired = true;
             // A held body shouldn't keep orbiting under the menu.
             handlers.current.onHold?.(touchHit(hold.x, hold.y), hold.x, hold.y, id);
-          }, HOLD_MS),
+          }, ge().touchHold),
         };
       } else {
         takeCamera();
@@ -1112,7 +1116,8 @@ export function Space({
           const spread = Math.abs(now.d - two.from.d);
           const slide = Math.hypot(now.mx - two.from.mx, now.my - two.from.my);
           // As far as the fingertips travel round, a little discounted: a twist is the rarest of the three.
-          const twist = Math.abs(turnOf(now.a, two.from.a)) * (now.d / 2) * 0.7;
+          // Twisting switched off: never a twist.
+          const twist = ge().twist ? Math.abs(turnOf(now.a, two.from.a)) * (now.d / 2) * 0.7 : 0;
           const most = Math.max(spread, slide, twist);
           // Not decided yet; the first step taken counts from where they began.
           if (most < LOCK_PX) return;
@@ -1121,9 +1126,9 @@ export function Space({
         }
         // A slide that turns into a plain pinch was meant as one.
         if (two.mode === "pan" && (now.d / two.lockD > 1.5 || now.d / two.lockD < 0.67)) two.mode = "pinch";
-        if (two.mode === "pinch" && two.module) {
+        if (two.mode === "pinch" && two.module && ge().spreadOpens) {
           const k = now.d / two.from.d;
-          const way = k >= OPEN_AT ? "open" : k <= CLOSE_AT ? "close" : null;
+          const way = k >= ge().spreadOpenAt ? "open" : k <= ge().pinchCloseAt ? "close" : null;
           if (way) {
             const id = two.module;
             two.module = undefined;
@@ -1171,7 +1176,7 @@ export function Space({
         cancelHold();
         // A double tap on empty sky frames the whole map.
         const now = performance.now();
-        if (lastTap && now - lastTap.at < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+        if (ge().doubleTap && lastTap && now - lastTap.at < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
           lastTap = null;
           if (touchHit(e.clientX, e.clientY).kind === "empty") handlers.current.onGesture?.("overview");
         } else lastTap = { x: e.clientX, y: e.clientY, at: now };
@@ -1180,7 +1185,7 @@ export function Space({
         const { dx, dy } = three;
         three = null;
         // A three-finger swipe: sideways steps through where you've been; down pulls back, up hides the controls.
-        if (Math.max(Math.abs(dx), Math.abs(dy)) > 70) {
+        if (ge().threeFingerSwipes && Math.max(Math.abs(dx), Math.abs(dy)) > ge().swipeDistance) {
           beaconClickAt.current = performance.now();
           if (Math.abs(dx) > Math.abs(dy)) handlers.current.onGesture?.(dx > 0 ? "back" : "forward");
           else handlers.current.onGesture?.(dy > 0 ? "overview" : "ui");
@@ -1216,7 +1221,7 @@ export function Space({
       const turn = window.screen.orientation?.angle ?? 0;
       const [yaw, pitch] = turn === 90 ? [db, -dg] : turn === 270 || turn === -90 ? [-db, dg] : [dg, db];
       const camera = g.camera();
-      const k = THREE.MathUtils.degToRad(1.6);
+      const k = THREE.MathUtils.degToRad(1.6 * ge().tiltSpeed);
       const off = camera.position.clone().sub(controls.target);
       off.applyAxisAngle(camera0Up, -yaw * k);
       const right = new THREE.Vector3().crossVectors(camera0Up, off).normalize();
@@ -1251,7 +1256,7 @@ export function Space({
         flatSince = 0;
         return;
       }
-      if (tipped > 8 || !flatArmed || fingers.size) {
+      if (tipped > 8 || !flatArmed || fingers.size || !ge().layFlat) {
         flatSince = 0;
         return;
       }

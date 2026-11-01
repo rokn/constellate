@@ -1273,7 +1273,7 @@ export function App() {
     }
   }, [state?.activity]);
 
-  const voice = useVoice({ screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume });
+  const voice = useVoice({ screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume, idleMinutes: xrSettings.voiceIdleMinutes });
 
   // Talking over a story pauses it, so you and the voice can hear each other.
   useEffect(() => {
@@ -1943,6 +1943,7 @@ export function App() {
           insetBottom={historyOpen ? (Math.min(380, window.innerHeight * 0.46) + 90) / window.innerHeight : branchMap && !story ? 260 / window.innerHeight : 0}
           couplings={couplings}
           tuning={tuning}
+          gestures={xrSettings}
           visible={deskVisible.current}
           layers={layers}
           emphasis={emphasis}
@@ -2562,6 +2563,8 @@ export function App() {
           <TuningPanel
             tuning={tuning}
             onChange={setTuning}
+            controls={xrSettings}
+            onControls={(patch) => setXRSettings((x) => ({ ...x, ...patch }))}
             presets={tunePresets}
             onSavePreset={(name) => saveTunePreset(name, false)}
             onApplyPreset={applyTunePreset}

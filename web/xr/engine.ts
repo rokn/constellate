@@ -84,8 +84,6 @@ type Custom = { id: string; plane: Plane | null; poly: [number, number][]; top: 
 /** How near a surface (m) a carried panel has to be let go for it to snap onto it. */
 const SNAP_REACH = 0.14;
 
-/** How long a pinch on open sky is held still before it draws a lasso instead of moving the map. */
-const LASSO_HOLD = 450;
 /** Where the headset's anchor for the table is kept between sessions. */
 const ANCHOR_KEY = "constellate.xr.anchor";
 
@@ -1236,7 +1234,7 @@ export class Engine {
       // One hand: drag the map through the room.
       const now = this.grabPoint(this.grabs[0].p);
       this.world.position.copy(s0.pos).add(now.sub(s0.a));
-      for (const g of this.grabs) if (g.p.press?.kind === "grab" && g.at0.distanceTo(this.grabPoint(g.p)) > 0.03) g.p.press.moved = true;
+      for (const g of this.grabs) if (g.p.press?.kind === "grab" && g.at0.distanceTo(this.grabPoint(g.p)) > (this.settings.dragSlop / 100) * 0.85) g.p.press.moved = true;
       return;
     }
     // Two hands: stretch to scale, turn to rotate (any way: round, over, or
@@ -1256,7 +1254,8 @@ export class Engine {
       if (u0.lengthSq() < 1e-4 || u1.lengthSq() < 1e-4) continue;
       roll += Math.atan2(new THREE.Vector3().crossVectors(u0, u1).dot(axis), u0.dot(u1)) / 2;
     }
-    const q = new THREE.Quaternion().setFromAxisAngle(axis, roll).multiply(swing);
+    // Or (a setting) only scaled, never turned.
+    const q = this.settings.twoHandRotate ? new THREE.Quaternion().setFromAxisAngle(axis, roll).multiply(swing) : new THREE.Quaternion();
     const mid0 = s0.a.clone().add(s0.b).multiplyScalar(0.5);
     const mid1 = a.clone().add(b).multiplyScalar(0.5);
     this.world.scale.setScalar(s0.scale * k);
@@ -1280,6 +1279,8 @@ export class Engine {
   }
 
   private haptic(p: Pointer, intensity: number, ms: number) {
+    if (!this.settings.haptics) return;
+    intensity = Math.min(1, intensity * this.settings.hapticStrength);
     const act = p.source?.gamepad?.hapticActuators?.[0] as unknown as { pulse?: (v: number, d: number) => void } | undefined;
     try {
       act?.pulse?.(intensity, ms);
@@ -1893,8 +1894,9 @@ export class Engine {
   private readHands(now: number) {
     const hands = [...this.pointers.values()].filter((p) => p.kind === "hand" && p.hand && p.gest);
     for (const p of hands) {
-      const { middlePinch } = p.gest!.update(p.hand!, now);
-      if (middlePinch && !p.press) {
+      const s = this.settings;
+      const { middlePinch } = p.gest!.update(p.hand!, now, { middleGap: s.middlePinchGap / 100, palmHold: s.wristMenuHold });
+      if (middlePinch && s.middlePinch && !p.press) {
         sfx.play("back");
         this.h.onButton(p.handedness === "left" ? "back" : "forward");
       }
@@ -1907,10 +1909,11 @@ export class Engine {
   /** The index fingertip as a finger on a touchscreen: on a panel it presses; pointed at a body, a touch picks it. */
   private poke(p: Pointer) {
     const pose = p.gest?.pose;
-    if (!pose || p.press || p.carry) return this.endPoke(p);
+    if (!pose || p.press || p.carry || (!this.settings.pokePanels && !this.settings.pokeBodies)) return this.endPoke(p);
     const tip = pose.indexTip;
     let touched: { panel: Panel; x: number; y: number } | null = null;
     for (const panel of this.panels) {
+      if (!this.settings.pokePanels) break;
       if (!panel.open || (panel === this.wrist && p.handedness === "left")) continue;
       panel.mesh.updateMatrixWorld();
       const local = panel.mesh.worldToLocal(tip.clone());
@@ -1937,7 +1940,7 @@ export class Engine {
     p.poke = null;
 
     // A body: only with a pointing finger (the others folded), so a hand passing through the map picks nothing.
-    const pointing = pose.middleTip.distanceTo(pose.wrist) < 0.11 && pose.indexTip.distanceTo(pose.wrist) > 0.13;
+    const pointing = this.settings.pokeBodies && pose.middleTip.distanceTo(pose.wrist) < 0.11 && pose.indexTip.distanceTo(pose.wrist) > 0.13;
     if (!pointing) return void (p.pokeBody = null);
     const k = 1 / this.map.root.getWorldScale(tmpV).x;
     const near = this.map.nearest(this.map.root.worldToLocal(tip.clone()), 0.025 * k);
@@ -1959,7 +1962,7 @@ export class Engine {
   private updateWrist(hands: Pointer[]) {
     const w = this.wrist;
     if (!w) return;
-    const left = hands.find((p) => p.handedness === "left" && p.gest?.palmUp && p.gest.pose);
+    const left = this.settings.wristMenu ? hands.find((p) => p.handedness === "left" && p.gest?.palmUp && p.gest.pose) : undefined;
     if (!left) {
       if (w.open) this.hide(w);
       return;
@@ -1980,8 +1983,9 @@ export class Engine {
   private updateFraming(hands: Pointer[], now: number) {
     const l = hands.find((p) => p.handedness === "left");
     const r = hands.find((p) => p.handedness === "right");
-    const a = l?.gest?.ell && !l.press ? l.gest.ellPoints() : null;
-    const b = r?.gest?.ell && !r.press ? r.gest.ellPoints() : null;
+    const on = this.settings.framing;
+    const a = on && l?.gest?.ell && !l.press ? l.gest.ellPoints() : null;
+    const b = on && r?.gest?.ell && !r.press ? r.gest.ellPoints() : null;
     if (!a || !b || a.corner.distanceTo(b.corner) < 0.12) {
       if (this.framing.since && ![...this.pointers.values()].some((p) => p.press?.kind === "lasso")) this.lasso.visible = false;
       this.framing = { since: 0, fired: false };
@@ -1991,7 +1995,7 @@ export class Engine {
     if (this.framing.fired) return;
     const rect = this.frameRect(a, b);
     this.drawLine(rect, true);
-    if (now - this.framing.since < 350) return;
+    if (now - this.framing.since < this.settings.framingHold) return;
     this.framing.fired = true;
     this.lasso.visible = false;
     const paths = this.within(rect);
@@ -2307,7 +2311,7 @@ export class Engine {
   private updatePress(p: Pointer) {
     const press = p.press;
     // A pinch held still on open sky, the only hand on the map: it becomes a lasso.
-    if (press?.kind === "grab" && press.t0 && !press.moved && performance.now() - press.t0 > LASSO_HOLD && this.grabs.length === 1 && this.grabs[0].p === p) {
+    if (press?.kind === "grab" && press.t0 && !press.moved && this.settings.lasso && performance.now() - press.t0 > this.settings.lassoHold && this.grabs.length === 1 && this.grabs[0].p === p) {
       const s0 = this.grabStart;
       this.endGrab(p);
       // The hand's tremble while holding still moved the map a little: put it back.
@@ -2324,7 +2328,7 @@ export class Engine {
       return;
     }
     if (press?.kind === "map") {
-      const moved = p.kind === "mouse" ? this.mouse.moved : press.from.distanceTo(p.origin.clone().add(p.dir)) > 0.035;
+      const moved = p.kind === "mouse" ? this.mouse.moved : press.from.distanceTo(p.origin.clone().add(p.dir)) > this.settings.dragSlop / 100;
       if (!moved) return;
       const id = this.map.tuning?.dragBodies ? this.map.bodyOf(press.hit) : null;
       const at = id ? this.map.positionOf(id) : null;
@@ -2459,8 +2463,8 @@ export class Engine {
 
       const ax = gp.axes[2] ?? 0;
       const ay = gp.axes[3] ?? 0;
-      const dead = 0.18;
       const s = this.settings;
+      const dead = s.stickDeadzone;
       // Carrying a panel, this hand's stick pushes it away or brings it closer.
       if (p.carry && Math.abs(ay) > dead) {
         const z = p.carry.offset.elements[14];

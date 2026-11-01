@@ -1,6 +1,9 @@
 import { BUILT_IN, presetOn } from "../../shared/knobs";
 import { DEFAULT_TUNING, FORCE_KNOBS, SECTIONS, SHAPE_KNOBS, type Knob, type Tuning } from "../lib/tuning";
 import { DEFAULT_XR, XR_SECTIONS, type XRKnob, type XRSettings } from "../lib/xrSettings";
+
+/** The headset tab leaves out the touchscreen's gestures. */
+const HEADSET_SECTIONS = XR_SECTIONS.filter((s) => s.where !== "flat");
 import type { Actions, Model } from "./model";
 import { C, Panel, cond, fit, mono, sans, wrap } from "./ui";
 
@@ -114,7 +117,7 @@ export class TunePanel extends Panel {
     const bottom = this.H - 92;
 
     // Body: the sections, scrolled.
-    const sections = this.tab === "map" ? SECTIONS : XR_SECTIONS;
+    const sections = this.tab === "map" ? SECTIONS : HEADSET_SECTIONS;
     let total = 0;
     for (const sec of sections) {
       total += ROW_SECTION;

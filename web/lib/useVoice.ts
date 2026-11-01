@@ -8,8 +8,12 @@ import type { ScreenContext, UiCommand } from "../../shared/types";
  * it what is on screen.
  */
 
-/** Ten minutes without them saying anything turns the voice off: the speech-to-text is billed for every second streamed. */
-const IDLE_MS = 10 * 60_000;
+/**
+ * Minutes without them saying anything before the voice turns off (a
+ * setting, ten by default): the speech-to-text is billed for every second
+ * streamed. The server keeps the same clock, kept to an hour at most.
+ */
+const DEFAULT_IDLE_MIN = 10;
 
 export type VoiceState = "idle" | "connecting" | "listening" | "speaking" | "error";
 export type Turn = { role: "user" | "voice"; text: string };
@@ -31,7 +35,19 @@ function fromBase64(b64: string): Float32Array {
   return out;
 }
 
-export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenContext; onCommand: (cmd: UiCommand) => void; volume?: number }) {
+export function useVoice({
+  screen,
+  onCommand,
+  volume = 1,
+  idleMinutes = DEFAULT_IDLE_MIN,
+}: {
+  screen: ScreenContext;
+  onCommand: (cmd: UiCommand) => void;
+  volume?: number;
+  idleMinutes?: number;
+}) {
+  const idleMin = useRef(idleMinutes);
+  idleMin.current = Math.min(60, Math.max(1, Math.round(idleMinutes || DEFAULT_IDLE_MIN)));
   const [state, setState] = useState<VoiceState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
@@ -93,10 +109,11 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
   stopRef.current = stop;
   const stillHere = useCallback(() => {
     clearTimeout(idleTimer.current);
+    const min = idleMin.current;
     idleTimer.current = setTimeout(() => {
       stopRef.current();
-      setError("Voice turned off after 10 minutes of silence.");
-    }, IDLE_MS);
+      setError(`Voice turned off after ${min} minute${min === 1 ? "" : "s"} of silence.`);
+    }, min * 60_000);
   }, []);
 
   const start = useCallback(async () => {
@@ -122,7 +139,7 @@ export function useVoice({ screen, onCommand, volume = 1 }: { screen: ScreenCont
       };
       playback.current = play;
 
-      const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice`);
+      const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice?idle=${idleMin.current}`);
       ws.current = socket;
       socket.onopen = () => socket.send(JSON.stringify({ type: "proxy.screen", screen: screenRef.current }));
       let failed = false;
