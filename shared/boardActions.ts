@@ -67,6 +67,7 @@ export const BOARD_ACTIONS: BoardAction[] = [
   a("photo-import", "Photo → board", "camera", "build", "Photograph a whiteboard; it becomes a board"),
   a("repo-board", "Repo → board", "code", "build", "The open repo's architecture, on the board"),
   a("review", "Design review", "check", "build", "Flag the design's real issues"),
+  a("export", "Export design doc", "copy", "build", "The board as a Markdown design doc (downloads on the desktop)"),
 ];
 
 export const ACTION_IDS = BOARD_ACTIONS.map((x) => x.id);

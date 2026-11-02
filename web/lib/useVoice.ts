@@ -43,6 +43,7 @@ export function useVoice({
   idleMinutes = DEFAULT_IDLE_MIN,
   path = "/api/voice",
   settings,
+  onDictated,
 }: {
   /** What's on screen: the code map's, or the workshop's (with path /api/board/voice). */
   screen: ScreenContext | BoardScreen;
@@ -52,6 +53,8 @@ export function useVoice({
   path?: string;
   /** Voice settings for the server's session (speed, eagerness, …): sent on connect and when they change. */
   settings?: Record<string, unknown>;
+  /** Words taken down as said (dictation), from the server. */
+  onDictated?: (text: string) => void;
 }) {
   const idleMin = useRef(idleMinutes);
   idleMin.current = Math.min(60, Math.max(1, Math.round(idleMinutes || DEFAULT_IDLE_MIN)));
@@ -74,6 +77,8 @@ export function useVoice({
   const partial = useRef({ user: "", voice: "" });
   const onCommandRef = useRef(onCommand);
   onCommandRef.current = onCommand;
+  const onDictatedRef = useRef(onDictated);
+  onDictatedRef.current = onDictated;
   const screenRef = useRef(screen);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -196,6 +201,9 @@ export function useVoice({
           case "proxy.command":
             onCommandRef.current(msg.cmd as UiCommand);
             return;
+          case "proxy.dictated":
+            onDictatedRef.current?.(String(msg.text ?? ""));
+            return;
           case "input_audio_buffer.speech_started":
             // Barge-in: drop what is queued for playback and cancel the response.
             playback.current?.port.postMessage({ type: "flush" });
@@ -259,5 +267,5 @@ export function useVoice({
 
   useEffect(() => stop, [stop]);
 
-  return { state, error, caption, heard, turns, start, stop };
+  return { state, error, caption, heard, turns, start, stop, send };
 }

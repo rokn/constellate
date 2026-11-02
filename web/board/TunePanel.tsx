@@ -3,6 +3,56 @@ import { BOARD_SECTIONS, BUILT_IN_PRESETS, DEFAULT_BOARD_TUNE, changedTune, type
 import { ACTION_IDS, actionById } from "../../shared/boardActions";
 import { T, applyPreset, onTune, resetTune, setTune } from "./tune";
 
+type Macro = { phrase: string; steps: string[] };
+
+/** Voice macros: the phrases the voice was taught, and what each runs. Teach one by voice, or here. */
+function Macros() {
+  const [list, setList] = useState<Macro[]>([]);
+  const [phrase, setPhrase] = useState("");
+  const [steps, setSteps] = useState("");
+  useEffect(() => {
+    void fetch("/api/board/macros")
+      .then((r) => r.json())
+      .then(setList)
+      .catch(() => {});
+  }, []);
+  const save = (next: Macro[]) => {
+    setList(next);
+    void fetch("/api/board/macros", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ macros: next }) });
+  };
+  return (
+    <div className="mb-2 rounded border border-cyan-300/10 p-2 text-[12px]">
+      <div className="ws-title mb-1">Macros</div>
+      {list.map((m) => (
+        <div key={m.phrase} className="group mb-1 flex items-start justify-between gap-2">
+          <div>
+            <span className="text-[#ffd08a]">“{m.phrase}”</span> <span className="text-[#7fa6bd]">{m.steps.join(" → ")}</span>
+          </div>
+          <button className="hidden text-red-300 group-hover:inline" onClick={() => save(list.filter((x) => x !== m))}>
+            ✕
+          </button>
+        </div>
+      ))}
+      {!list.length && <div className="mb-1 text-[#7fa6bd]">Say “when I say ship it, run a review, save a version and export”.</div>}
+      <div className="mt-1 flex flex-col gap-1">
+        <input className="ws-input py-0.5 text-xs" placeholder="Phrase: ship it" value={phrase} onChange={(e) => setPhrase(e.target.value)} />
+        <input className="ws-input py-0.5 text-xs" placeholder="Steps, comma-separated: review, save-version, export" value={steps} onChange={(e) => setSteps(e.target.value)} />
+        <button
+          className="ws-btn !py-0.5 text-xs"
+          disabled={!phrase.trim() || !steps.trim()}
+          onClick={() => {
+            save([...list.filter((m) => m.phrase !== phrase.trim().toLowerCase()), { phrase: phrase.trim().toLowerCase(), steps: steps.split(",").map((x) => x.trim()).filter(Boolean) }]);
+            setPhrase("");
+            setSteps("");
+          }}
+        >
+          + Add macro
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Every knob in the workshop, on the desktop. Changes apply live and are kept
  * in this browser; presets (the built-in looks, and yours, kept on the
@@ -88,6 +138,7 @@ export function TunePanel({ presets, onPresets, onClose }: { presets: BoardPrese
               </span>
               <span className="text-xs text-[#4f7286]">{open[s.id] ? "−" : "+"}</span>
             </button>
+            {open[s.id] && s.id === "voice" && <Macros />}
             {open[s.id] && (
               <div className="space-y-2 pb-2">
                 {s.knobs.map((k) => {

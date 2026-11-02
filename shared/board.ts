@@ -587,7 +587,11 @@ export type BoardCommand =
   | { cmd: "play"; kind: "flow" | "tour"; title?: string; steps: Step[] }
   | { cmd: "stopPlay" }
   /** What's shown: kinds (or "notes", "ink", …) hidden, and items isolated (everything else dimmed). */
-  | { cmd: "layers"; hide?: string[]; isolate?: string[] | null };
+  | { cmd: "layers"; hide?: string[]; isolate?: string[] | null }
+  /** Run an action on their screens (shared/boardActions.ts): a mode, a panel, a snapshot. */
+  | { cmd: "action"; id: string }
+  /** Take their next words as an item's name or text. */
+  | { cmd: "dictate"; id?: string };
 
 /** One beat of a flow or a tour: what lights up (items, or a hop from one to another) and what's said. */
 export type Step = { ids?: string[]; from?: string; to?: string; say?: string };

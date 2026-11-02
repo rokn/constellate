@@ -30,7 +30,8 @@ import { GesturesXR } from "./gestures";
 import { ShelfXR } from "./shelf";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
-import { fromClip, toClip } from "../../shared/exchange";
+import { fromClip, toClip, toMarkdown } from "../../shared/exchange";
+import { cameraPhoto, pictureOf, sketchPicture, type Picture } from "./imports";
 import { Breadcrumbs, ExchangeDialog, FindPalette, HistoryPanel, LayersPopover, LibraryList, LinkInspector, PlayerBar, PreviewBar, TemplateList } from "./panels";
 import type { Layers } from "./fx";
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
@@ -152,6 +153,12 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const [playCaption, setPlayCaption] = useState<{ text: string; title?: string; step: number; of: number } | null>(null);
   const [palTab, setPalTab] = useState<"blocks" | "holo" | "plans">("blocks");
   const [tiersOn, setTiersOn] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; at: number } | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const selRef = useRef(selected);
   selRef.current = selected;
@@ -173,6 +180,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const voice = useVoice({
     screen,
     onCommand: () => {},
+    onDictated: (text) => dictatedRef.current(text),
     path: "/api/board/voice",
     volume: num("voiceVolume") * (mode === "flat" ? 1 : 1.6),
     idleMinutes: num("idleMinutes"),
@@ -182,14 +190,14 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   voiceRef.current = voice;
 
   const sendAsk = useCallback(
-    (text: string) => {
+    (text: string, images?: Picture[]) => {
       const t = text.trim();
       if (!t) return;
       const s = sceneRef.current;
       void fetch("/api/board/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: boardId, request: t, screen: { ...screen, focus: s?.focusPoint() ?? focus } }),
+        body: JSON.stringify({ id: boardId, request: t, screen: { ...screen, focus: s?.focusPoint() ?? focus }, images }),
       });
     },
     [boardId, screen, focus],
@@ -206,6 +214,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   /** Actions the later parts of the page add (sketches, photos, snapshots, …). */
   const extraActionsRef = useRef<(a: string, from?: string) => void>(() => {});
   const dictateRef = useRef<(id: string | null) => void>(() => {});
+  const dictatedRef = useRef<(text: string) => void>(() => {});
   /** Commands the page itself handles beyond the scene's (actions, dictation, sketches…). */
   const commandRef = useRef<(c: BoardCommand) => void>(() => {});
   const openRef = useRef(open);
@@ -563,9 +572,89 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     sceneRef.current?.flyView(new THREE.Vector3(...sn.head), new THREE.Vector3(...sn.look));
     if (sn.selected?.length) setSelected(sn.selected);
   };
+  /** Tell them something: by the hand in the headset, on the status line at the desk. */
+  const notify = (text: string) => {
+    if (sceneRef.current?.mode !== "flat") xrRef.current?.say(text);
+    else setNotice({ text, at: Date.now() });
+  };
+  const structureSketch = () => {
+    const b = client.board;
+    if (!b) return;
+    const inkSel = selRef.current.filter((id) => b.items.find((i) => i.id === id)?.kind === "ink");
+    const sk = sketchPicture(b, inkSel.length ? inkSel : undefined);
+    if (!sk) return notify("No ink to read: draw a sketch first");
+    notify("Reading your sketch");
+    sendAsk(`Turn my sketch into the real thing: blocks for the boxes (kind from what's written in them), links for the arrows, notes for loose words, frames for grouped areas — each where its strokes are. Then remove the ink you replaced. ${sk.note}`, [sk.picture]);
+  };
+  const photoToBoard = async (pic?: Picture) => {
+    try {
+      const p =
+        pic ??
+        (await cameraPhoto((n) => notify(n ? `Photo in ${n}…` : "Got it")).catch((e) => {
+          throw new Error(e instanceof DOMException && e.name === "NotAllowedError" ? "Camera access was refused" : "No camera here");
+        }));
+      notify("Reading the picture");
+      sendAsk("This is a photo of a whiteboard (or a sketch, or a diagram). Build it on the board for real: read every box, label and arrow; blocks for components, links for arrows with their labels, notes for loose text, frames for groups, laid out as in the picture, near where I'm looking.", [p]);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const repoToBoard = () => {
+    notify("Reading the repo");
+    sendAsk("Read the repo open in Constellate (use the repo tool) and build its real architecture on this board: its services, apps, datastores, queues and external APIs as blocks; links named for what flows, with their protocols; frames for deployment boundaries. Lay it out with flow.");
+  };
+  const exportDoc = () => {
+    const b = client.board;
+    if (!b) return;
+    if (sceneRef.current?.mode !== "flat") return notify("Export from the desktop");
+    const blob = new Blob([toMarkdown(b)], { type: "text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${b.name.replace(/[^\w.-]+/g, "-")}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
   extraActionsRef.current = (a) => {
     if (a === "snapshot") keepView();
     else if (a === "snapshots") setViewsOpen((o) => !o);
+    else if (a === "structure-sketch") structureSketch();
+    else if (a === "photo-import") void photoToBoard();
+    else if (a === "repo-board") repoToBoard();
+    else if (a === "export") exportDoc();
+  };
+  const photoInput = useRef<HTMLInputElement>(null);
+
+  /* ------------------------------ dictation ------------------------------ */
+
+  const dictating = useRef<{ id: string | null } | null>(null);
+  dictateRef.current = (id) => {
+    dictating.current = { id };
+    const v = voiceRef.current;
+    if (v.state === "idle" || v.state === "error") void v.start();
+    else v.send({ type: "proxy.dictate", on: true });
+    const it = id ? client.board?.items.find((i) => i.id === id) : null;
+    notify(it ? `Say ${it.kind === "note" || it.kind === "text" ? "its text" : "its name"}…` : "Say the note…");
+  };
+  // Started the voice to dictate: once it listens, tell it to take the words down.
+  useEffect(() => {
+    if (voice.state === "listening" && dictating.current) voice.send({ type: "proxy.dictate", on: true });
+  }, [voice.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  dictatedRef.current = (text) => {
+    const d = dictating.current;
+    dictating.current = null;
+    if (!text.trim()) return;
+    const b = client.board;
+    const it = d?.id ? b?.items.find((i) => i.id === d.id) : null;
+    if (it) client.apply([{ op: "update", id: it.id, patch: it.kind === "note" || it.kind === "text" ? { body: text } : { label: text.replace(/[.!?]+$/, "") } }]);
+    else {
+      const f = sceneRef.current?.focusPoint() ?? [0, 0, 0];
+      setSelected([ctl.add("note", [f[0], 0, f[2]], { body: text })]);
+    }
+    notify(`“${text.slice(0, 40)}”`);
+  };
+  commandRef.current = (c) => {
+    if (c.cmd === "action") runAction(c.id, "voice");
+    else if (c.cmd === "dictate") dictateRef.current(c.id ?? selRef.current[0] ?? null);
   };
   xrPluginMakers.current = [
     (x) =>
@@ -714,6 +803,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         className="absolute inset-0"
         onDrop={(e) => {
           e.preventDefault();
+          const img = [...e.dataTransfer.files].find((f) => f.type.startsWith("image/"));
+          if (img) return void pictureOf(img).then((p) => photoToBoard(p));
           const kind = e.dataTransfer.getData("text/x-kind") as ItemKind;
           const s = sceneRef.current;
           if (!kind || !s) return;
@@ -837,9 +928,35 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               </Section>
             )}
             {palTab === "plans" && (
-              <Section title="Templates">
-                <TemplateList onPick={(n) => void placeTemplate(n)} />
-              </Section>
+              <>
+                <Section title="Bring in">
+                  <div className="flex flex-col gap-1.5">
+                    <button className="ws-chip !justify-start text-sm" onClick={repoToBoard} title="The repo open in Constellate, as an architecture">
+                      ⌥ Repo → board
+                    </button>
+                    <button className="ws-chip !justify-start text-sm" onClick={() => photoInput.current?.click()} title="A photo of a whiteboard or a sketch (or paste / drop one)">
+                      ▣ Photo → board
+                    </button>
+                    <button className="ws-chip !justify-start text-sm" onClick={structureSketch} title="Your ink strokes, read and rebuilt as real blocks and links">
+                      ✎ Sketch → structure
+                    </button>
+                  </div>
+                  <input
+                    ref={photoInput}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = "";
+                      if (f) void photoToBoard(await pictureOf(f));
+                    }}
+                  />
+                </Section>
+                <Section title="Templates">
+                  <TemplateList onPick={(n) => void placeTemplate(n)} />
+                </Section>
+              </>
             )}
             {palTab === "blocks" && (<>
             <Section title="Architecture">
@@ -1005,7 +1122,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
 
           {/* Ask, the voice, and what's happening. */}
           <div className="absolute inset-x-0 bottom-5 flex flex-col items-center gap-2 px-4">
-            <StatusLine activity={activity} caption={voice.caption} heard={voice.heard} voiceError={voice.error} />
+            <StatusLine activity={activity} caption={voice.caption} heard={voice.heard} voiceError={voice.error} notice={notice} />
             <form
               className="ws-panel flex w-full max-w-2xl items-center gap-2 p-1.5 pl-4"
               onSubmit={(e) => {
@@ -1021,6 +1138,12 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                 value={ask}
                 onChange={(e) => setAsk(e.target.value)}
                 onKeyDown={(e) => e.key === "Escape" && askRef.current?.blur()}
+                onPaste={(e) => {
+                  const img = [...e.clipboardData.files].find((f) => f.type.startsWith("image/"));
+                  if (!img) return;
+                  e.preventDefault();
+                  void pictureOf(img).then((p) => (ask.trim() ? (sendAsk(ask, [p]), setAsk("")) : photoToBoard(p)));
+                }}
                 placeholder={selected.length ? "Ask about or change what's selected…  ( / )" : "Design, build, arrange anything…  ( / )"}
                 className="min-w-0 flex-1 bg-transparent py-2 text-[15px] text-[#dff6ff] outline-none placeholder:text-[#4f7286]"
               />
@@ -1285,7 +1408,7 @@ function Editor({ item, onClose, onSave }: { item: Item | null; onClose: () => v
   );
 }
 
-function StatusLine({ activity, caption, heard, voiceError }: { activity: Board["activity"]; caption: string; heard: string; voiceError: string | null }) {
+function StatusLine({ activity, caption, heard, voiceError, notice }: { activity: Board["activity"]; caption: string; heard: string; voiceError: string | null; notice: { text: string; at: number } | null }) {
   const [shownAnswer, setShownAnswer] = useState<string | null>(null);
   // Only answers that land while the page is open: not the last one again on every load.
   const [openedAt] = useState(() => Date.now());
@@ -1305,6 +1428,8 @@ function StatusLine({ activity, caption, heard, voiceError }: { activity: Board[
           ? { text: caption, color: LOOK.text, pulse: false }
           : voiceError
             ? { text: voiceError, color: LOOK.danger, pulse: false }
+            : notice && Date.now() - notice.at < 5000
+              ? { text: notice.text, color: LOOK.accent, pulse: false }
             : shownAnswer
               ? { text: shownAnswer, color: LOOK.text, pulse: false }
               : null;

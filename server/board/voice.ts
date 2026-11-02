@@ -7,6 +7,9 @@ import { boardInside, change, command, getBoard, listVersions, redo, restoreVers
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
 import { TEMPLATE_NAMES, layTemplate } from "../../shared/templates";
 import { TUNE_TOOLS, runBoardTune } from "./tune";
+import { BOARD_ACTIONS, findAction } from "../../shared/boardActions";
+import { findMacro, loadMacros, runMacro, saveMacros } from "./macros";
+import { listBoards } from "./store";
 
 /**
  * The workshop's voice: an Inworld realtime session, bridged here, as the
@@ -83,12 +86,28 @@ const TOOLS = [
   }),
   fn("undo", "Undo the last change."),
   fn("redo", "Redo what was undone."),
-  fn("tool", "Switch what their hands or mouse do: select (pick and move), connect (pick two to link), ink (draw in the air).", { tool: { type: "string", enum: ["select", "connect", "ink"] } }, ["tool"]),
+  fn("tool", "Switch what their hands or mouse do: select (pick and move), connect (pick two to link), ink (draw in the air), lasso (sweep to select many), erase (sweep to delete many).", { tool: { type: "string", enum: ["select", "connect", "ink", "lasso", "erase"] } }, ["tool"]),
+  fn("open_board", "Switch to another board by its name (they stay in the headset).", { name: { type: "string" } }, ["name"]),
+  fn(
+    "run_action",
+    `Do something on their screens: ${BOARD_ACTIONS.filter((a) => a.id !== "none").map((a) => `${a.id} (${a.label})`).join("; ")}. E.g. desk-mode when they want the board on their desk, wall-mode, room-scale, snapshot, shelf, structure-sketch (their ink → real blocks), photo-import (photograph a whiteboard), repo-board (the open repo's architecture), tiers.`,
+    { action: { type: "string" } },
+    ["action"],
+  ),
+  fn("dictate", "Take their next words, exactly, as an item's name (or a note's text). For when they want to say it themselves, word for word.", { item: { type: "string", description: "The item; the selection when omitted" } }),
+  fn(
+    "define_macro",
+    "Teach yourself a phrase that runs several things in order. Each step is an action id from run_action (e.g. 'snapshot', 'save-version', 'desk-mode') or words for the builder (e.g. 'review the design and flag the risks'). The same phrase replaces it.",
+    { phrase: { type: "string" }, steps: { type: "array", items: { type: "string" } } },
+    ["phrase", "steps"],
+  ),
+  fn("run_macro", "Run a macro they taught you, when they say its phrase.", { phrase: { type: "string" } }, ["phrase"]),
+  fn("delete_macro", "Forget a macro.", { phrase: { type: "string" } }, ["phrase"]),
 ];
 TOOLS.push(...TUNE_TOOLS.map((t) => fn(t.name, t.description, t.properties, t.required)));
-const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect", "tune", "hologram", "layers"]);
+const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect", "tune", "hologram", "layers", "run_action"]);
 
-function instructions(b: Board | null, s: BoardScreen): string {
+function instructions(b: Board | null, s: BoardScreen, macros: { phrase: string; steps: string[] }[] = []): string {
   const where = s.mode === "ar" ? "in passthrough on a Quest, the board a hologram on their desk" : s.mode === "vr" ? "in VR" : "at their desktop";
   return [
     `You are ${ASSISTANT}, the voice of a holographic workshop — a 3D planning board on a round holotable, Tony Stark style. They are ${where}.`,
@@ -103,6 +122,8 @@ function instructions(b: Board | null, s: BoardScreen): string {
     b ? describeBoard(b, { max: 80, selected: s.selected }) : "No board is open.",
     s.selected?.length ? `"This", "it" and "these" mean the selected items.` : "",
     b?.activity?.busy ? `The builder is working right now: ${b.activity.line ?? "thinking"}.` : "",
+    macros.length ? `Their macros — when they say one of these phrases, call run_macro with it: ${macros.map((m) => `"${m.phrase}" (${m.steps.join(" → ")})`).join("; ")}.` : "",
+    "When they say \"when I say X, do Y and Z\", that's define_macro.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -119,6 +140,11 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
   const idleAfter = Number.isFinite(idleMin) && idleMin >= 1 && idleMin <= 60 ? idleMin * 60_000 : IDLE_MS;
 
   let screen: BoardScreen = {};
+  let macros: { phrase: string; steps: string[] }[] = [];
+  void loadMacros().then((m) => (macros = m));
+  const macroList = () => (screen.tune?.macros === false ? [] : macros);
+  /** Taking their next words as an item's name or text. */
+  let dictating = false;
   let board: Board | null = null;
   let unwatch: (() => void) | null = null;
   let upstream: WebSocket | null = null;
@@ -159,7 +185,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
     clearTimeout(syncTimer);
     syncTimer = undefined;
     if (!ready) return;
-    const text = instructions(board, screen);
+    const text = instructions(board, screen, macroList());
     if (text === lastInstructions) return;
     lastInstructions = text;
     lastSync = Date.now();
@@ -372,8 +398,48 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
       case "redo":
         return { ok: await redo(id) };
       case "tool":
-        command(id, { cmd: "tool", tool: a.tool as "select" | "connect" | "ink" });
+        command(id, { cmd: "tool", tool: a.tool as "select" | "connect" | "ink" | "lasso" | "erase" });
         return { ok: true };
+      case "open_board": {
+        const n = String(a.name ?? "").trim().toLowerCase();
+        const list = await listBoards();
+        const hit = list.find((x) => x.name.toLowerCase() === n) ?? list.find((x) => x.name.toLowerCase().includes(n));
+        if (!hit) return { ok: false, say: `No board like that. There are: ${list.slice(0, 8).map((x) => x.name).join(", ")}.` };
+        command(id, { cmd: "open", boardId: hit.id });
+        return { ok: true, opened: hit.name };
+      }
+      case "run_action": {
+        const act = findAction(String(a.action ?? ""));
+        if (!act || act.id === "none") return { ok: false, say: "No such action." };
+        command(id, { cmd: "action", id: act.id });
+        return { ok: true, did: act.label };
+      }
+      case "dictate": {
+        const [it] = a.item ? pick([a.item]) : pick([]);
+        command(id, { cmd: "dictate", id: it?.id });
+        return { ok: true, say: it ? `Say "go ahead" in two words or fewer; their next words become ${nameOf(it)}'s ${it.kind === "note" || it.kind === "text" ? "text" : "name"}.` : "Say 'go ahead' briefly; their next words become a new note." };
+      }
+      case "define_macro": {
+        const phrase = String(a.phrase ?? "").trim();
+        const steps = Array.isArray(a.steps) ? a.steps.map(String).filter(Boolean) : [];
+        if (!phrase || !steps.length) return { ok: false, say: "Ask what the phrase is and what it should do." };
+        macros = await saveMacros([...(await loadMacros()).filter((m) => m.phrase !== phrase.toLowerCase()), { phrase, steps }]);
+        sync();
+        return { ok: true, saved: phrase, steps };
+      }
+      case "run_macro": {
+        const m = await findMacro(String(a.phrase ?? ""));
+        if (!m) return { ok: false, say: `No macro like that. ${macros.length ? `There are: ${macros.map((x) => x.phrase).join(", ")}.` : "None are taught yet."}` };
+        void runMacro(m, id, screen, () => {}).then((done) => deliver(`The macro "${m.phrase}" finished: ${done.join("; ")}. Tell them briefly.`));
+        return { ok: true, status: "running", steps: m.steps, say: "A word that it's running." };
+      }
+      case "delete_macro": {
+        const m = await findMacro(String(a.phrase ?? ""));
+        if (!m) return { ok: false, say: "No macro like that." };
+        macros = await saveMacros((await loadMacros()).filter((x) => x !== m));
+        sync();
+        return { ok: true, deleted: m.phrase };
+      }
       default:
         return (await runBoardTune(name, a, id, screen)) ?? { ok: false, error: `Unknown tool ${name}` };
     }
@@ -389,7 +455,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
     });
     ws.on("message", (data: RawData) => {
       const text = data.toString();
-      let msg: { type?: string; name?: string; call_id?: string; arguments?: string };
+      let msg: { type?: string; name?: string; call_id?: string; arguments?: string; transcript?: string };
       try {
         msg = JSON.parse(text);
       } catch {
@@ -403,7 +469,16 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
         case "input_audio_buffer.speech_stopped":
           userSpeaking = false;
           break;
+        case "conversation.item.input_audio_transcription.completed":
+          if (dictating && msg.transcript?.trim()) {
+            // Their words, as they said them: to the page, and the voice listens normally again.
+            dictating = false;
+            toClient({ type: "proxy.dictated", text: msg.transcript.trim() });
+            send(fullSession());
+          }
+          break;
         case "response.created":
+          if (dictating) send({ type: "response.cancel" });
           responseActive = true;
           userSpeaking = false;
           clearTimeout(followUp);
@@ -423,7 +498,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
           }
           break;
         case "session.created":
-          lastInstructions = instructions(board, screen);
+          lastInstructions = instructions(board, screen, macroList());
           ws.send(JSON.stringify(fullSession()));
           return;
         case "session.updated":
@@ -475,6 +550,16 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
       screen = msg.screen ?? {};
       void openBoard(screen.boardId);
       sync();
+      return;
+    }
+    if (msg.type === "proxy.dictate") {
+      dictating = !!(msg as { on?: boolean }).on;
+      // While dictating, it hears without answering.
+      if (ready) {
+        const full = fullSession() as { session: { audio: { input: { turn_detection: Record<string, unknown> } } } };
+        if (dictating) full.session.audio.input.turn_detection.create_response = false;
+        send(full);
+      }
       return;
     }
     if (msg.type === "proxy.settings") {

@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BoardScreen, Op, Part } from "../../shared/board";
 import { ARRANGEMENTS, arrange, type Arrangement } from "../../shared/boardLayout";
-import { askBoard, stopBoardAgent } from "./agent";
+import { askBoard, stopBoardAgent, type BoardImage } from "./agent";
 import { reportBuild } from "./holo";
 import { boardInside, change, createBoard, deleteBoard, getBoard, getVersion, historyStates, listBoards, listVersions, onCommand, onPresence, presence, redo, restoreVersion, rewind, saveVersion, undo, watch } from "./store";
 import { loadPresets, savePresets } from "./tune";
+import { loadMacros, saveMacros, type Macro } from "./macros";
 import type { BoardPreset } from "../../shared/boardTune";
 
 /** The workshop's API, under /api/board(s). Returns false for anything else. */
@@ -109,10 +110,13 @@ export async function boardApi(
       return true;
     }
     case "POST /api/board/ask": {
-      const b = await body<{ id?: string; request?: string; screen?: BoardScreen }>(req);
+      const b = await body<{ id?: string; request?: string; screen?: BoardScreen; images?: BoardImage[] }>(req);
       if (!b.id || !b.request?.trim()) return json(res, 400, { error: "Need a board and a request." }), true;
+      const images = (Array.isArray(b.images) ? b.images : [])
+        .filter((im) => typeof im?.data === "string" && ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(im.mediaType) && im.data.length < 7_000_000)
+        .slice(0, 4);
       // Answered at once; the board (and its activity line) shows the work as it happens.
-      void askBoard(b.id, b.request.trim(), { ...b.screen, boardId: b.id });
+      void askBoard(b.id, b.request.trim(), { ...b.screen, boardId: b.id }, { images });
       json(res, 200, { ok: true });
       return true;
     }
@@ -149,6 +153,14 @@ export async function boardApi(
       const b = await body<{ id?: string; p?: { id?: string } }>(req);
       if (b.id && b.p?.id) presence(b.id, { ...b.p, at: Date.now() });
       res.writeHead(204).end();
+      return true;
+    }
+    case "GET /api/board/macros":
+      json(res, 200, await loadMacros());
+      return true;
+    case "POST /api/board/macros": {
+      const b = await body<{ macros?: Macro[] }>(req);
+      json(res, 200, await saveMacros(Array.isArray(b.macros) ? b.macros : []));
       return true;
     }
     case "GET /api/board/presets":

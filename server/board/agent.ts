@@ -1,4 +1,4 @@
-import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import {
   ARCH_KINDS,
@@ -29,6 +29,8 @@ import { agentSessionOf, boardInside, change, command, getBoard, saveVersion, se
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
 import { TEMPLATE_NAMES, layTemplate } from "../../shared/templates";
 import { TUNE_TOOLS, runBoardTune } from "./tune";
+import { repoBrief } from "./repo";
+import { BOARD_ACTIONS } from "../../shared/boardActions";
 
 /**
  * The workshop's assistant: Claude, via the Agent SDK, with nothing but
@@ -142,6 +144,10 @@ For what's tedious to list (many teeth, a helix, a lattice, a city of towers), g
 - inside: open a block's own board and design its internals there.
 - save_version: before a big change they might want to undo, or when they ask.
 - tune / tune_knobs / use_preset: how the workshop looks and behaves.
+- repo: read a code repo (the one open in Constellate, or a path) and build its real architecture — services, datastores, queues, external APIs, with links named for what flows and their protocols. Use frames for deployment boundaries. Put the important modules' internals on their inside boards only if asked.
+- C4: the board is the system in context; an item's inside board holds its containers, theirs the components, then code. When asked for a C4 model, build the top level here and use inside with a request for the levels below.
+- Pictures: when they send a photo of a whiteboard, a sketch, or a drawing made in ink, read every box, label and arrow and build it for real — blocks for boxes (pick the kind from the words), links for arrows (with their labels), notes for loose text, frames for grouped areas — laid out as the picture is. When the request says where the ink is, put each thing where its strokes were and remove the ink strokes you replaced.
+- screen_action: switch modes and panels on their screens (desk mode, wall mode, snapshots, the shelf, …) when they ask.
 
 Don't ask clarifying questions for things you can reasonably decide — make a good first version; they'll tell you what to change.`;
 
@@ -478,6 +484,30 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
         return ok(`Opened ${inner.name} (${inner.id}).${request ? " Designing its inside there now." : ""}`);
       },
     ),
+    tool(
+      "repo",
+      "Read a code repository so you can draw its architecture: the repo open in Constellate's code map (its charted modules and how they talk, its stack, entry points, import graph) and its compose files, Kubernetes manifests, Dockerfiles and package manifests. Give `path` for another folder on this machine.",
+      { path: z.string().optional() },
+      async ({ path: dir }) => {
+        report("Reading the repo");
+        try {
+          return ok(await repoBrief(dir));
+        } catch (e) {
+          return fail(`Couldn't read it: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      },
+    ),
+    tool(
+      "screen_action",
+      `Do something on their screens that isn't a board change: ${BOARD_ACTIONS.filter((a) => a.id !== "none").map((a) => `${a.id} (${a.label})`).join(", ")}.`,
+      { action: z.string() },
+      async ({ action }) => {
+        const a = BOARD_ACTIONS.find((x) => x.id === action);
+        if (!a) return fail(`No action "${action}".`);
+        command(boardId, { cmd: "action", id: a.id });
+        return ok(`${a.label}: done.`);
+      },
+    ),
     tool("save_version", "Keep the board as it is now as a named version they can go back to.", { label: z.string() }, async ({ label }) => {
       const v = await saveVersion(boardId, label);
       return ok(v ? `Saved "${label}".` : "Nothing's changed since the last version.");
@@ -532,7 +562,9 @@ function screenNote(s: BoardScreen, b: Board): string {
  * board stops the one before (they changed their mind). Resolves with what it
  * said, to be spoken.
  */
-export async function askBoard(boardId: string, request: string, screen: BoardScreen = {}): Promise<{ answer: string; error?: string }> {
+export type BoardImage = { data: string; mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif" };
+
+export async function askBoard(boardId: string, request: string, screen: BoardScreen = {}, o: { images?: BoardImage[] } = {}): Promise<{ answer: string; error?: string }> {
   const l = await getBoard(boardId);
   if (!l) return { answer: "", error: "No such board." };
   running.get(boardId)?.abort();
@@ -554,9 +586,22 @@ export async function askBoard(boardId: string, request: string, screen: BoardSc
     `run:${newId("r")}`,
   );
 
+  const text = request + screenNote(screen, l.board);
+  // With pictures (a photo of a whiteboard, a sketch), the request goes as a message with them in it.
+  const prompt = (): string | AsyncIterable<SDKUserMessage> => {
+    const imgs = o.images ?? [];
+    if (!imgs.length) return text;
+    return (async function* () {
+      yield {
+        type: "user",
+        parent_tool_use_id: null,
+        message: { role: "user", content: [...imgs.map((im) => ({ type: "image" as const, source: { type: "base64" as const, media_type: im.mediaType, data: im.data } })), { type: "text" as const, text }] },
+      } as SDKUserMessage;
+    })();
+  };
   const run = (resume: string | undefined) =>
     query({
-      prompt: request + screenNote(screen, l.board),
+      prompt: prompt(),
       options: {
         cwd: CACHE_DIR,
         model: MODEL,
