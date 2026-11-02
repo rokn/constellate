@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { newId, type Vec3 } from "../../shared/board";
 import type { Ctl } from "./ctl";
+import { magnet } from "./magnet";
 import type { BoardScene } from "./scene";
 import { num, on } from "./tune";
 import { fromClip, fromMermaid, toClip } from "../../shared/exchange";
@@ -33,7 +34,8 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
     | { kind: "pull"; from: string; x0: number; y0: number }
     | { kind: "ink"; pts: THREE.Vector3[] }
     | { kind: "orbit"; x0: number; y0: number; moved: boolean; link?: string }
-    | { kind: "box"; x0: number; y0: number; additive: boolean };
+    | { kind: "box"; x0: number; y0: number; additive: boolean }
+    | { kind: "sweep"; erase: boolean; ids: string[] };
   // The marquee a shift-drag on open table draws.
   const box = document.createElement("div");
   box.style.cssText = "position:absolute;display:none;pointer-events:none;border:1px solid #ffb547;background:rgba(255,181,71,0.08);box-shadow:0 0 12px rgba(255,181,71,0.35);z-index:5";
@@ -46,6 +48,14 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
     const hit = scene.pick(origin, dir);
     const tool = ctl.tool();
 
+    if (tool === "lasso" || tool === "erase") {
+      // Sweep across items: each one the pointer passes over is collected.
+      scene.controls.enabled = false;
+      drag = { kind: "sweep", erase: tool === "erase", ids: hit?.kind === "item" ? [hit.id] : [] };
+      if (tool === "lasso") ctl.select(drag.ids, e.shiftKey);
+      el.setPointerCapture(e.pointerId);
+      return;
+    }
     if (tool === "ink") {
       const p = scene.tablePoint(origin, dir, 0.012);
       if (!p) return;
@@ -109,6 +119,15 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
       if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > CLICK_SLOP) drag.moved = true;
       return;
     }
+    if (drag.kind === "sweep") {
+      const hit = scene.pick(origin, dir);
+      if (hit?.kind === "item" && !drag.ids.includes(hit.id)) {
+        drag.ids.push(hit.id);
+        if (!drag.erase) ctl.select([hit.id], true);
+      }
+      scene.setHover(drag.ids);
+      return;
+    }
     if (drag.kind === "box") {
       const r = el.getBoundingClientRect();
       box.style.display = "block";
@@ -150,6 +169,11 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
       const snap = (n: number) => (on("snap") ? Math.round(n / g) * g : n);
       pos = [round(snap(at.x)), round(drag.y), round(snap(at.z))];
     }
+    if (!drag.others.length && !on("snap")) {
+      const m = magnet(ctl.client.board, drag.id, pos);
+      pos = m.pos;
+      scene.showGuides(m.guides);
+    }
     ctl.client.hold(drag.id, { pos });
     for (const o of drag.others) {
       const p = new THREE.Vector3(...pos).add(o.offset);
@@ -162,6 +186,7 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
     const d = drag;
     drag = null;
     scene.controls.enabled = true;
+    scene.showGuides(null);
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
     const { origin, dir } = ray(e);
     if (d.kind === "orbit") {
@@ -170,6 +195,11 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
         ctl.select([]);
         ctl.selectLink?.(null);
       }
+      return;
+    }
+    if (d.kind === "sweep") {
+      scene.setHover([]);
+      if (d.erase && d.ids.length) ctl.remove(d.ids);
       return;
     }
     if (d.kind === "box") {
@@ -286,6 +316,12 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
         break;
       case "d":
         ctl.setTool(ctl.tool() === "ink" ? "select" : "ink");
+        break;
+      case "s":
+        ctl.setTool(ctl.tool() === "lasso" ? "select" : "lasso");
+        break;
+      case "x":
+        ctl.setTool(ctl.tool() === "erase" ? "select" : "erase");
         break;
       case "f":
         if (sel.length) scene.focus(sel);

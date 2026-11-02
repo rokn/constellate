@@ -8,11 +8,17 @@
  * The voice and Jarvis turn the same knobs by key (see server/board/tune.ts).
  */
 
-export type BoardKnob = { key: string; label: string; hint?: string } & ({ toggle: true } | { min: number; max: number; step: number });
+import { ACTION_IDS } from "./boardActions";
+
+export type TuneValue = number | boolean | string;
+export type BoardKnob = { key: string; label: string; hint?: string } & ({ toggle: true } | { min: number; max: number; step: number } | { choices: string[] });
 export type BoardSection = { id: string; title: string; knobs: BoardKnob[]; where?: "headset" | "flat" | "both" };
 
 const n = (key: string, label: string, min: number, max: number, step: number, hint?: string): BoardKnob => ({ key, label, min, max, step, hint });
 const t = (key: string, label: string, hint?: string): BoardKnob => ({ key, label, toggle: true, hint });
+const c = (key: string, label: string, choices: string[], hint?: string): BoardKnob => ({ key, label, choices, hint });
+/** A knob that picks an action (a button, a wheel slice). */
+const act = (key: string, label: string, hint?: string): BoardKnob => c(key, label, ACTION_IDS, hint);
 
 export const BOARD_SECTIONS: BoardSection[] = [
   {
@@ -51,6 +57,10 @@ export const BOARD_SECTIONS: BoardSection[] = [
       n("packets", "Packets", 0, 3, 0.1, "How many pulses run along each link"),
       n("arcHeight", "Arc height", 0, 3, 0.1),
       t("arrows", "Arrowheads"),
+      t("protocolStyles", "Protocol styles", "REST, gRPC, Kafka, WebSocket, SQL… each moves its own way"),
+      t("payloadSamples", "Payload samples", "A sample message rides along the link now and then"),
+      n("payloadEvery", "Sample every (s)", 2, 30, 1),
+      t("drawnLinks", "Drawn links keep their shape", "A link drawn by hand in the air follows your curve"),
     ],
   },
   {
@@ -84,7 +94,17 @@ export const BOARD_SECTIONS: BoardSection[] = [
   {
     id: "editing",
     title: "Editing",
-    knobs: [t("snap", "Snap to grid"), n("gridSize", "Grid size", 0.01, 0.3, 0.01), t("frameCarries", "Frames carry their contents", "Moving a frame moves what's in it")],
+    knobs: [
+      t("snap", "Snap to grid"),
+      n("gridSize", "Grid size", 0.01, 0.3, 0.01),
+      t("frameCarries", "Frames carry their contents", "Moving a frame moves what's in it"),
+      t("magnet", "Magnetic snapping", "Items line up with their neighbours and stack on each other as you place them"),
+      n("magnetReach", "Magnet reach (m)", 0.005, 0.08, 0.005),
+      t("magnetGuides", "Alignment guides"),
+      n("tierGap", "Tier gap (m)", 0.05, 0.6, 0.01, "How far apart the depth tiers float"),
+      t("c4Zoom", "Zoom through levels", "Scale into an item to dive inside it (context → containers → components → code), out to come back"),
+      n("morphSeconds", "Dive time", 0.2, 3, 0.1),
+    ],
   },
   {
     id: "placement",
@@ -129,12 +149,94 @@ export const BOARD_SECTIONS: BoardSection[] = [
       t("haptics", "Haptics"),
       t("pinchMovesTable", "Pinch open air to move the table"),
       n("stickSpeed", "Thumbstick speed", 0.2, 4, 0.1),
+      n("hapticStrength", "Haptic strength", 0, 1, 0.05),
+      c("twoHandMode", "Two hands on one item", ["auto", "scale", "explode"], "Auto: holograms pull apart, the rest stretch. Swap mid-stretch with the other hand's trigger or middle pinch"),
+      t("spreadOpens", "Spread to open", "Two hands pulled wide apart on an item with an inside: dive into it"),
+      t("crumple", "Crumple to delete", "Close your fist (or squeeze grip and trigger) on an item you're holding"),
+      t("flingDeletes", "Throw away to delete"),
+      t("pinchToVoice", "Hold to talk about it", "Hold a pinch or trigger on an item: it's selected and the voice listens"),
+      n("holdToVoiceMs", "Hold time (ms)", 300, 2000, 50),
+      t("poke", "Poke panels", "Touch a panel's button with your fingertip"),
+    ],
+  },
+  {
+    id: "controls",
+    title: "Headset · Controller buttons",
+    where: "headset",
+    knobs: [
+      act("btnA", "A"),
+      act("btnAHold", "A held"),
+      act("btnB", "B"),
+      act("btnBHold", "B held"),
+      act("btnX", "X"),
+      act("btnXHold", "X held"),
+      act("btnY", "Y"),
+      act("btnYHold", "Y held"),
+      act("btnRStick", "Right stick press", "Held, the command wheel opens around the controller: tilt to a slice, let go"),
+      act("btnLStick", "Left stick press"),
+      c("rightStick", "Right stick", ["table", "snap-turn", "off"], "Turn and scale the table, or turn it in steps"),
+      c("leftStick", "Left stick", ["move", "off"], "Slide the table around the room"),
+      t("carryStickTurns", "Stick turns what you hold", "While carrying or dragging: left/right turns it, up/down pushes it away or pulls it in"),
+      n("holdMs", "Held press (ms)", 250, 1200, 50),
+      t("buttonHints", "Button labels on the controllers"),
+      t("actionToasts", "Say what a button did"),
+    ],
+  },
+  {
+    id: "wheel",
+    title: "Headset · Wheel and palm menu",
+    where: "headset",
+    knobs: [
+      c("palmMenu", "Palm menu", ["right", "left", "off"], "Turn that palm to the ceiling: the wheel blooms from it"),
+      act("wheel1", "Wheel · top"),
+      act("wheel2", "Wheel · top right"),
+      act("wheel3", "Wheel · right"),
+      act("wheel4", "Wheel · bottom right"),
+      act("wheel5", "Wheel · bottom"),
+      act("wheel6", "Wheel · bottom left"),
+      act("wheel7", "Wheel · left"),
+      act("wheel8", "Wheel · top left"),
+      act("leftMiddlePinch", "Left middle pinch"),
+      act("rightMiddlePinch", "Right middle pinch"),
+      t("customGestures", "Your gestures", "Hand poses you recorded, each doing its action"),
+      n("gestureHoldMs", "Gesture hold (ms)", 150, 1500, 50),
+      n("gestureTolerance", "Gesture tolerance", 0.05, 0.6, 0.01, "How closely a pose must match the one you recorded"),
+    ],
+  },
+  {
+    id: "room",
+    title: "Headset · Room",
+    where: "headset",
+    knobs: [
+      t("planes", "Find walls and desks", "Use the room's walls and tables from Space Setup"),
+      t("showPlanes", "Show the walls and desks found"),
+      t("roomAnchors", "Anchor boards in the room", "Each board stays where you left it, across sessions"),
+      t("throwToWall", "Throw to a wall", "Throw a panel or a board card at a wall: it sticks there"),
+      n("deskFit", "Desk mode fit", 0.4, 1, 0.05, "How much of the desk the board fills"),
+      t("deskShadows", "Shadows on the desk"),
+      n("shadowStrength", "Shadow strength", 0, 1, 0.05),
+      n("wallScale", "Wall board scale", 0.2, 2, 0.05),
+      n("roomScale", "Room scale", 1.5, 8, 0.1, "How big the board gets when you walk inside it"),
+      t("shelfOn", "Board shelf"),
+      c("shelfSide", "Shelf side", ["left", "right"]),
+      n("shelfDistance", "Shelf distance", 0.4, 1.5, 0.05),
+      t("autoActivate", "Walk up to a board to use it", "In a room of boards, the one you stand at is the one you edit"),
+      n("satelliteDim", "Other boards' brightness", 0.1, 1, 0.05),
     ],
   },
   {
     id: "sound",
     title: "Sound",
-    knobs: [t("sfx", "Effects"), n("sfxVolume", "Effects volume", 0, 1, 0.05), t("ambience", "Ambience"), n("ambienceVolume", "Ambience volume", 0, 1, 0.05)],
+    knobs: [
+      t("sfx", "Effects"),
+      n("sfxVolume", "Effects volume", 0, 1, 0.05),
+      t("ambience", "Ambience"),
+      n("ambienceVolume", "Ambience volume", 0, 1, 0.05),
+      t("hum", "Board hum", "A quiet hum from the board itself, louder as you lean in"),
+      n("humVolume", "Hum volume", 0, 1, 0.05),
+      t("pitchBySize", "Pitch by size", "Big things sound low, small ones high"),
+      t("richSfx", "Layered effects", "Materialise, crumple, whoosh and the rest in full; off for simple clicks"),
+    ],
   },
   {
     id: "voice",
@@ -145,11 +247,12 @@ export const BOARD_SECTIONS: BoardSection[] = [
       n("eagerness", "Eagerness", 1, 3, 1, "1 waits for you to finish, 3 jumps in"),
       t("interrupt", "You can talk over it"),
       n("idleMinutes", "Off after silence (min)", 1, 60, 1),
+      t("macros", "Voice macros", "Phrases you taught it that run several things"),
     ],
   },
 ];
 
-export const DEFAULT_BOARD_TUNE: Record<string, number | boolean> = {
+export const DEFAULT_BOARD_TUNE: Record<string, TuneValue> = {
   bloom: true,
   bloomStrength: 0.5,
   bloomRadius: 0.45,
@@ -175,6 +278,10 @@ export const DEFAULT_BOARD_TUNE: Record<string, number | boolean> = {
   packets: 1,
   arcHeight: 1,
   arrows: true,
+  protocolStyles: true,
+  payloadSamples: true,
+  payloadEvery: 7,
+  drawnLinks: true,
   table: true,
   tableBrightness: 1,
   tableMotion: 1,
@@ -193,6 +300,12 @@ export const DEFAULT_BOARD_TUNE: Record<string, number | boolean> = {
   snap: false,
   gridSize: 0.05,
   frameCarries: true,
+  magnet: true,
+  magnetReach: 0.025,
+  magnetGuides: true,
+  tierGap: 0.22,
+  c4Zoom: true,
+  morphSeconds: 0.9,
   arScale: 0.45,
   arHeight: 0.76,
   arDistance: 0.7,
@@ -217,20 +330,77 @@ export const DEFAULT_BOARD_TUNE: Record<string, number | boolean> = {
   haptics: true,
   pinchMovesTable: true,
   stickSpeed: 1.2,
+  hapticStrength: 0.6,
+  twoHandMode: "auto",
+  spreadOpens: true,
+  crumple: true,
+  flingDeletes: true,
+  pinchToVoice: true,
+  holdToVoiceMs: 750,
+  poke: true,
+  btnA: "palette",
+  btnAHold: "shelf",
+  btnB: "undo",
+  btnBHold: "redo",
+  btnX: "voice",
+  btnXHold: "dictate",
+  btnY: "tune",
+  btnYHold: "snapshot",
+  btnRStick: "wheel",
+  btnLStick: "recenter",
+  rightStick: "table",
+  leftStick: "move",
+  carryStickTurns: true,
+  holdMs: 450,
+  buttonHints: true,
+  actionToasts: true,
+  palmMenu: "right",
+  wheel1: "voice",
+  wheel2: "snapshot",
+  wheel3: "redo",
+  wheel4: "shelf",
+  wheel5: "delete-selection",
+  wheel6: "tool-lasso",
+  wheel7: "undo",
+  wheel8: "two-hand-mode",
+  leftMiddlePinch: "voice",
+  rightMiddlePinch: "undo",
+  customGestures: true,
+  gestureHoldMs: 350,
+  gestureTolerance: 0.22,
+  planes: true,
+  showPlanes: false,
+  roomAnchors: true,
+  throwToWall: true,
+  deskFit: 0.85,
+  deskShadows: true,
+  shadowStrength: 0.45,
+  wallScale: 0.6,
+  roomScale: 3,
+  shelfOn: true,
+  shelfSide: "left",
+  shelfDistance: 0.7,
+  autoActivate: true,
+  satelliteDim: 0.55,
   sfx: true,
   sfxVolume: 0.6,
   ambience: true,
   ambienceVolume: 0.4,
+  hum: true,
+  humVolume: 0.35,
+  pitchBySize: true,
+  richSfx: true,
   voiceVolume: 1,
   voiceSpeed: 1,
   eagerness: 2,
   interrupt: true,
   idleMinutes: 10,
+  macros: true,
 };
 
 export type BoardTune = typeof DEFAULT_BOARD_TUNE;
 
-export type BoardPreset = { name: string; values: Record<string, number | boolean>; builtIn?: boolean };
+export type BoardPreset = { name: string; values: Record<string, TuneValue>; builtIn?: boolean };
 
 export const BUILT_IN_PRESETS: BoardPreset[] = [
   { name: "Stark", values: {}, builtIn: true },
@@ -250,53 +420,62 @@ export function findBoardKnob(name: string) {
   return BOARD_KNOBS.find((k) => plain(k.key) === p) ?? BOARD_KNOBS.find((k) => plain(k.label) === p) ?? BOARD_KNOBS.find((k) => plain(k.label).includes(p) || plain(k.key).includes(p));
 }
 
-/** A value a knob can take from what was asked: kept to its range and step; a string when it can't be one. */
-export function boardKnobValue(k: (typeof BOARD_KNOBS)[number], v: unknown): number | boolean | string {
+/** A value a knob can take from what was asked: kept to its range and step; an error (as `{ error }`) when it can't be one. */
+export function boardKnobValue(k: (typeof BOARD_KNOBS)[number], v: unknown): TuneValue | { error: string } {
   const s = String(v ?? "").trim().toLowerCase();
   if (s === "default" || s === "reset") return k.default;
+  if ("choices" in k) {
+    const plain = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const hit = k.choices.find((x) => plain(x) === plain(s)) ?? k.choices.find((x) => plain(x).includes(plain(s)) && plain(s).length > 1);
+    return hit ?? { error: `${k.label} is one of: ${k.choices.join(", ")}.` };
+  }
   if ("toggle" in k) {
     if (v === true || ["on", "true", "yes", "1", "show"].includes(s)) return true;
     if (v === false || ["off", "false", "no", "0", "hide"].includes(s)) return false;
-    return `${k.label} is on or off.`;
+    return { error: `${k.label} is on or off.` };
   }
   const x = typeof v === "number" ? v : Number(s);
-  if (!Number.isFinite(x)) return `${k.label} takes a number from ${k.min} to ${k.max}.`;
+  if (!Number.isFinite(x)) return { error: `${k.label} takes a number from ${k.min} to ${k.max}.` };
   const c = Math.min(k.max, Math.max(k.min, x));
   return Number((Math.round(c / k.step) * k.step).toFixed(4));
 }
 
 /** Only knobs that exist, with values they can take. */
-export function cleanTune(values: Record<string, unknown>): Record<string, number | boolean> {
-  const out: Record<string, number | boolean> = {};
+export function cleanTune(values: Record<string, unknown>): Record<string, TuneValue> {
+  const out: Record<string, TuneValue> = {};
   for (const [key, v] of Object.entries(values ?? {})) {
     const k = BOARD_KNOBS.find((x) => x.key === key);
-    if (!k || (typeof v !== "number" && typeof v !== "boolean")) continue;
+    if (!k || (typeof v !== "number" && typeof v !== "boolean" && typeof v !== "string")) continue;
+    if (typeof v === "string" && !("choices" in k)) continue;
     const val = boardKnobValue(k, v);
-    if (typeof val !== "string") out[key] = val;
+    if (!isKnobError(val)) out[key] = val;
   }
   return out;
 }
 
+export const isKnobError = (v: TuneValue | { error: string }): v is { error: string } => typeof v === "object" && v !== null;
+
 /** What differs from the defaults: how a preset keeps its values. */
-export function changedTune(values: Record<string, number | boolean>) {
-  const out: Record<string, number | boolean> = {};
+export function changedTune(values: Record<string, TuneValue>) {
+  const out: Record<string, TuneValue> = {};
   for (const k of BOARD_KNOBS) if (k.key in values && values[k.key] !== k.default) out[k.key] = values[k.key];
   return out;
 }
 
 /** The knobs in brief, for a model choosing one: every section on a line, values now (marked when changed). */
-export function tuneList(values: Record<string, number | boolean>, presets: BoardPreset[]): string {
+export function tuneList(values: Record<string, TuneValue>, presets: BoardPreset[]): string {
   return [
     ...BOARD_SECTIONS.map(
       (s) =>
         `${s.title}: ${s.knobs
           .map((k) => {
             const v = values[k.key] ?? DEFAULT_BOARD_TUNE[k.key];
-            const range = "toggle" in k ? "on/off" : `${k.min}–${k.max}`;
+            const range = "toggle" in k ? "on/off" : "choices" in k ? (k.choices === ACTION_IDS ? "an action id" : k.choices.join("/")) : `${k.min}–${k.max}`;
             return `${k.key} (${k.label}, ${range}) = ${typeof v === "boolean" ? (v ? "on" : "off") : v}${v !== DEFAULT_BOARD_TUNE[k.key] ? "*" : ""}`;
           })
           .join("; ")}`,
     ),
+    `Action ids (for buttons, wheel slices, gestures): ${ACTION_IDS.join(", ")}.`,
     `Presets: ${presets.map((p) => p.name).join(", ")}.`,
   ].join("\n");
 }

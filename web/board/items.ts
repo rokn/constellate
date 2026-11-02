@@ -53,6 +53,11 @@ export class ItemView {
   dim = false;
   /** Lit by a tour or a flow passing through it. */
   spot = 0;
+  /** Being crumpled in a fist: 0 → 1, then it's gone. */
+  crush = 0;
+  /** Floated up off the table (depth tiers): added to where it stands, not kept. */
+  lift = 0;
+  private liftNow = 0;
 
   constructor(item: Item, fresh: boolean) {
     this.item = item;
@@ -92,14 +97,14 @@ export class ItemView {
   }
 
   private snap() {
-    this.root.position.copy(this.goal.pos);
+    this.root.position.copy(this.goal.pos).setY(this.goal.pos.y + this.liftNow);
     this.root.quaternion.copy(this.goal.quat);
     this.root.scale.setScalar(this.goal.scale);
   }
 
   /** Still on its way somewhere. */
   get moving() {
-    return this.root.position.distanceToSquared(this.goal.pos) > 1e-8 || Math.abs(this.root.scale.x - this.goal.scale) > 1e-4;
+    return this.root.position.distanceToSquared(new THREE.Vector3(this.goal.pos.x, this.goal.pos.y + this.liftNow, this.goal.pos.z)) > 1e-8 || Math.abs(this.root.scale.x - this.goal.scale) > 1e-4;
   }
 
   private clear() {
@@ -304,9 +309,23 @@ export class ItemView {
     // Gliding to where it's going.
     if (this.placed && on("glide")) {
       const k = 1 - Math.exp(-dt * 12);
-      this.root.position.lerp(this.goal.pos, k);
+      this.root.position.lerp(new THREE.Vector3(this.goal.pos.x, this.goal.pos.y + this.liftNow, this.goal.pos.z), k);
       this.root.quaternion.slerp(this.goal.quat, k);
       this.root.scale.setScalar(THREE.MathUtils.lerp(this.root.scale.x, this.goal.scale, k));
+    }
+
+    // Depth tiers: it floats up (or down) with its tier.
+    if (Math.abs(this.lift - this.liftNow) > 1e-4) {
+      const was = this.liftNow;
+      this.liftNow += (this.lift - this.liftNow) * Math.min(1, dt * 7);
+      this.root.position.y += this.liftNow - was;
+    }
+    if (this.crush > 0) {
+      this.crush = Math.min(1, this.crush + dt * 3);
+      const k = this.crush;
+      this.body.scale.set(1 - k * 0.85, 1 - k * 0.95, 1 - k * 0.85);
+      this.body.rotation.set(Math.sin(t * 60) * 0.3 * k, this.body.rotation.y + dt * 9 * k, Math.cos(t * 55) * 0.3 * k);
+      this.u.uFade.value = 1 - k * 0.6;
     }
 
     if (this.born) {

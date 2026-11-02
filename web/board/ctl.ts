@@ -1,7 +1,7 @@
-import type { Item, ItemKind, Vec3 } from "../../shared/board";
+import type { BoardSummary, Item, ItemKind, Link, Vec3 } from "../../shared/board";
 import type { BoardClient } from "./client";
 
-export type Tool = "select" | "connect" | "ink";
+export type Tool = "select" | "connect" | "ink" | "lasso" | "erase";
 
 /** What the desktop and the headset can do to the board: implemented by the page. */
 export interface Ctl {
@@ -12,7 +12,7 @@ export interface Ctl {
   setTool(t: Tool): void;
   add(kind: ItemKind, pos: Vec3, extra?: Partial<Item>): string;
   remove(ids: string[]): void;
-  link(from: string, to: string): void;
+  link(from: string, to: string, extra?: Partial<Link>): void;
   /** Edit an item's words (desktop: a text box). */
   edit(id: string): void;
   toggleVoice(): void;
@@ -26,4 +26,10 @@ export interface Ctl {
   up?(): void;
   /** A link picked: its inspector. */
   selectLink?(id: string | null): void;
+  /** Switch to another board (the scene, and a headset session, stay). */
+  open?(boardId: string): void;
+  /** Every board, newest first. */
+  boards?(): BoardSummary[];
+  /** Run a named action (shared/boardActions.ts). */
+  run?(action: string, from?: "button" | "wheel" | "gesture" | "voice" | "dock"): void;
 }

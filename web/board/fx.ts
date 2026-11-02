@@ -68,6 +68,51 @@ export class Fx {
     this.group.add(this.comet, this.trail);
   }
 
+  /* --------------------------------- bursts --------------------------------- */
+
+  private bursts: { pts: THREE.Points; vel: Float32Array; t0: number }[] = [];
+
+  /** Sparks flying out of a point (board space): something crumpled, erased, or arriving. */
+  burst(at: THREE.Vector3, color: string, n = 60, speed = 0.5) {
+    const pos = new Float32Array(n * 3);
+    const vel = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      pos.set([at.x, at.y, at.z], i * 3);
+      const d = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.8 - 0.1, Math.random() - 0.5).normalize().multiplyScalar(speed * (0.3 + Math.random()));
+      vel.set([d.x, d.y, d.z], i * 3);
+    }
+    const pts = new THREE.Points(
+      new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(pos, 3)),
+      new THREE.PointsMaterial({ color, size: 0.01, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+    );
+    pts.frustumCulled = false;
+    pts.userData.noPick = true;
+    this.group.add(pts);
+    this.bursts.push({ pts, vel, t0: performance.now() });
+  }
+
+  private tickBursts() {
+    const now = performance.now();
+    this.bursts = this.bursts.filter((b) => {
+      const age = (now - b.t0) / 1000;
+      if (age > 0.9) {
+        b.pts.removeFromParent();
+        b.pts.geometry.dispose();
+        (b.pts.material as THREE.Material).dispose();
+        return false;
+      }
+      const attr = b.pts.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const dt = 1 / 72;
+      for (let i = 0; i < attr.count; i++) {
+        b.vel[i * 3 + 1] -= 0.9 * dt;
+        attr.setXYZ(i, attr.getX(i) + b.vel[i * 3] * dt, Math.max(0, attr.getY(i) + b.vel[i * 3 + 1] * dt), attr.getZ(i) + b.vel[i * 3 + 2] * dt);
+      }
+      attr.needsUpdate = true;
+      (b.pts.material as THREE.PointsMaterial).opacity = 1 - age / 0.9;
+      return true;
+    });
+  }
+
   /* ---------------------------------- board ---------------------------------- */
 
   update(b: Board) {
@@ -290,6 +335,7 @@ export class Fx {
   /* ---------------------------------- frame ---------------------------------- */
 
   tick(t: number) {
+    if (this.bursts.length) this.tickBursts();
     const now = performance.now();
     // Ghosts nobody's heard from in a while go.
     for (const [id, g] of this.ghosts) {

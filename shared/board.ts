@@ -186,7 +186,33 @@ export type Link = {
   color?: string;
   /** Both ways. */
   both?: boolean;
+  /** How it talks: picks how its traffic moves (REST packets, a Kafka stream, gRPC both ways…). Guessed from the label when unset. */
+  protocol?: Protocol;
+  /** A sample of what flows along it (a JSON body, an event): shown riding along now and then. */
+  sample?: string;
+  /** Drawn by hand: the points (board space) it passes through. */
+  via?: Vec3[];
 };
+
+export const PROTOCOLS = ["rest", "grpc", "graphql", "kafka", "amqp", "websocket", "sql", "http", "events", "file"] as const;
+export type Protocol = (typeof PROTOCOLS)[number];
+
+/** A link's protocol: as set, or guessed from its label and style. */
+export function protocolOf(l: Pick<Link, "protocol" | "label" | "style">): Protocol | null {
+  if (l.protocol) return l.protocol;
+  const s = (l.label ?? "").toLowerCase();
+  if (/grpc|protobuf|rpc/.test(s)) return "grpc";
+  if (/graphql|gql/.test(s)) return "graphql";
+  if (/kafka|kinesis|stream|topic|pulsar/.test(s)) return "kafka";
+  if (/amqp|rabbit|sqs|sns|queue|pub\/?sub|nats/.test(s)) return "amqp";
+  if (/websocket|\bws\b|socket|sse|realtime/.test(s)) return "websocket";
+  if (/sql|postgres|mysql|query|jdbc|select/.test(s)) return "sql";
+  if (/rest|json|https?|api|get|post/.test(s)) return "rest";
+  if (/s3|blob|file|upload|csv|parquet/.test(s)) return "file";
+  if (/\w+\.\w+/.test(s) || l.style === "async") return "events";
+  if (l.style === "data") return "sql";
+  return null;
+}
 
 export type Board = {
   id: string;
@@ -273,6 +299,9 @@ export function cleanLink(l: Partial<Link> & { id: string; from: string; to: str
   if (l.style && LINK_STYLES.includes(l.style)) out.style = l.style;
   if (typeof l.color === "string") out.color = l.color.slice(0, 16);
   if (l.both) out.both = true;
+  if (l.protocol && (PROTOCOLS as readonly string[]).includes(l.protocol)) out.protocol = l.protocol;
+  if (typeof l.sample === "string" && l.sample.trim()) out.sample = l.sample.slice(0, 400);
+  if (Array.isArray(l.via) && l.via.length) out.via = l.via.slice(0, 12).map((p) => v3(p));
   return out;
 }
 
@@ -479,12 +508,12 @@ export function describeBoard(b: Board, opts: { max?: number; selected?: string[
 export type BoardScreen = {
   boardId?: string;
   selected?: string[];
-  tool?: "select" | "connect" | "ink";
+  tool?: "select" | "connect" | "ink" | "lasso" | "erase";
   mode?: "flat" | "vr" | "ar";
   /** Where they're looking, in board space: the camera's target or the head's gaze on the table. */
   focus?: Vec3;
   /** The Tune knobs they've changed from the defaults. */
-  tune?: Record<string, number | boolean>;
+  tune?: Record<string, number | boolean | string>;
 };
 
 /** Commands the voice or the agent sends to a client's screen (they don't change the board). */
@@ -492,10 +521,10 @@ export type BoardCommand =
   | { cmd: "select"; ids: string[] }
   | { cmd: "focus"; ids: string[] }
   | { cmd: "overview" }
-  | { cmd: "tool"; tool: "select" | "connect" | "ink" }
+  | { cmd: "tool"; tool: "select" | "connect" | "ink" | "lasso" | "erase" }
   | { cmd: "open"; boardId: string }
   /** Turn Tune knobs (a preset is all of them). */
-  | { cmd: "tune"; values: Record<string, number | boolean> }
+  | { cmd: "tune"; values: Record<string, number | boolean | string> }
   /** The saved presets changed: fetch them again. */
   | { cmd: "presets" }
   /** Play a sequence: a request flowing through the system, or a guided tour. */

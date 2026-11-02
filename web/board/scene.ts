@@ -66,9 +66,12 @@ export class BoardScene {
   private fly: { from: THREE.Vector3; to: THREE.Vector3; camFrom: THREE.Vector3; camTo: THREE.Vector3; t0: number; ms: number } | null = null;
   private inkLine: THREE.Line;
   private pullLine: THREE.Line;
+  private guideLines: THREE.LineSegments;
   private raycaster = new THREE.Raycaster();
   session: XRSession | null = null;
   onMode?: (m: Mode) => void;
+  /** A different board arrived (switched to). */
+  onSwitch?: (b: Board) => void;
 
   constructor(private host: HTMLElement) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }));
@@ -103,7 +106,14 @@ export class BoardScene {
 
     this.inkLine = previewLine(LOOK.cyan, 4096);
     this.pullLine = previewLine(LOOK.select, 64);
-    this.previews.add(this.inkLine, this.pullLine);
+    this.guideLines = new THREE.LineSegments(
+      new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(12 * 3), 3)),
+      new THREE.LineDashedMaterial({ color: LOOK.cyan, dashSize: 0.01, gapSize: 0.008, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+    );
+    this.guideLines.frustumCulled = false;
+    this.guideLines.visible = false;
+    this.guideLines.userData.noPick = true;
+    this.previews.add(this.inkLine, this.pullLine, this.guideLines);
 
     this.raycaster.params.Line = { threshold: 0.006 };
     this.raycaster.params.Points = { threshold: 0 };
@@ -177,9 +187,28 @@ export class BoardScene {
 
   /* -------------------------------- board -------------------------------- */
 
+  hasBoard() {
+    return !!this.board;
+  }
+
+  /** The next board to arrive is a switch: it prints in, whole. */
+  private switchPending = false;
+  switching() {
+    this.switchPending = true;
+  }
+
+  get boardNow() {
+    return this.board;
+  }
+
   /** Draw this board: new items print in, changed ones update, gone ones fade. */
   setBoard(b: Board) {
-    const fresh = this.loaded && this.board?.id === b.id;
+    let fresh = this.loaded && this.board?.id === b.id;
+    if (this.switchPending && this.board?.id !== b.id) {
+      this.switchPending = false;
+      fresh = true;
+      this.onSwitch?.(b);
+    }
     if (this.board?.id !== b.id) {
       for (const v of this.views.values()) v.dispose();
       for (const l of this.linkViews.values()) l.dispose();
@@ -375,9 +404,29 @@ export class BoardScene {
     setPreview(this.inkLine, points, color);
   }
 
-  /** A link being pulled from an item to a point (board space), or null. */
-  showPull(from: THREE.Vector3 | null, to?: THREE.Vector3) {
+  /** A link being pulled from an item to a point (board space), or null. A drawn path is shown as drawn. */
+  showPull(from: THREE.Vector3 | null, to?: THREE.Vector3, path?: THREE.Vector3[]) {
+    if (from && to && path && path.length > 2) return setPreview(this.pullLine, [from, ...path, to], LOOK.select);
     setPreview(this.pullLine, from && to ? [from, from.clone().lerp(to, 0.5).add(new THREE.Vector3(0, 0.05 + from.distanceTo(to) * 0.12, 0)), to] : null, LOOK.select, true);
+  }
+
+  /** Magnet guides: dashed lines along what an item lined up with (board space), or null. */
+  showGuides(g: [THREE.Vector3, THREE.Vector3][] | null) {
+    const l = this.guideLines;
+    if (!g?.length) {
+      l.visible = false;
+      return;
+    }
+    const attr = l.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const n = Math.min(6, g.length);
+    for (let i = 0; i < n; i++) {
+      attr.setXYZ(i * 2, g[i][0].x, g[i][0].y, g[i][0].z);
+      attr.setXYZ(i * 2 + 1, g[i][1].x, g[i][1].y, g[i][1].z);
+    }
+    attr.needsUpdate = true;
+    l.geometry.setDrawRange(0, n * 2);
+    l.computeLineDistances();
+    l.visible = true;
   }
 
   /* --------------------------------- XR ---------------------------------- */

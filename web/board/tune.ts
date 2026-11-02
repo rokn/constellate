@@ -7,7 +7,7 @@ import { BOARD_KNOBS, DEFAULT_BOARD_TUNE, cleanTune } from "../../shared/boardTu
  */
 
 const KEY = "workshop.tune";
-type Values = Record<string, number | boolean>;
+type Values = Record<string, number | boolean | string>;
 
 function load(): Values {
   try {
@@ -26,6 +26,8 @@ export let tuneRev = 0;
 
 export const num = (k: string) => Number(T[k] ?? DEFAULT_BOARD_TUNE[k] ?? 0);
 export const on = (k: string) => (T[k] ?? DEFAULT_BOARD_TUNE[k]) !== false;
+/** A choice knob's value (an action id, a mode). */
+export const pick = (k: string) => String(T[k] ?? DEFAULT_BOARD_TUNE[k] ?? "");
 
 /** Change knobs: applied at once, kept, and told to everything listening. */
 export function setTune(patch: Values) {

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { BOARD_KNOBS, BOARD_SECTIONS, BUILT_IN_PRESETS, DEFAULT_BOARD_TUNE, boardKnobValue, changedTune, cleanTune, findBoardKnob, tuneList, type BoardPreset } from "../../shared/boardTune";
+import { BOARD_KNOBS, BOARD_SECTIONS, BUILT_IN_PRESETS, DEFAULT_BOARD_TUNE, boardKnobValue, changedTune, cleanTune, findBoardKnob, isKnobError, tuneList, type BoardPreset, type TuneValue } from "../../shared/boardTune";
 import type { BoardScreen } from "../../shared/board";
 import { CACHE_DIR } from "../session";
 import { command } from "./store";
@@ -66,7 +66,7 @@ export async function runBoardTune(name: string, args: Record<string, unknown>, 
   const now = { ...DEFAULT_BOARD_TUNE, ...(screen.tune ?? {}) };
   switch (name) {
     case "tune": {
-      const values: Record<string, number | boolean> = {};
+      const values: Record<string, TuneValue> = {};
       const done: string[] = [];
       const errors: string[] = [];
       for (const part of str("changes").split(/[,;\n]+/)) {
@@ -81,7 +81,7 @@ export async function runBoardTune(name: string, args: Record<string, unknown>, 
           continue;
         }
         const v = boardKnobValue(k, m[2]);
-        if (typeof v === "string") errors.push(v);
+        if (isKnobError(v)) errors.push(v.error);
         else {
           values[k.key] = v;
           done.push(`${k.label} ${typeof v === "boolean" ? (v ? "on" : "off") : v}`);

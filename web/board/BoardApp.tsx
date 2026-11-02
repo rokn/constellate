@@ -8,6 +8,7 @@ import {
   nameOf,
   newId,
   type Board,
+  type BoardCommand,
   type BoardScreen,
   type BoardSummary,
   type Item,
@@ -23,6 +24,7 @@ import { BoardScene, type Mode } from "./scene";
 import type { XRInput } from "./xr";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
+import { fromClip, toClip } from "../../shared/exchange";
 import { Breadcrumbs, ExchangeDialog, FindPalette, HistoryPanel, LayersPopover, LibraryList, LinkInspector, PlayerBar, PreviewBar, TemplateList } from "./panels";
 import type { Layers } from "./fx";
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
@@ -90,7 +92,8 @@ export function BoardApp() {
 
   if (error) return <div className="grid h-full place-items-center text-red-300">{error}</div>;
   if (!boardId) return <div className="ws-root grid h-full place-items-center text-[#7fa6bd]">Powering up…</div>;
-  return <Workshop key={boardId} boardId={boardId} boards={boards} open={open} reloadBoards={loadBoards} />;
+  // One workshop for every board: switching boards keeps the scene (and a headset session) alive.
+  return <Workshop boardId={boardId} boards={boards} open={open} reloadBoards={loadBoards} />;
 }
 
 function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; boards: BoardSummary[]; open: (id: string) => void; reloadBoards: () => Promise<BoardSummary[]> }) {
@@ -98,6 +101,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const sceneRef = useRef<BoardScene | null>(null);
   const xrRef = useRef<XRInput | null>(null);
   const client = useMemo(() => new BoardClient(boardId), [boardId]);
+  const clientRef = useRef(client);
+  clientRef.current = client;
+  const boardsRef = useRef(boards);
+  boardsRef.current = boards;
   const [board, setBoard] = useState<Board | null>(null);
   const [selected, setSelectedState] = useState<string[]>([]);
   const [tool, setToolState] = useState<Tool>("select");
@@ -183,13 +190,21 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const sendAskRef = useRef(sendAsk);
   sendAskRef.current = sendAsk;
   const insideRef = useRef<(id: string) => void>(() => {});
+  const runRef = useRef<(a: string, from?: string) => void>(() => {});
+  /** Actions the later parts of the page add (sketches, photos, snapshots, …). */
+  const extraActionsRef = useRef<(a: string, from?: string) => void>(() => {});
+  const dictateRef = useRef<(id: string | null) => void>(() => {});
+  /** Commands the page itself handles beyond the scene's (actions, dictation, sketches…). */
+  const commandRef = useRef<(c: BoardCommand) => void>(() => {});
   const openRef = useRef(open);
   openRef.current = open;
 
   /** Everything the desktop and the headset do to the board. */
   const ctl: Ctl = useMemo(
     () => ({
-      client,
+      get client() {
+        return clientRef.current;
+      },
       selected: () => selRef.current,
       select: (ids, additive) => {
         const cur = selRef.current;
@@ -206,7 +221,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       add: (kind, pos, extra) => {
         const id = newId();
         const item = { ...defaultsFor(kind), ...extra, id, kind, pos } as Item;
-        client.apply([{ op: "add", items: [item] }]);
+        clientRef.current.apply([{ op: "add", items: [item] }]);
         return id;
       },
       remove: (ids) => {
@@ -214,10 +229,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
           const v = sceneRef.current?.views.get(id);
           if (v) v.dying = 1;
         }
-        client.apply([{ op: "remove", ids }]);
+        clientRef.current.apply([{ op: "remove", ids }]);
         setSelected(selRef.current.filter((x) => !ids.includes(x)));
       },
-      link: (from, to) => client.apply([{ op: "link", links: [{ id: newId("l"), from, to, style: "sync" }] }]),
+      link: (from, to, extra) => clientRef.current.apply([{ op: "link", links: [{ id: newId("l"), from, to, style: "sync", ...extra }] }]),
       edit: (id) => setEditing(id),
       toggleVoice: () => {
         const v = voiceRef.current;
@@ -231,33 +246,88 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       },
       inside: (id) => insideRef.current(id),
       up: () => {
-        const p = client.board?.parent;
+        const p = clientRef.current.board?.parent;
         if (p) openRef.current(p.boardId);
       },
+      open: (id) => openRef.current(id),
+      boards: () => boardsRef.current,
       selectLink: (id) => {
         setSelLink(id);
         if (id) setSelected([]);
       },
       ask: (t) => sendAskRef.current(t),
+      run: (a, from) => runRef.current(a, from),
       inkColor: () => colorOf(inkRef.current),
     }),
-    [client, setSelected],
+    [setSelected],
   );
 
-  // The scene, the desktop's mouse, and (once a headset is found) the headset's hands.
+  // The scene and the desktop's mouse: made once, kept across boards.
   useEffect(() => {
     const s = new BoardScene(host.current!);
     sceneRef.current = s;
-    s.isHeld = (id) => client.isHeld(id);
+    s.isHeld = (id) => clientRef.current.isHeld(id);
     (window as unknown as { __board: unknown }).__board = s;
     const offDesk = attachDesktop(s, ctl);
+    s.fx.onCaption = () => setPlayCaption(s.fx.caption ? { ...s.fx.caption } : null);
+    // Where this screen is, for the others: the camera on a desktop, the head and hands in a headset.
+    let lastSent = "";
+    const pres = setInterval(() => {
+      const r3 = (v: THREE.Vector3): Vec3 => [round(v.x), round(v.y), round(v.z)];
+      const client = clientRef.current;
+      let p: Parameters<typeof client.sendPresence>[0];
+      if (s.mode === "flat") p = { mode: "flat", head: r3(s.camera.position), look: r3(s.controls.target) };
+      else {
+        const cam = s.renderer.xr.getCamera();
+        const head = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+        const look = head.clone().add(new THREE.Vector3(0, 0, -0.5).transformDirection(cam.matrixWorld));
+        p = { mode: s.mode, head: r3(s.toBoard(head)), look: r3(s.toBoard(look)), hands: xrRef.current?.presenceHands().map((h) => ({ at: r3(s.toBoard(h.at)), to: h.to ? r3(s.toBoard(h.to)) : undefined })) };
+      }
+      const key = `${client.id}|${JSON.stringify(p)}`;
+      if (key === lastSent) return;
+      lastSent = key;
+      client.sendPresence(p);
+    }, 150);
+    s.onMode = (m) => {
+      setMode(m);
+      if (m === "flat") xrRef.current?.left();
+      else xrRef.current?.entered();
+    };
+    // Where they're looking, now and then, for the voice and the builder.
+    const t = setInterval(() => {
+      const f = s.focusPoint();
+      setFocus((old) => (Math.hypot(old[0] - f[0], old[2] - f[2]) > 0.05 ? f : old));
+    }, 1000);
+    return () => {
+      clearInterval(t);
+      clearInterval(pres);
+      offDesk();
+      xrRef.current?.dispose();
+      xrRef.current = null;
+      s.dispose();
+      sceneRef.current = null;
+    };
+  }, [ctl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // This board: streamed in, its commands and the others on it. A new board prints in where the last one stood.
+  useEffect(() => {
+    const s = sceneRef.current!;
     const offClient = client.open();
     let raf = 0;
     let booted = false;
+    setSelected([]);
+    setSelLink(null);
+    setEditing(null);
+    setPreview(null);
+    previewRef.current = null;
+    s.fx.stop();
+    s.fx.setLayers({ hide: [], isolate: null }, null);
+    setLayers({ hide: [], isolate: null });
     const offBoard = client.subscribe((b) => {
       if (!booted) {
         booted = true;
-        s.fx.startBoot(b.name);
+        if (!s.hasBoard()) s.fx.startBoot(b.name);
+        else s.switching();
       }
       // While an old version is shown, the live board waits.
       if (!previewRef.current) s.setBoard(b);
@@ -281,52 +351,17 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (c.cmd === "layers") {
         s.fx.setLayers({ hide: c.hide, isolate: c.isolate }, client.board);
         setLayers({ ...s.fx.layers });
-      }
+      } else commandRef.current(c);
     });
-    s.fx.onCaption = () => setPlayCaption(s.fx.caption ? { ...s.fx.caption } : null);
     const offPresence = client.onPresence((p) => s.fx.presence(p));
-    // Where this screen is, for the others: the camera on a desktop, the head and hands in a headset.
-    let lastSent = "";
-    const pres = setInterval(() => {
-      const r3 = (v: THREE.Vector3): Vec3 => [round(v.x), round(v.y), round(v.z)];
-      let p: Parameters<typeof client.sendPresence>[0];
-      if (s.mode === "flat") p = { mode: "flat", head: r3(s.camera.position), look: r3(s.controls.target) };
-      else {
-        const cam = s.renderer.xr.getCamera();
-        const head = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
-        const look = head.clone().add(new THREE.Vector3(0, 0, -0.5).transformDirection(cam.matrixWorld));
-        p = { mode: s.mode, head: r3(s.toBoard(head)), look: r3(s.toBoard(look)), hands: xrRef.current?.presenceHands().map((h) => ({ at: r3(s.toBoard(h.at)), to: h.to ? r3(s.toBoard(h.to)) : undefined })) };
-      }
-      const key = JSON.stringify(p);
-      if (key === lastSent) return;
-      lastSent = key;
-      client.sendPresence(p);
-    }, 150);
-    s.onMode = (m) => {
-      setMode(m);
-      if (m === "flat") xrRef.current?.left();
-      else xrRef.current?.entered();
-    };
-    // Where they're looking, now and then, for the voice and the builder.
-    const t = setInterval(() => {
-      const f = s.focusPoint();
-      setFocus((old) => (Math.hypot(old[0] - f[0], old[2] - f[2]) > 0.05 ? f : old));
-    }, 1000);
     return () => {
-      clearInterval(t);
-      clearInterval(pres);
       offPresence();
       cancelAnimationFrame(raf);
-      offDesk();
       offClient();
       offBoard();
       offCmd();
-      xrRef.current?.dispose();
-      xrRef.current = null;
-      s.dispose();
-      sceneRef.current = null;
     };
-  }, [client, ctl, setSelected, loadPresets]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [client, setSelected, loadPresets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A headset? Then the buttons, and its hands, ready before you press.
   useEffect(() => {
@@ -336,18 +371,18 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       setXr({ vr, ar });
       if ((vr || ar) && sceneRef.current && !xrRef.current) {
         void import("./xr").then(({ XRInput }) => {
-          if (sceneRef.current && !xrRef.current) xrRef.current = new XRInput(sceneRef.current, ctl, () => client.board?.activity, xrExtras());
+          if (sceneRef.current && !xrRef.current) xrRef.current = new XRInput(sceneRef.current, ctl, () => clientRef.current.board?.activity, xrExtras());
         });
       }
     });
-  }, [ctl, client]);
+  }, [ctl]);
 
   /** What the headset's palette and Tune panel offer beyond the components. */
   function xrExtras() {
     return {
       extras: () => ({
-        library: LIBRARY_NAMES.map((name) => ({ name, make: () => placePrefab(name) })),
-        templates: TEMPLATE_LIST.map((t) => ({ name: t.name, make: () => placeTemplate(t.name) })),
+        library: LIBRARY_NAMES.map((name) => ({ name, make: () => liveRef.current.placePrefab(name) })),
+        templates: TEMPLATE_LIST.map((t) => ({ name: t.name, make: () => void liveRef.current.placeTemplate(t.name) })),
       }),
       presets: () => [...BUILT_IN_PRESETS, ...presetsRef.current],
       onPreset: (p: BoardPreset) => applyPreset(p.values),
@@ -359,7 +394,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     try {
       if (!xrRef.current && sceneRef.current) {
         const { XRInput } = await import("./xr");
-        xrRef.current = new XRInput(sceneRef.current, ctl, () => client.board?.activity, xrExtras());
+        xrRef.current = new XRInput(sceneRef.current, ctl, () => clientRef.current.board?.activity, xrExtras());
       }
       // Audio starts on the press that took you in, while it still counts as one.
       const { sfx } = await import("../xr/sound");
@@ -386,8 +421,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (e.key === ",") setTuneOpen((o) => !o);
       else if (e.key === "h") setHistoryOpen((o) => !o);
       else if (e.key === "l") setLayersOpen((o) => !o);
-      else if (e.key === "i" && selRef.current.length === 1) void goInside(selRef.current[0]);
-      else if (e.key === "u" && client.board?.parent) open(client.board.parent.boardId);
+      else if (e.key === "i" && selRef.current.length === 1) insideRef.current(selRef.current[0]);
+      else if (e.key === "u" && clientRef.current.board?.parent) openRef.current(clientRef.current.board.parent.boardId);
       else if (e.key === " " && e.target === document.body) {
         e.preventDefault();
         ctl.toggleVoice();
@@ -438,6 +473,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   };
 
   insideRef.current = (id) => void goInside(id);
+  /** What the headset's panels call: always this render's, so always this board's. */
+  const liveRef = useRef({ placePrefab, placeTemplate });
+  liveRef.current = { placePrefab, placeTemplate };
 
   const showPreview = (v: { id: string; label: string; board: Board } | null) => {
     setPreview(v);
@@ -464,6 +502,105 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else void newBoard();
     }
   };
+
+  /** One action, by id (shared/boardActions.ts): the headset's own first, then the page's. */
+  function runAction(a: string, from?: string) {
+    if (xrRef.current && sceneRef.current?.mode !== "flat" && xrRef.current.handle(a)) return;
+    const s = sceneRef.current;
+    const b = client.board;
+    const sel = selRef.current;
+    const items = b?.items.filter((i) => sel.includes(i.id)) ?? [];
+    const patchSel = (patch: Partial<Item>) => items.length && client.apply(items.map((i) => ({ op: "update" as const, id: i.id, patch })));
+    const removeKind = (kinds: string[]) => {
+      const ids = b?.items.filter((i) => kinds.includes(i.kind)).map((i) => i.id) ?? [];
+      if (ids.length) ctl.remove(ids);
+    };
+    const cycleBoards = (d: number) => {
+      const list = [...boardsRef.current].sort((x, y) => x.name.localeCompare(y.name));
+      if (list.length < 2) return;
+      const i = list.findIndex((x) => x.id === boardId);
+      open(list[(i + d + list.length) % list.length].id);
+    };
+    switch (a) {
+      case "voice":
+        return ctl.toggleVoice();
+      case "ask-selection": {
+        const v = voiceRef.current;
+        if (v.state === "idle" || v.state === "error") void v.start();
+        return;
+      }
+      case "dictate":
+        return dictateRef.current(sel[0] ?? null);
+      case "undo":
+        return client.undo();
+      case "redo":
+        return client.redo();
+      case "save-version":
+        void fetch("/api/board/versions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: boardId, label: "Saved" }) });
+        return;
+      case "tool-select":
+      case "tool-connect":
+      case "tool-ink":
+      case "tool-lasso":
+      case "tool-erase":
+        return setToolState(a.slice(5) as Tool);
+      case "tool-cycle": {
+        const order: Tool[] = ["select", "connect", "ink", "lasso", "erase"];
+        return setToolState(order[(order.indexOf(toolRef.current) + 1) % order.length]);
+      }
+      case "delete-selection":
+        if (sel.length) ctl.remove(sel);
+        return;
+      case "deselect":
+        return setSelected([]);
+      case "duplicate": {
+        if (!b || !sel.length) return;
+        const c = items.reduce((acc, i) => [acc[0] + i.pos[0] / items.length, 0, acc[2] + i.pos[2] / items.length] as Vec3, [0, 0, 0] as Vec3);
+        const out = fromClip(toClip(b, sel), [c[0] + 0.28, 0, c[2] + 0.12]);
+        if (!out) return;
+        client.apply([{ op: "add", items: out.items, links: out.links }]);
+        return setSelected(out.items.map((i) => i.id));
+      }
+      case "explode-toggle":
+        return void patchSel({ explode: (items[0]?.explode ?? 0) > 0.5 ? 0 : 1 });
+      case "spin-toggle":
+        return void patchSel({ spin: !items[0]?.spin });
+      case "mark-done":
+        return void patchSel({ status: "done" });
+      case "inside":
+        if (sel.length === 1) insideRef.current(sel[0]);
+        return;
+      case "up":
+        return ctl.up?.();
+      case "clear-ink":
+        return removeKind(["ink"]);
+      case "clear-notes":
+        return removeKind(["note"]);
+      case "clear-flags": {
+        const ids = b?.items.filter((i) => i.flags?.length).map((i) => i.id) ?? [];
+        if (ids.length) client.apply(ids.map((id) => ({ op: "update" as const, id, patch: { flags: null as never } })));
+        return;
+      }
+      case "next-board":
+        return cycleBoards(1);
+      case "prev-board":
+        return cycleBoards(-1);
+      case "labels-toggle":
+        return setTune({ labels: !on("labels") });
+      case "layers-reset":
+        s?.fx.setLayers({ hide: [], isolate: null }, b);
+        return setLayers({ hide: [], isolate: null });
+      case "tune":
+        return setTuneOpen((o) => !o);
+      case "recenter":
+        return s?.overview();
+      case "review":
+        return sendAsk("Review this design: flag the real issues (single points of failure, missing auth, hot paths, cost traps), then tell me the top one or two.");
+      default:
+        extraActionsRef.current(a, from);
+    }
+  }
+  runRef.current = runAction;
 
   const sel = selected.length === 1 ? board?.items.find((i) => i.id === selected[0]) ?? null : null;
   const activity = board?.activity;
@@ -614,9 +751,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
             </Section>
             <Section title="Tools">
               <div className="flex gap-1.5">
-                {(["select", "connect", "ink"] as Tool[]).map((t) => (
-                  <button key={t} className={`ws-tool ${tool === t ? "ws-tool-on" : ""}`} onClick={() => setToolState(t)} title={`${t} (${t === "select" ? "V" : t === "connect" ? "C" : "D"})`}>
-                    {t === "select" ? "⌖" : t === "connect" ? "⟿" : "✎"}
+                {(["select", "connect", "ink", "lasso", "erase"] as Tool[]).map((t) => (
+                  <button key={t} className={`ws-tool ${tool === t ? "ws-tool-on" : ""}`} onClick={() => setToolState(t)} title={`${t} (${({ select: "V", connect: "C", ink: "D", lasso: "S", erase: "X" } as Record<Tool, string>)[t]})`}>
+                    {({ select: "⌖", connect: "⟿", ink: "✎", lasso: "◌", erase: "⌫" } as Record<Tool, string>)[t]}
                   </button>
                 ))}
               </div>
@@ -628,7 +765,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                 </div>
               )}
               <div className="mt-2 text-[11px] leading-tight text-[#7fa6bd]">
-                {tool === "connect" ? "Drag from one item to another." : tool === "ink" ? "Draw on the table." : "Drag to move · Shift-drag on an item to lift it, on the table to box-select · double-click to edit"}
+                {tool === "connect" ? "Drag from one item to another." : tool === "ink" ? "Draw on the table." : tool === "lasso" ? "Drag across items to select them all." : tool === "erase" ? "Drag across items to delete them all (⌘Z brings them back)." : "Drag to move · Shift-drag on an item to lift it, on the table to box-select · double-click to edit"}
               </div>
             </Section>
             </>)}

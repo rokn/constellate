@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { BOARD_SECTIONS, BUILT_IN_PRESETS, DEFAULT_BOARD_TUNE, changedTune, type BoardPreset } from "../../shared/boardTune";
+import { ACTION_IDS, actionById } from "../../shared/boardActions";
 import { T, applyPreset, onTune, resetTune, setTune } from "./tune";
 
 /**
@@ -96,7 +97,25 @@ export function TunePanel({ presets, onPresets, onClose }: { presets: BoardPrese
                     <div key={k.key} title={k.hint}>
                       <div className="flex items-center justify-between text-[12.5px]">
                         <span className={isChanged ? "text-[#ffd08a]" : "text-[#b9d8e6]"}>{k.label}</span>
-                        {"toggle" in k ? (
+                        {"choices" in k ? (
+                          k.choices === ACTION_IDS || k.choices.length > 4 ? (
+                            <select className="ws-input max-w-[9.5rem] py-0.5 text-[11px]" value={String(v)} onChange={(e) => setTune({ [k.key]: e.target.value })}>
+                              {k.choices.map((ch) => (
+                                <option key={ch} value={ch}>
+                                  {actionById(ch)?.label ?? ch}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="flex gap-0.5">
+                              {k.choices.map((ch) => (
+                                <button key={ch} className={`rounded px-1.5 py-0.5 text-[11px] ${v === ch ? "bg-[#ffb547] text-[#02060d]" : "text-[#7fa6bd] hover:text-white"}`} onClick={() => setTune({ [k.key]: ch })}>
+                                  {ch}
+                                </button>
+                              ))}
+                            </span>
+                          )
+                        ) : "toggle" in k ? (
                           <button
                             className={`h-4 w-8 rounded-full transition ${v ? "bg-[#ffb547]" : "bg-[#1d3446]"}`}
                             onClick={() => setTune({ [k.key]: !v })}
@@ -115,7 +134,7 @@ export function TunePanel({ presets, onPresets, onClose }: { presets: BoardPrese
                           </span>
                         )}
                       </div>
-                      {!("toggle" in k) && (
+                      {"min" in k && (
                         <input type="range" className="ws-range w-full" min={k.min} max={k.max} step={k.step} value={Number(v)} onChange={(e) => setTune({ [k.key]: Number(e.target.value) })} />
                       )}
                     </div>

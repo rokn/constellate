@@ -67,11 +67,12 @@ export class LinkView {
     const end = cb.clone().addScaledVector(flat, -rb);
     const mid = start.clone().lerp(end, 0.5);
     mid.y += (0.04 + d * 0.12) * num("arcHeight");
-    const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+    const via = on("drawnLinks") && this.link.via?.length ? this.link.via.map((p) => new THREE.Vector3(...p)) : null;
+    const curve: THREE.Curve<THREE.Vector3> = via ? new THREE.CatmullRomCurve3([start, ...via, end], false, "centripetal") : new THREE.QuadraticBezierCurve3(start, mid, end);
     const len = curve.getLength();
     const mat = linkMaterial(color, { dashed: st.dashed, opacity: st.opacity, speed: st.speed, len });
     const radius = st.radius * num("linkWidth");
-    this.tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, radius, 6), mat);
+    this.tube = new THREE.Mesh(new THREE.TubeGeometry(curve, via ? 96 : 48, radius, 6), mat);
     this.tube.renderOrder = 4;
     this.root.add(this.tube);
 
