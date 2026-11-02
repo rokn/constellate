@@ -3,7 +3,7 @@ import type { BoardScreen, Op, Part } from "../../shared/board";
 import { ARRANGEMENTS, arrange, type Arrangement } from "../../shared/boardLayout";
 import { askBoard, stopBoardAgent } from "./agent";
 import { reportBuild } from "./holo";
-import { boardInside, change, createBoard, deleteBoard, getBoard, getVersion, listBoards, listVersions, onCommand, onPresence, presence, redo, restoreVersion, saveVersion, undo, watch } from "./store";
+import { boardInside, change, createBoard, deleteBoard, getBoard, getVersion, historyStates, listBoards, listVersions, onCommand, onPresence, presence, redo, restoreVersion, rewind, saveVersion, undo, watch } from "./store";
 import { loadPresets, savePresets } from "./tune";
 import type { BoardPreset } from "../../shared/boardTune";
 
@@ -83,6 +83,18 @@ export async function boardApi(
       const b = await body<{ id?: string }>(req);
       const done = b.id ? await (route.endsWith("undo") ? undo(b.id) : redo(b.id)) : false;
       json(res, 200, { ok: done });
+      return true;
+    }
+    case "GET /api/board/history": {
+      const h = await historyStates(url.searchParams.get("id") ?? "");
+      if (!h) return json(res, 404, { error: "No such board." }), true;
+      json(res, 200, h);
+      return true;
+    }
+    case "POST /api/board/rewind": {
+      const b = await body<{ id?: string; steps?: number }>(req);
+      if (!b.id || typeof b.steps !== "number") return json(res, 400, { error: "Need a board and steps." }), true;
+      json(res, 200, { ok: true, moved: await rewind(b.id, Math.max(-60, Math.min(60, Math.round(b.steps)))) });
       return true;
     }
     case "POST /api/board/arrange": {

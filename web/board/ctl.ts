@@ -30,6 +30,8 @@ export interface Ctl {
   open?(boardId: string): void;
   /** Every board, newest first. */
   boards?(): BoardSummary[];
+  /** Show a board that isn't live (history being scrubbed), or the live one again (null). */
+  preview?(b: import("../../shared/board").Board | null, label?: string): void;
   /** Run a named action (shared/boardActions.ts). */
   run?(action: string, from?: "button" | "wheel" | "gesture" | "voice" | "dock"): void;
 }

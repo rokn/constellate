@@ -142,6 +142,9 @@ export class Toast extends HoloPanel {
   show(text: string, at: THREE.Vector3, head: THREE.Vector3, ms = 1300) {
     if (text !== this.text) {
       this.text = text;
+      // As wide as what it says.
+      const w = THREE.MathUtils.clamp(0.035 + text.length * 0.0088, 0.1, 0.4);
+      if (Math.abs(w - this.widthM) > 0.012) this.resize(w, 0.035);
       this.invalidate();
     }
     this.until = performance.now() + ms;

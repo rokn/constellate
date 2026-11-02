@@ -133,6 +133,7 @@ export const BOARD_SECTIONS: BoardSection[] = [
       t("captions", "Captions"),
       t("callout", "Inspector beside the item"),
       t("wristMenu", "Wrist menu"),
+      t("snapshotThumbs", "Pictures on snapshot cards"),
     ],
   },
   {
@@ -321,6 +322,7 @@ export const DEFAULT_BOARD_TUNE: Record<string, TuneValue> = {
   captions: true,
   callout: true,
   wristMenu: true,
+  snapshotThumbs: true,
   rays: true,
   rayBrightness: 0.55,
   handModels: true,

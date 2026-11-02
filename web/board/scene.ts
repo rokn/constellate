@@ -431,6 +431,12 @@ export class BoardScene {
     this.flyTo(c, r);
   }
 
+  /** Desktop: fly the camera to stand at `cam` looking at `target` (board space). */
+  flyView(cam: THREE.Vector3, target: THREE.Vector3) {
+    if (this.mode !== "flat") return;
+    this.fly = { from: this.controls.target.clone(), to: target.clone(), camFrom: this.camera.position.clone(), camTo: cam.clone(), t0: performance.now(), ms: num("flySeconds") * 1000 };
+  }
+
   overview() {
     if (this.mode !== "flat") return;
     this.flyTo(new THREE.Vector3(0, 0.12, 0), 1.45);

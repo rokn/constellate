@@ -13,6 +13,7 @@ import {
   type BoardSummary,
   type Item,
   type ItemKind,
+  type Snap,
   type Vec3,
 } from "../../shared/board";
 import { useVoice } from "../lib/useVoice";
@@ -23,6 +24,9 @@ import { LOOK, STATUS_COLOR } from "./look";
 import { BoardScene, type Mode } from "./scene";
 import type { XRInput, XRPlugin } from "./xr";
 import { RoomXR } from "./room";
+import { ScrubXR } from "./scrub";
+import { SnapsXR } from "./snaps";
+import { GesturesXR } from "./gestures";
 import { ShelfXR } from "./shelf";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
@@ -194,6 +198,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   sendAskRef.current = sendAsk;
   const insideRef = useRef<(id: string) => void>(() => {});
   const runRef = useRef<(a: string, from?: string) => void>(() => {});
+  const previewFnRef = useRef<(v: { id: string; label: string; board: Board } | null) => void>(() => {});
   const reloadRef = useRef(reloadBoards);
   reloadRef.current = reloadBoards;
   /** More of the headset (history scrubbing, snapshots, gestures), plugged in when the hands are made. */
@@ -266,6 +271,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       },
       ask: (t) => sendAskRef.current(t),
       run: (a, from) => runRef.current(a, from),
+      preview: (b, label) => previewFnRef.current(b ? { id: "scrub", label: label ?? "History", board: b } : null),
       inkColor: () => colorOf(inkRef.current),
     }),
     [setSelected],
@@ -455,6 +461,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       } else if (e.metaKey || e.ctrlKey || e.altKey) return;
       else if (e.key === "?") setHelp((h) => !h);
       else if (e.key === ",") setTuneOpen((o) => !o);
+      else if (e.key === "k") runRef.current("snapshot");
       else if (e.key === "t") (runRef.current("tiers"), setTiersOn(!!sceneRef.current?.tiersOn));
       else if (e.key === "h") setHistoryOpen((o) => !o);
       else if (e.key === "l") setLayersOpen((o) => !o);
@@ -525,6 +532,57 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     if (v) s.setBoard(v.board);
     else if (client.board) s.setBoard(client.board);
   };
+
+  previewFnRef.current = showPreview;
+
+  /* -------------------------------- views ------------------------------- */
+
+  const [viewsOpen, setViewsOpen] = useState(false);
+  /** Keep the desktop's view as a card. */
+  const keepView = () => {
+    const s = sceneRef.current;
+    if (!s || s.mode !== "flat") return;
+    let thumb: string | undefined;
+    if (on("snapshotThumbs")) {
+      // Drawn fresh, then read in the same breath, before the browser clears it.
+      s.capture();
+      const c = document.createElement("canvas");
+      c.width = 240;
+      c.height = 150;
+      const ctx = c.getContext("2d")!;
+      const r = s.renderer.domElement;
+      const k = Math.max(240 / r.width, 150 / r.height);
+      ctx.drawImage(r, (240 - r.width * k) / 2, (150 - r.height * k) / 2, r.width * k, r.height * k);
+      thumb = c.toDataURL("image/jpeg", 0.62);
+    }
+    const n = (client.board?.snaps?.length ?? 0) + 1;
+    const v = (x: THREE.Vector3): Vec3 => [round(x.x), round(x.y), round(x.z)];
+    client.apply([{ op: "snap", snap: { id: newId("s"), label: `View ${n}`, at: Date.now(), head: v(s.camera.position), look: v(s.controls.target), selected: selRef.current, thumb } }]);
+  };
+  const goView = (sn: Snap) => {
+    sceneRef.current?.flyView(new THREE.Vector3(...sn.head), new THREE.Vector3(...sn.look));
+    if (sn.selected?.length) setSelected(sn.selected);
+  };
+  extraActionsRef.current = (a) => {
+    if (a === "snapshot") keepView();
+    else if (a === "snapshots") setViewsOpen((o) => !o);
+  };
+  xrPluginMakers.current = [
+    (x) =>
+      new ScrubXR(x, {
+        boardId: () => clientRef.current.id,
+        board: () => clientRef.current.board,
+        preview: (b, label) => ctl.preview?.(b, label),
+      }),
+    (x) =>
+      new SnapsXR(x, {
+        board: () => clientRef.current.board,
+        apply: (snap) => clientRef.current.apply([{ op: "snap", snap }]),
+        remove: (id) => clientRef.current.apply([{ op: "unsnap", ids: [id] }]),
+        select: (ids) => setSelected(ids),
+      }),
+    (x) => new GesturesXR(x),
+  ];
 
   const rename = (name: string) => client.apply([{ op: "rename", name }]);
   const newBoard = async () => {
@@ -727,6 +785,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               <button className={`ws-chip ${historyOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setHistoryOpen((o) => !o)} title="History: versions to go back to (H)">
                 History
               </button>
+              <button className={`ws-chip ${viewsOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setViewsOpen((o) => !o)} title="Views: snapshot cards of where you looked (K keeps this one)">
+                Views{board?.snaps?.length ? ` · ${board.snaps.length}` : ""}
+              </button>
               <button className={`ws-chip ${tiersOn ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => (runAction("tiers"), setTiersOn(!!sceneRef.current?.tiersOn))} title="Depth tiers: frames float as layers (T)">
                 Tiers
               </button>
@@ -845,6 +906,37 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                 void fetch("/api/board/versions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: boardId, restore: preview.id }) }).then(() => showPreview(null));
               }}
             />
+          )}
+          {viewsOpen && board && (
+            <div className="ws-panel absolute right-4 top-20 z-20 w-[22rem] p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="ws-title">Views</div>
+                <div className="flex gap-2 text-xs">
+                  <button className="ws-btn !py-0.5" onClick={keepView}>
+                    + Keep this view (K)
+                  </button>
+                  <button className="text-[#7fa6bd] hover:text-white" onClick={() => setViewsOpen(false)}>
+                    ✕
+                  </button>
+                </div>
+              </div>
+              <div className="grid max-h-[60vh] grid-cols-2 gap-2 overflow-auto">
+                {[...(board.snaps ?? [])].reverse().map((sn) => (
+                  <div key={sn.id} className="group relative">
+                    <button className="block w-full overflow-hidden rounded border border-cyan-300/20 hover:border-[#ffb547]" onClick={() => goView(sn)}>
+                      {sn.thumb ? <img src={sn.thumb} className="aspect-[1.6] w-full object-cover" /> : <div className="grid aspect-[1.6] place-items-center text-xs text-[#4f7286]">no picture</div>}
+                    </button>
+                    <div className="mt-0.5 flex items-center justify-between text-[11px] text-[#9fc3d6]">
+                      <span className="truncate">{sn.label}</span>
+                      <button className="opacity-0 group-hover:opacity-70 hover:!opacity-100 hover:text-red-300" onClick={() => client.apply([{ op: "unsnap", ids: [sn.id] }])}>
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!board.snaps?.length && <div className="col-span-2 text-xs text-[#7fa6bd]">No views kept. In the headset: hold Y, or the wheel.</div>}
+              </div>
+            </div>
           )}
           {layersOpen && (
             <LayersPopover

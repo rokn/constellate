@@ -167,6 +167,27 @@ export async function redo(id: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * The undo history as boards, for scrubbing through: what it was N steps
+ * back (undo, positive) or forward (redo, negative), nearest first.
+ */
+export async function historyStates(id: string, max = 40): Promise<{ back: Pick<Board, "name" | "items" | "links">[]; forward: Pick<Board, "name" | "items" | "links">[] } | null> {
+  const l = await getBoard(id);
+  if (!l) return null;
+  const parse = (s: string) => JSON.parse(s) as Pick<Board, "name" | "items" | "links">;
+  return { back: l.undo.slice(-max).reverse().map(parse), forward: l.redo.slice(-max).reverse().map(parse) };
+}
+
+/** Go back (steps > 0) or forward (steps < 0) through the undo history in one go. */
+export async function rewind(id: string, steps: number): Promise<number> {
+  let n = 0;
+  for (let i = 0; i < Math.abs(steps); i++) {
+    if (!(await (steps > 0 ? undo(id) : redo(id)))) break;
+    n++;
+  }
+  return n;
+}
+
 /** The assistant's status on a board: shown on every screen, never saved. */
 export function setActivity(id: string, a: Board["activity"]) {
   const l = live.get(id);
