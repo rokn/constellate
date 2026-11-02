@@ -169,6 +169,22 @@ export function App() {
   // own saved view replaces them when it opens (see the repo-change effect).
   const [tuning, setTuning] = useState<Tuning>(loadTuning);
   const [tuneOpen, setTuneOpen] = useState(false);
+  /**
+   * Tablets and short windows: the instrument rows fold into one row of menus,
+   * and the topic cards along the bottom stay away so the map has the room.
+   */
+  const compact = useMedia("(any-pointer: coarse), (max-height: 820px)");
+  /** Which folded menu is open in the compact instruments row. */
+  const [menu, setMenu] = useState<"layers" | "go" | "organize" | null>(null);
+  const menuRow = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const away = (e: PointerEvent) => {
+      if (!menuRow.current?.contains(e.target as Node)) setMenu(null);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [menu]);
   // The headset's own knobs (and the voice volume), kept per browser.
   const [xrSettings, setXRSettings] = useState<XRSettings>(loadXR);
   useEffect(() => {
@@ -2031,7 +2047,135 @@ export function App() {
 
   const activeFrame = frames.find((f) => f.id === frameId);
   const showIntro = !minimal && !introDone && tour === null && !file && !frameId;
-  const showDestinations = !minimal && introDone && tour === null && !file && !frameId && !emphasis.length && !!overview?.topics.length;
+  const showDestinations = !compact && !minimal && introDone && tour === null && !file && !frameId && !emphasis.length && !!overview?.topics.length;
+
+  /* The instruments, laid out in rows on a desk and folded into menus on a tablet (see `compact`). */
+  const layerToggles = (
+    <div className="pointer-events-auto flex flex-wrap gap-1.5">
+      <Toggle on={layers.imports} tone="static" onClick={() => setLayers((l) => ({ ...l, imports: !l.imports }))} hint="i">
+        Imports
+      </Toggle>
+      <Toggle on={layers.logical} tone="runtime" onClick={() => setLayers((l) => ({ ...l, logical: !l.logical }))} hint="l" disabled={!overview}>
+        Runtime
+      </Toggle>
+      <Toggle on={layers.labels} tone="muted" onClick={() => setLayers((l) => ({ ...l, labels: !l.labels }))}>
+        Labels
+      </Toggle>
+      <Toggle on={layers.folders} tone="muted" onClick={() => setLayers((l) => ({ ...l, folders: !l.folders }))}>
+        Folders
+      </Toggle>
+      <Toggle on={layers.beacons} tone="runtime" onClick={() => setLayers((l) => ({ ...l, beacons: !l.beacons }))}>
+        Beacons
+      </Toggle>
+      <Toggle on={layers.notes !== false} tone="runtime" onClick={() => setLayers((l) => ({ ...l, notes: l.notes === false }))}>
+        Notes
+      </Toggle>
+    </div>
+  );
+  const navButtons = (
+    <div className="flex flex-wrap gap-1.5 text-[13px]">
+      <Btn onClick={recenter} hint="Space">Recenter</Btn>
+      <Btn onClick={toOverview} hint="o">Overview</Btn>
+      <Btn onClick={back} hint="[ or mouse back">Back</Btn>
+      <Btn onClick={forward} hint="] or mouse forward">Forward</Btn>
+      {overview && <Btn onClick={() => setTour(0)} hint="t">Tour</Btn>}
+    </div>
+  );
+  const sideButtons = (
+    <>
+      <Btn onClick={() => openPanel(storiesOpen ? null : "stories")} hint="s">
+        Stories{stories.length ? ` (${stories.length})` : ""}
+      </Btn>
+      {state.agentsOn && (
+        <Btn onClick={() => openPanel(agentsOpen ? null : "agents")}>
+          Agents{state.agents.length ? ` (${state.agents.filter((a) => a.status === "working" || a.status === "starting").length || state.agents.length})` : ""}
+        </Btn>
+      )}
+      {frames.length > 0 && !frameId && (
+        <Btn onClick={() => openPanel(answersOpen ? null : "answers")} hint="a">
+          Answers ({frames.length})
+        </Btn>
+      )}
+      {status === "error" && <Btn onClick={() => void post("/api/reanalyze")}>Chart again</Btn>}
+    </>
+  );
+  const viewLabel = lensId === "folders" ? "Folders" : lensId === "modules" ? "Modules" : (lenses.find((l) => l.id === lensId)?.title ?? "Organize");
+  const organizeBar = (
+    <OrganizeBar
+      lensId={lensId}
+      lenses={lenses}
+      hasModules={!!overview?.modules.length}
+      busy={state.busy}
+      onPick={(id) => {
+        setTour(null);
+        setLensId(id);
+        setMenu(null);
+      }}
+      onRemove={(lens) => {
+        void post("/api/lenses", { action: "delete", id: lens.id });
+        setToast({ text: `Deleted the grouping ${lens.title}`, undo: () => void post("/api/lenses", { action: "restore", lens }) });
+      }}
+      onRequest={(how) => {
+        setMenu(null);
+        askNavigator(`Regroup the map ${/^(by|around|into)\b/i.test(how) ? how : `by ${how}`}. Publish the grouping with set_lens, then tell me what the clusters show.`);
+      }}
+    />
+  );
+  const panelButton = "rounded-md px-2.5 py-0.5 text-[13px]";
+  const lit = (on: boolean) => (on ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text");
+  const panelButtons = (
+    <>
+      <button
+        onClick={() => openPanel(filterOpen ? null : "filter")}
+        aria-expanded={filterOpen}
+        title="Filter the map (f)"
+        className={`${panelButton} ${lit(isActive(filter))}`}
+      >
+        Filter
+      </button>
+      <button
+        onClick={() => openPanel(groupsOpen ? null : "groups")}
+        aria-expanded={groupsOpen}
+        title="Mark files on the map without moving them (m)"
+        className={`${panelButton} ${lit(groupsOpen)}`}
+      >
+        Markers{overlays.length ? ` (${overlays.length})` : ""}
+      </button>
+      <button
+        onClick={() => openPanel(notesOpen ? null : "notes")}
+        aria-expanded={notesOpen}
+        title="Your notes on the map (n writes one on the open file)"
+        className={`${panelButton} ${lit(notesOpen)}`}
+      >
+        Notes{notes.length ? ` (${notes.length})` : ""}
+      </button>
+      <button onClick={() => setTuneOpen((o) => !o)} aria-expanded={tuneOpen} title="Tune the map (,)" className={`${panelButton} ${lit(tuneOpen)}`}>
+        Tune
+      </button>
+      <button
+        onClick={() => {
+          if (historyOpen) showRange(null);
+          setHistoryOpen(!historyOpen);
+        }}
+        aria-expanded={historyOpen}
+        title="History: what changed, when, and what changes together (h)"
+        className={`${panelButton} ${lit(historyOpen || !!range)}`}
+      >
+        History
+      </button>
+    </>
+  );
+  const filterSummary = visible && graph && (
+    <span className={`glass rounded-md px-2.5 py-0.5 text-[12.5px] ${compact ? "flex w-fit max-w-full items-baseline" : ""}`}>
+      <span className={compact ? "min-w-0 truncate" : ""}>
+        {activeView && <b className="mr-1.5 font-semibold text-course">{activeView}</b>}
+        {visible.size.toLocaleString("en-US")} of {graph.files.length.toLocaleString("en-US")} files · {describe(filter)}
+      </span>
+      <button onClick={() => setFilter(EMPTY_FILTER)} className="ml-2 shrink-0 text-muted hover:text-course">
+        Clear
+      </button>
+    </span>
+  );
 
   return (
     <div className="relative h-full overflow-hidden bg-night">
@@ -2183,7 +2327,7 @@ export function App() {
       )}
 
       {/* Instruments */}
-      <div className={`${minimal ? "hidden " : ""}pointer-events-none absolute left-4 top-4 z-10 flex flex-col gap-2`}>
+      <div className={`${minimal ? "hidden " : ""}pointer-events-none absolute left-4 top-4 z-10 flex max-h-[calc(100dvh-6.5rem)] flex-col gap-2`}>
         {/* The intro shows the name large; switching away stays possible while it charts. */}
         {showIntro && state.library && (
           <div className="pointer-events-auto">
@@ -2205,125 +2349,46 @@ export function App() {
             )}
           </div>
         )}
-        <div className="pointer-events-auto flex flex-wrap gap-1.5">
-          <Toggle on={layers.imports} tone="static" onClick={() => setLayers((l) => ({ ...l, imports: !l.imports }))} hint="i">
-            Imports
-          </Toggle>
-          <Toggle on={layers.logical} tone="runtime" onClick={() => setLayers((l) => ({ ...l, logical: !l.logical }))} hint="l" disabled={!overview}>
-            Runtime
-          </Toggle>
-          <Toggle on={layers.labels} tone="muted" onClick={() => setLayers((l) => ({ ...l, labels: !l.labels }))}>
-            Labels
-          </Toggle>
-          <Toggle on={layers.folders} tone="muted" onClick={() => setLayers((l) => ({ ...l, folders: !l.folders }))}>
-            Folders
-          </Toggle>
-          <Toggle on={layers.beacons} tone="runtime" onClick={() => setLayers((l) => ({ ...l, beacons: !l.beacons }))}>
-            Beacons
-          </Toggle>
-          <Toggle on={layers.notes !== false} tone="runtime" onClick={() => setLayers((l) => ({ ...l, notes: l.notes === false }))}>
-            Notes
-          </Toggle>
-        </div>
-        {!showIntro && (
-          <div className="pointer-events-auto flex flex-wrap gap-1.5 text-[13px]">
-            <Btn onClick={recenter} hint="Space">Recenter</Btn>
-            <Btn onClick={toOverview} hint="o">Overview</Btn>
-            <Btn onClick={back} hint="[ or mouse back">Back</Btn>
-            <Btn onClick={forward} hint="] or mouse forward">Forward</Btn>
-            {overview && <Btn onClick={() => setTour(0)} hint="t">Tour</Btn>}
-            <Btn onClick={() => openPanel(storiesOpen ? null : "stories")} hint="s">
-              Stories{stories.length ? ` (${stories.length})` : ""}
-            </Btn>
-            {state.agentsOn && (
-              <Btn onClick={() => openPanel(agentsOpen ? null : "agents")}>
-                Agents{state.agents.length ? ` (${state.agents.filter((a) => a.status === "working" || a.status === "starting").length || state.agents.length})` : ""}
-              </Btn>
+        {compact ? (
+          <>
+            {!showIntro && (
+              <div ref={menuRow} className="pointer-events-auto flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5 text-[13px]">
+                  <Menu label="Layers" open={menu === "layers"} onClick={() => setMenu(menu === "layers" ? null : "layers")} />
+                  <Menu label="Go" open={menu === "go"} onClick={() => setMenu(menu === "go" ? null : "go")} />
+                  {graph && <Menu prefix="Organize" label={viewLabel} open={menu === "organize"} onClick={() => setMenu(menu === "organize" ? null : "organize")} />}
+                  {graph && panelButtons}
+                  {sideButtons}
+                </div>
+                {menu === "layers" && <div className="glass rise w-fit max-w-full rounded-xl p-2">{layerToggles}</div>}
+                {menu === "go" && (
+                  <div className="glass rise w-fit max-w-full rounded-xl p-2" onClick={(e) => (e.target as HTMLElement).closest("button") && setMenu(null)}>
+                    {navButtons}
+                  </div>
+                )}
+                {menu === "organize" && graph && <div className="glass rise w-fit max-w-full rounded-xl p-2">{organizeBar}</div>}
+                {graph && filterSummary}
+              </div>
             )}
-            {frames.length > 0 && !frameId && (
-              <Btn onClick={() => openPanel(answersOpen ? null : "answers")} hint="a">
-                Answers ({frames.length})
-              </Btn>
+            {showIntro && layerToggles}
+          </>
+        ) : (
+          <>
+            {layerToggles}
+            {!showIntro && (
+              <div className="pointer-events-auto flex flex-wrap gap-1.5 text-[13px]">
+                {navButtons}
+                {sideButtons}
+              </div>
             )}
-            {status === "error" && (
-              <Btn onClick={() => void post("/api/reanalyze")}>Chart again</Btn>
+            {!showIntro && graph && organizeBar}
+            {!showIntro && graph && (
+              <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
+                {panelButtons}
+                {filterSummary}
+              </div>
             )}
-          </div>
-        )}
-        {!showIntro && graph && (
-          <OrganizeBar
-            lensId={lensId}
-            lenses={lenses}
-            hasModules={!!overview?.modules.length}
-            busy={state.busy}
-            onPick={(id) => {
-              setTour(null);
-              setLensId(id);
-            }}
-            onRemove={(lens) => {
-              void post("/api/lenses", { action: "delete", id: lens.id });
-              setToast({ text: `Deleted the grouping ${lens.title}`, undo: () => void post("/api/lenses", { action: "restore", lens }) });
-            }}
-            onRequest={(how) =>
-              askNavigator(`Regroup the map ${/^(by|around|into)\b/i.test(how) ? how : `by ${how}`}. Publish the grouping with set_lens, then tell me what the clusters show.`)
-            }
-          />
-        )}
-        {!showIntro && graph && (
-          <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
-            <button
-              onClick={() => openPanel(filterOpen ? null : "filter")}
-              aria-expanded={filterOpen}
-              title="Filter the map (f)"
-              className={`rounded-md px-2.5 py-0.5 text-[13px] ${isActive(filter) ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
-            >
-              Filter
-            </button>
-            <button
-              onClick={() => openPanel(groupsOpen ? null : "groups")}
-              aria-expanded={groupsOpen}
-              title="Mark files on the map without moving them (m)"
-              className={`rounded-md px-2.5 py-0.5 text-[13px] ${groupsOpen ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
-            >
-              Markers{overlays.length ? ` (${overlays.length})` : ""}
-            </button>
-            <button
-              onClick={() => openPanel(notesOpen ? null : "notes")}
-              aria-expanded={notesOpen}
-              title="Your notes on the map (n writes one on the open file)"
-              className={`rounded-md px-2.5 py-0.5 text-[13px] ${notesOpen ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
-            >
-              Notes{notes.length ? ` (${notes.length})` : ""}
-            </button>
-            <button
-              onClick={() => setTuneOpen((o) => !o)}
-              aria-expanded={tuneOpen}
-              title="Tune the map (,)"
-              className={`rounded-md px-2.5 py-0.5 text-[13px] ${tuneOpen ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
-            >
-              Tune
-            </button>
-            <button
-              onClick={() => {
-                if (historyOpen) showRange(null);
-                setHistoryOpen(!historyOpen);
-              }}
-              aria-expanded={historyOpen}
-              title="History: what changed, when, and what changes together (h)"
-              className={`rounded-md px-2.5 py-0.5 text-[13px] ${historyOpen || range ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
-            >
-              History
-            </button>
-            {visible && (
-              <span className="glass rounded-md px-2.5 py-0.5 text-[12.5px]">
-                {activeView && <b className="mr-1.5 font-semibold text-course">{activeView}</b>}
-                {visible.size.toLocaleString("en-US")} of {graph.files.length.toLocaleString("en-US")} files · {describe(filter)}
-                <button onClick={() => setFilter(EMPTY_FILTER)} className="ml-2 text-muted hover:text-course">
-                  Clear
-                </button>
-              </span>
-            )}
-          </div>
+          </>
         )}
         {filterOpen && graph && (
           <FilterPanel
@@ -2839,3 +2904,29 @@ function Btn({ onClick, hint, children }: { onClick: () => void; hint?: string; 
   );
 }
 
+/** A folded group of instruments in the compact row. */
+function Menu({ prefix, label, open, onClick }: { prefix?: string; label: string; open: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-expanded={open}
+      className={`rounded-md px-2.5 py-0.5 text-[13px] ${open ? "bg-course/20 text-text ring-1 ring-course/60" : "glass text-muted hover:text-text"}`}
+    >
+      {prefix && <span className="mr-1 text-[12px] opacity-60">{prefix}</span>}
+      {label} <span className="text-[10px] opacity-70">{open ? "▴" : "▾"}</span>
+    </button>
+  );
+}
+
+/** Whether a media query matches, following it as it changes. */
+function useMedia(query: string) {
+  const [on, setOn] = useState(() => typeof matchMedia === "function" && matchMedia(query).matches);
+  useEffect(() => {
+    const m = matchMedia(query);
+    const change = () => setOn(m.matches);
+    change();
+    m.addEventListener("change", change);
+    return () => m.removeEventListener("change", change);
+  }, [query]);
+  return on;
+}

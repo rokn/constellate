@@ -263,8 +263,9 @@ export function FilterPanel({
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
   return (
-    <div className="glass rise pointer-events-auto w-[min(400px,calc(100vw-2rem))] space-y-3 rounded-xl p-3.5">
-      <div className="flex items-center justify-between">
+    // Scrolls inside itself when the screen is too short for all of it (a tablet).
+    <div className="glass rise pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] shrink flex-col rounded-xl">
+      <div className="flex items-center justify-between px-3.5 pb-1.5 pt-3.5">
         <h2 className="font-cond text-[18px] font-semibold">Filter the map</h2>
         <div className="flex gap-1">
           {isActive(filter) && (
@@ -285,175 +286,177 @@ export function FilterPanel({
         </div>
       </div>
 
-      <div className="rounded-md border border-line px-2.5 py-2">
-        <div className="flex items-baseline justify-between">
-          <span className="text-[12.5px] text-muted">Saved views</span>
-          {naming === null && isActive(filter) && !current && (
-            <button onClick={() => setNaming(filter.label ?? "")} className="text-[12.5px] text-course hover:underline">
-              Save this filter…
-            </button>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3.5 pb-3.5 pt-1.5">
+        <div className="rounded-md border border-line px-2.5 py-2">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[12.5px] text-muted">Saved views</span>
+            {naming === null && isActive(filter) && !current && (
+              <button onClick={() => setNaming(filter.label ?? "")} className="text-[12.5px] text-course hover:underline">
+                Save this filter…
+              </button>
+            )}
+          </div>
+          {naming !== null && (
+            <div className="mt-1.5 flex gap-1.5">
+              <input
+                autoFocus
+                value={naming}
+                onChange={(e) => setNaming(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") save();
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setNaming(null);
+                  }
+                }}
+                placeholder="Name, e.g. Approvals without tests"
+                className="min-w-0 flex-1 rounded-md border border-line bg-panelsolid px-2 py-1 text-[12.5px] focus:border-course/60 focus:outline-none"
+              />
+              <button onClick={save} disabled={!naming.trim()} className="rounded-md bg-course/20 px-2.5 text-[12.5px] text-course disabled:opacity-40">
+                Save
+              </button>
+            </div>
+          )}
+          {saved.length ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {saved.map((v) => (
+                <span key={v.name} className="inline-flex items-center">
+                  <Chip on={v === current} onClick={() => apply(v === current ? EMPTY_FILTER : v.filter)}>
+                    {v.name}
+                  </Chip>
+                  <button
+                    onClick={() => onSave(saved.filter((x) => x !== v))}
+                    className="ml-0.5 px-1 text-[11px] text-muted hover:text-bad"
+                    aria-label={`Delete the view ${v.name}`}
+                    title="Delete this view"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : (
+            naming === null && <p className="mt-1 text-[12px] text-muted">Set up a filter below, then save it to switch back to it in one click.</p>
           )}
         </div>
-        {naming !== null && (
-          <div className="mt-1.5 flex gap-1.5">
-            <input
-              autoFocus
-              value={naming}
-              onChange={(e) => setNaming(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") save();
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  setNaming(null);
-                }
-              }}
-              placeholder="Name, e.g. Approvals without tests"
-              className="min-w-0 flex-1 rounded-md border border-line bg-panelsolid px-2 py-1 text-[12.5px] focus:border-course/60 focus:outline-none"
-            />
-            <button onClick={save} disabled={!naming.trim()} className="rounded-md bg-course/20 px-2.5 text-[12.5px] text-course disabled:opacity-40">
-              Save
-            </button>
-          </div>
-        )}
-        {saved.length ? (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {saved.map((v) => (
-              <span key={v.name} className="inline-flex items-center">
-                <Chip on={v === current} onClick={() => apply(v === current ? EMPTY_FILTER : v.filter)}>
-                  {v.name}
-                </Chip>
-                <button
-                  onClick={() => onSave(saved.filter((x) => x !== v))}
-                  className="ml-0.5 px-1 text-[11px] text-muted hover:text-bad"
-                  aria-label={`Delete the view ${v.name}`}
-                  title="Delete this view"
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        ) : (
-          naming === null && <p className="mt-1 text-[12px] text-muted">Set up a filter below, then save it to switch back to it in one click.</p>
-        )}
-      </div>
 
-      {!!filter.isolate?.length && (
-        <div className="rounded-md border border-line px-2.5 py-2">
-          <div className="flex items-baseline justify-between">
-            <span className="text-[12.5px] text-muted">Modules and folders</span>
-            <button onClick={() => onChange({ ...filter, isolate: undefined })} className="text-[12.5px] text-course hover:underline">
-              Show all
-            </button>
-          </div>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {filter.isolate.map((i) => (
-              <span
-                key={`${i.kind}:${i.id}`}
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[12px] ${i.exclude ? "border-bad/50 bg-bad/10" : "border-course/50 bg-course/10"}`}
-                title={i.exclude ? "Hidden from the map" : "The map shows only these"}
-              >
-                {i.exclude ? <span className="text-bad">not</span> : <span className="text-course">only</span>}
-                {i.label}
-                <button
-                  onClick={() => {
-                    const next = filter.isolate!.filter((x) => x !== i);
-                    onChange({ ...filter, isolate: next.length ? next : undefined });
-                  }}
-                  className="text-muted hover:text-text"
-                  aria-label={`Stop isolating ${i.label}`}
+        {!!filter.isolate?.length && (
+          <div className="rounded-md border border-line px-2.5 py-2">
+            <div className="flex items-baseline justify-between">
+              <span className="text-[12.5px] text-muted">Modules and folders</span>
+              <button onClick={() => onChange({ ...filter, isolate: undefined })} className="text-[12.5px] text-course hover:underline">
+                Show all
+              </button>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {filter.isolate.map((i) => (
+                <span
+                  key={`${i.kind}:${i.id}`}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[12px] ${i.exclude ? "border-bad/50 bg-bad/10" : "border-course/50 bg-course/10"}`}
+                  title={i.exclude ? "Hidden from the map" : "The map shows only these"}
                 >
-                  ✕
-                </button>
-              </span>
-            ))}
+                  {i.exclude ? <span className="text-bad">not</span> : <span className="text-course">only</span>}
+                  {i.label}
+                  <button
+                    onClick={() => {
+                      const next = filter.isolate!.filter((x) => x !== i);
+                      onChange({ ...filter, isolate: next.length ? next : undefined });
+                    }}
+                    className="text-muted hover:text-text"
+                    aria-label={`Stop isolating ${i.label}`}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+            <p className="mt-1 text-[11.5px] text-muted">
+              Legend dots: click to show only, Shift+click to hide. On the map: Shift+click a beacon or folder to isolate it, Alt+click to hide it.
+            </p>
           </div>
-          <p className="mt-1 text-[11.5px] text-muted">
-            Legend dots: click to show only, Shift+click to hide. On the map: Shift+click a beacon or folder to isolate it, Alt+click to hide it.
+        )}
+
+        {!!filter.hidden?.length && (
+          <div className="rounded-md border border-line px-2.5 py-2">
+            <div className="flex items-baseline justify-between">
+              <span className="text-[12.5px] text-muted">Hidden files ({filter.hidden.length})</span>
+              <button onClick={() => onChange({ ...filter, hidden: [] })} className="text-[12.5px] text-course hover:underline">
+                Show all
+              </button>
+            </div>
+            <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto">
+              {filter.hidden.map((p) => (
+                <li key={p} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-text/85" title={p}>{p}</span>
+                  <button
+                    onClick={() => onChange({ ...filter, hidden: filter.hidden!.filter((x) => x !== p) })}
+                    className="shrink-0 text-[12px] text-muted hover:text-text"
+                  >
+                    Show
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {filter.paths && (
+          <p className="rounded-md bg-course/10 px-2.5 py-1.5 text-[12.5px] text-text/90">
+            The navigator chose {filter.paths.length} files{filter.label ? ` for “${filter.label}”` : ""}. Editing below replaces its choice.
           </p>
-        </div>
-      )}
+        )}
 
-      {!!filter.hidden?.length && (
-        <div className="rounded-md border border-line px-2.5 py-2">
-          <div className="flex items-baseline justify-between">
-            <span className="text-[12.5px] text-muted">Hidden files ({filter.hidden.length})</span>
-            <button onClick={() => onChange({ ...filter, hidden: [] })} className="text-[12.5px] text-course hover:underline">
-              Show all
-            </button>
-          </div>
-          <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto">
-            {filter.hidden.map((p) => (
-              <li key={p} className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-text/85" title={p}>{p}</span>
-                <button
-                  onClick={() => onChange({ ...filter, hidden: filter.hidden!.filter((x) => x !== p) })}
-                  className="shrink-0 text-[12px] text-muted hover:text-text"
-                >
-                  Show
-                </button>
-              </li>
+        <label className="block">
+          <span className="text-[12.5px] text-muted">Only paths matching</span>
+          <input
+            value={include}
+            onChange={(e) => setInclude(e.target.value)}
+            onBlur={() => set({ include: splitList(include) })}
+            onKeyDown={(e) => e.key === "Enter" && set({ include: splitList(include) })}
+            placeholder="internal/**, *.go, auth"
+            className="mt-1 w-full rounded-md border border-line bg-panelsolid px-2.5 py-1.5 font-mono text-[12.5px] focus:border-course/60 focus:outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="text-[12.5px] text-muted">Hide paths matching</span>
+          <input
+            value={exclude}
+            onChange={(e) => setExclude(e.target.value)}
+            onBlur={() => set({ exclude: splitList(exclude) })}
+            onKeyDown={(e) => e.key === "Enter" && set({ exclude: splitList(exclude) })}
+            placeholder="generated/**, *.pb.go, mocks"
+            className="mt-1 w-full rounded-md border border-line bg-panelsolid px-2.5 py-1.5 font-mono text-[12.5px] focus:border-course/60 focus:outline-none"
+          />
+        </label>
+
+        <div className="flex flex-wrap gap-1.5">
+          <Chip on={filter.hideTests} onClick={() => set({ hideTests: !filter.hideTests })}>Hide tests</Chip>
+          <Chip on={filter.hideDocs} onClick={() => set({ hideDocs: !filter.hideDocs })}>Hide docs and config</Chip>
+          <Chip on={!!filter.hideChecked} onClick={() => set({ hideChecked: !filter.hideChecked || undefined })}>Hide checked files</Chip>
+          <Chip on={!!filter.crossImports} onClick={() => onChange({ ...filter, crossImports: !filter.crossImports || undefined })}>Only cross-module imports</Chip>
+        </div>
+
+        <div>
+          <p className="mb-1 text-[12.5px] text-muted">Languages</p>
+          <div className="flex flex-wrap gap-1.5">
+            {langs.map((l) => (
+              <Chip key={l} on={filter.langs.includes(l)} onClick={() => set({ langs: toggle(filter.langs, l) })}>{l}</Chip>
             ))}
-          </ul>
+          </div>
         </div>
-      )}
 
-      {filter.paths && (
-        <p className="rounded-md bg-course/10 px-2.5 py-1.5 text-[12.5px] text-text/90">
-          The navigator chose {filter.paths.length} files{filter.label ? ` for “${filter.label}”` : ""}. Editing below replaces its choice.
-        </p>
-      )}
-
-      <label className="block">
-        <span className="text-[12.5px] text-muted">Only paths matching</span>
-        <input
-          value={include}
-          onChange={(e) => setInclude(e.target.value)}
-          onBlur={() => set({ include: splitList(include) })}
-          onKeyDown={(e) => e.key === "Enter" && set({ include: splitList(include) })}
-          placeholder="internal/**, *.go, auth"
-          className="mt-1 w-full rounded-md border border-line bg-panelsolid px-2.5 py-1.5 font-mono text-[12.5px] focus:border-course/60 focus:outline-none"
-        />
-      </label>
-      <label className="block">
-        <span className="text-[12.5px] text-muted">Hide paths matching</span>
-        <input
-          value={exclude}
-          onChange={(e) => setExclude(e.target.value)}
-          onBlur={() => set({ exclude: splitList(exclude) })}
-          onKeyDown={(e) => e.key === "Enter" && set({ exclude: splitList(exclude) })}
-          placeholder="generated/**, *.pb.go, mocks"
-          className="mt-1 w-full rounded-md border border-line bg-panelsolid px-2.5 py-1.5 font-mono text-[12.5px] focus:border-course/60 focus:outline-none"
-        />
-      </label>
-
-      <div className="flex flex-wrap gap-1.5">
-        <Chip on={filter.hideTests} onClick={() => set({ hideTests: !filter.hideTests })}>Hide tests</Chip>
-        <Chip on={filter.hideDocs} onClick={() => set({ hideDocs: !filter.hideDocs })}>Hide docs and config</Chip>
-        <Chip on={!!filter.hideChecked} onClick={() => set({ hideChecked: !filter.hideChecked || undefined })}>Hide checked files</Chip>
-        <Chip on={!!filter.crossImports} onClick={() => onChange({ ...filter, crossImports: !filter.crossImports || undefined })}>Only cross-module imports</Chip>
-      </div>
-
-      <div>
-        <p className="mb-1 text-[12.5px] text-muted">Languages</p>
-        <div className="flex flex-wrap gap-1.5">
-          {langs.map((l) => (
-            <Chip key={l} on={filter.langs.includes(l)} onClick={() => set({ langs: toggle(filter.langs, l) })}>{l}</Chip>
-          ))}
+        <div>
+          <p className="mb-1 text-[12.5px] text-muted">Top-level folders</p>
+          <div className="flex flex-wrap gap-1.5">
+            {tops.map(([t, n]) => (
+              <Chip key={t} on={filter.tops.includes(t)} onClick={() => set({ tops: toggle(filter.tops, t) })}>
+                {t === "." ? "root" : t} <span className="text-muted">{n}</span>
+              </Chip>
+            ))}
+          </div>
         </div>
+        <p className="text-[12px] text-muted">Patterns are globs or plain words. Selected chips narrow to just those.</p>
       </div>
-
-      <div>
-        <p className="mb-1 text-[12.5px] text-muted">Top-level folders</p>
-        <div className="flex flex-wrap gap-1.5">
-          {tops.map(([t, n]) => (
-            <Chip key={t} on={filter.tops.includes(t)} onClick={() => set({ tops: toggle(filter.tops, t) })}>
-              {t === "." ? "root" : t} <span className="text-muted">{n}</span>
-            </Chip>
-          ))}
-        </div>
-      </div>
-      <p className="text-[12px] text-muted">Patterns are globs or plain words. Selected chips narrow to just those.</p>
     </div>
   );
 }
