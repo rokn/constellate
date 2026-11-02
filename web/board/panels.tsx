@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { COLORS, LINK_STYLES, colorOf, nameOf, type Board, type Link } from "../../shared/board";
+import { COLORS, LINK_STYLES, PROTOCOLS, colorOf, nameOf, protocolOf, type Board, type Link } from "../../shared/board";
 import { fromClip, fromMermaid, toClip, toMarkdown, toMermaid } from "../../shared/exchange";
 import { LIBRARY } from "../../shared/holoLibrary";
 import { TEMPLATE_NAMES } from "../../shared/templates";
@@ -286,6 +286,24 @@ export function LinkInspector({ link, board, client, onClose }: { link: Link; bo
           </button>
         ))}
       </div>
+      <div className="ws-title mb-1 mt-3">Protocol {!link.protocol && protocolOf(link) ? <span className="normal-case tracking-normal text-[#4f7286]">· guessed {protocolOf(link)}</span> : null}</div>
+      <select className="ws-input w-full py-1 text-sm" value={link.protocol ?? ""} onChange={(e) => patch({ protocol: (e.target.value || null) as never })}>
+        <option value="">From the label</option>
+        {PROTOCOLS.map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
+        ))}
+      </select>
+      <div className="ws-title mb-1 mt-3">Sample message</div>
+      <textarea
+        className="ws-input w-full resize-none font-mono text-[11px]"
+        rows={3}
+        placeholder={'{"orderId": 42, "total": 19.90}'}
+        defaultValue={link.sample ?? ""}
+        key={link.id}
+        onBlur={(e) => e.target.value !== (link.sample ?? "") && patch({ sample: e.target.value || (null as never) })}
+      />
       <div className="ws-title mb-1 mt-3">Colour</div>
       <div className="flex flex-wrap gap-1.5">
         {Object.entries(COLORS).map(([n, c]) => (

@@ -5,6 +5,7 @@ import {
   COLORS,
   ITEM_KINDS,
   LINK_STYLES,
+  PROTOCOLS,
   SHAPES,
   STATUSES,
   defaultsFor,
@@ -91,6 +92,17 @@ const itemFields = {
     .describe("Numbers shown as gauges beside it: RPS, p99 latency, monthly cost, uptime… max sets a full gauge."),
 };
 
+const linkFields = {
+  from: z.string(),
+  to: z.string(),
+  label: z.string().optional(),
+  style: z.enum(LINK_STYLES as [string, ...string[]]).optional(),
+  both: z.boolean().optional(),
+  color: z.string().optional(),
+  protocol: z.enum(PROTOCOLS as unknown as [string, ...string[]]).optional().describe("How it talks; each moves differently on the board. Guessed from the label when omitted."),
+  sample: z.string().optional().describe("A short sample of what flows (a JSON body, an event, a query): it rides along the link now and then."),
+};
+
 const SYSTEM = `You are ${ASSISTANT}, the assistant in a holographic workshop — a 3D planning board that stands on a round holotable, seen on a desktop or in a Meta Quest 3 (often in passthrough, the hologram on their real desk). Think Tony Stark's workshop: you build what they're thinking about, in light, and you're quick, dry and capable.
 
 You change the board only with your tools. What you say back is spoken aloud by a voice, so keep the final answer to one to three short sentences: what you built and the one thing worth knowing. Never list every item.
@@ -99,7 +111,7 @@ You change the board only with your tools. What you say back is spoken aloud by 
 Metres. The table's top is y = 0, its middle is the origin, it's about 2.8 m across (radius 1.4). x is left→right, z is back→front (+z is toward them), y is up. Items stand on the table at y = 0 unless lifted. Keep things within radius ~1.3. Items about 0.25–0.35 m apart read well. Their focus point (where they're looking) is given with each request: build near it unless told otherwise.
 
 ## Components
-Architecture blocks (${ARCH_KINDS.join(", ")}) are holographic shapes with a floating label; link them to show how they talk. Link styles: sync (solid, request/response), async (dashed, events/messages), data (thick, data flow), depends (thin, faint). Labels on links say what flows ("REST", "orders.created", "SQL").
+Architecture blocks (${ARCH_KINDS.join(", ")}) are holographic shapes with a floating label; link them to show how they talk. Link styles: sync (solid, request/response), async (dashed, events/messages), data (thick, data flow), depends (thin, faint). Labels on links say what flows ("REST", "orders.created", "SQL"). Give links a protocol (${PROTOCOLS.join(", ")}) — each moves its own way: REST packets out with replies back, gRPC streams both ways, Kafka a dense stream, SQL heavy chunks — and, for the important ones, a short sample message (a JSON body, an event) that rides along.
 Whiteboard: note (a glowing sticky note with a body of text, default gold — use for decisions, open questions, risks, TODOs), text (floating words, for titles and annotations; lift it to y≈0.3), frame (a labelled zone drawn on the table, size [width, depth], to group: "Frontend", "VPC", "Phase 1"), ink (freehand strokes; they draw these, you rarely do).
 Holograms (kind holo): any 3D object, made of parts. Use them for physical things (a drone, an engine, a building, a robot arm, a device), for metaphors (a core, a vault), or anything the blocks can't show. Make them look like Stark's: glowing wireframe edges with a faint fill, several distinct parts, a slow spin, parts that explode outward along sensible directions.
 
@@ -182,7 +194,7 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
       {
         items: z.array(z.object({ ref: z.string().optional(), kind, ...itemFields })).max(80),
         links: z
-          .array(z.object({ from: z.string(), to: z.string(), label: z.string().optional(), style: z.enum(LINK_STYLES as [string, ...string[]]).optional(), both: z.boolean().optional(), color: z.string().optional() }))
+          .array(z.object(linkFields))
           .optional(),
         arrange: z.enum(ARRANGEMENTS as [string, ...string[]]).optional(),
         center: vec3.optional().describe("Where to centre the arrangement; their focus by default."),
@@ -210,7 +222,7 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
           const from = find(l.from);
           const to = find(l.to);
           if (!from || !to) missing.push(`${l.from} → ${l.to}`);
-          else links.push({ id: newId("l"), from, to, label: l.label, style: l.style as Link["style"], both: l.both, color: l.color });
+          else links.push({ id: newId("l"), from, to, label: l.label, style: l.style as Link["style"], both: l.both, color: l.color, protocol: l.protocol as Link["protocol"], sample: l.sample });
         }
         const ops: Op[] = [{ op: "add", items, links }];
         if (a.arrange) {
@@ -272,7 +284,7 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
     tool(
       "connect",
       "Link existing items (by id or label). A link that exists already gets the new label and style.",
-      { links: z.array(z.object({ from: z.string(), to: z.string(), label: z.string().optional(), style: z.enum(LINK_STYLES as [string, ...string[]]).optional(), both: z.boolean().optional(), color: z.string().optional() })) },
+      { links: z.array(z.object(linkFields)) },
       async (a) => {
         const b = await current();
         if (!b) return fail("The board is gone.");
@@ -283,7 +295,7 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
           const from = find(l.from);
           const to = find(l.to);
           if (!from || !to) missing.push(`${l.from} → ${l.to}`);
-          else links.push({ id: newId("l"), from, to, label: l.label, style: l.style as Link["style"], both: l.both, color: l.color });
+          else links.push({ id: newId("l"), from, to, label: l.label, style: l.style as Link["style"], both: l.both, color: l.color, protocol: l.protocol as Link["protocol"], sample: l.sample });
         }
         report(`Linking ${links.length}`);
         await change(boardId, [{ op: "link", links }], run);

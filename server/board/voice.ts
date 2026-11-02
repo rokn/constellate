@@ -1,7 +1,7 @@
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ARCH_KINDS, COLORS, ITEM_KINDS, STATUSES, defaultsFor, describeBoard, nameOf, newId, type Board, type BoardScreen, type Item, type ItemKind, type Op, type Vec3 } from "../../shared/board";
+import { ARCH_KINDS, COLORS, ITEM_KINDS, PROTOCOLS, STATUSES, defaultsFor, describeBoard, nameOf, newId, type Board, type BoardScreen, type Item, type ItemKind, type Op, type Vec3 } from "../../shared/board";
 import { ASSISTANT, askBoard, stopBoardAgent } from "./agent";
 import { boardInside, change, command, getBoard, listVersions, redo, restoreVersion, saveVersion, undo, watch } from "./store";
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
@@ -51,6 +51,7 @@ const TOOLS = [
     to: { type: "string" },
     label: { type: "string" },
     style: { type: "string", enum: ["sync", "async", "data", "depends"] },
+    protocol: { type: "string", enum: PROTOCOLS },
   }, ["from", "to"]),
   fn("remove", "Delete items (by id or name). They can undo.", { items: names }, ["items"]),
   fn("select", "Select items, so 'this' means them. Empty to clear the selection.", { items: names }, ["items"]),
@@ -275,7 +276,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
         const [from] = pick([a.from]);
         const [to] = pick([a.to]);
         if (!from || !to) return { ok: false, say: "Couldn't find one of those; ask which." };
-        await edit([{ op: "link", links: [{ id: newId("l"), from: from.id, to: to.id, label: a.label ? String(a.label) : undefined, style: a.style as never }] }]);
+        await edit([{ op: "link", links: [{ id: newId("l"), from: from.id, to: to.id, label: a.label ? String(a.label) : undefined, style: a.style as never, protocol: a.protocol as never }] }]);
         return { ok: true };
       }
       case "remove": {

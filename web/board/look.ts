@@ -269,22 +269,75 @@ const LINK_FS = /* glsl */ `
   uniform float uLinkK;
   uniform float uFlowK;
   uniform float uPacketK;
+  uniform float uProto;
   varying vec2 vUv;
   ${LIGHT}
+  float s;
+  float pk;
+  // A train of packets along the link: how many per metre, how fast, how long each is (0..1 of its slot).
+  float ahead(float freq, float speed, float w) {
+    float x = fract(s * freq * pk - uTime * speed * uFlowK);
+    return smoothstep(0.0, w * 0.3, x) * smoothstep(w, w * 0.55, x);
+  }
+  float back(float freq, float speed, float w) {
+    float x = fract(s * freq * pk + uTime * speed * uFlowK);
+    return smoothstep(0.0, w * 0.3, x) * smoothstep(w, w * 0.55, x);
+  }
   void main() {
     if (vUv.x > uReveal) discard;
-    float s = vUv.x * uLen;
-    // Packets running from source to target.
-    float flow = fract(s * 9.0 * max(0.05, uPacketK) - uTime * uSpeed * uFlowK);
-    float packet = uPacketK > 0.0 ? smoothstep(0.0, 0.15, flow) * smoothstep(0.55, 0.3, flow) : 0.0;
+    s = vUv.x * uLen;
+    pk = max(0.05, uPacketK);
+    float on = uPacketK > 0.0 ? 1.0 : 0.0;
+    float sp = uSpeed;
+    float packet = 0.0;
+    float base = 0.45;
+    vec3 col = uColor;
+    int p = int(uProto + 0.5);
+    if (p == 1 || p == 8) {
+      // REST / HTTP: a request out, its smaller response back.
+      packet = ahead(4.0, sp, 0.28) + 0.5 * back(5.0, sp * 1.2, 0.16);
+    } else if (p == 2) {
+      // gRPC: tight, fast pairs both ways (streams).
+      packet = ahead(14.0, sp * 2.0, 0.35) + 0.8 * back(14.0, sp * 2.0, 0.35);
+      base = 0.35;
+    } else if (p == 3) {
+      // GraphQL: one shaped query out, colours shifting.
+      packet = ahead(5.0, sp, 0.32);
+      col = mix(uColor, vec3(1.0, 0.31, 0.85), 0.5 + 0.5 * sin(s * 18.0 - uTime * 3.0));
+    } else if (p == 4) {
+      // Kafka: a dense, ordered stream of beads.
+      packet = 0.8 * ahead(32.0, sp * 1.1, 0.5);
+      base = 0.3;
+    } else if (p == 5) {
+      // A queue: messages bunching up and draining.
+      float bunch = 0.5 + 0.5 * sin(s * 4.0 - uTime * 0.9 * uFlowK);
+      packet = ahead(16.0, sp * 0.8, 0.45) * smoothstep(0.35, 0.9, bunch);
+    } else if (p == 6) {
+      // WebSocket: always open, waves both ways.
+      packet = 0.3 + 0.35 * (0.5 + 0.5 * sin(s * 30.0 * pk - uTime * 5.0 * uFlowK)) + 0.35 * (0.5 + 0.5 * sin(s * 30.0 * pk + uTime * 5.0 * uFlowK));
+      base = 0.5;
+    } else if (p == 7) {
+      // SQL: heavy chunks, slow.
+      packet = 1.2 * ahead(2.4, sp * 0.45, 0.6);
+    } else if (p == 9) {
+      // Events: sparse bright sparks.
+      packet = 1.6 * ahead(2.5, sp * 0.9, 0.12);
+    } else if (p == 10) {
+      // Files: long slow blocks.
+      packet = ahead(1.2, sp * 0.3, 0.85);
+    } else {
+      float flow = fract(s * 9.0 * pk - uTime * uSpeed * uFlowK);
+      packet = smoothstep(0.0, 0.15, flow) * smoothstep(0.55, 0.3, flow);
+    }
+    packet *= on;
     float dash = uDash > 0.5 ? step(0.45, fract(s * 22.0 - uTime * uSpeed * uFlowK * 0.6)) : 1.0;
-    vec3 col = mix(uColor, uLitColor, uLit * 0.7);
-    float a = uOpacity * uLinkK * (0.45 + 0.9 * packet) * dash * (1.0 + uLit * 0.7);
+    col = mix(col, uLitColor, uLit * 0.7);
+    float a = uOpacity * uLinkK * (base + 0.9 * packet) * dash * (1.0 + uLit * 0.7);
     gl_FragColor = light(col * a);
   }
 `;
 
-export function linkMaterial(color: string, o: { dashed?: boolean; opacity?: number; speed?: number; len: number }) {
+export function linkMaterial(color: string, o: { dashed?: boolean; opacity?: number; speed?: number; len: number; proto?: number }) {
   return new THREE.ShaderMaterial({
     vertexShader: LINK_VS,
     fragmentShader: LINK_FS,
@@ -301,6 +354,7 @@ export function linkMaterial(color: string, o: { dashed?: boolean; opacity?: num
       uLit: { value: 0 },
       uLitColor: { value: new THREE.Color(LOOK.select) },
       uReveal: { value: 1 },
+      uProto: { value: o.proto ?? 0 },
     },
     ...additive,
   });
