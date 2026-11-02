@@ -3,7 +3,7 @@ import type { BoardScreen, Op, Part } from "../../shared/board";
 import { ARRANGEMENTS, arrange, type Arrangement } from "../../shared/boardLayout";
 import { askBoard, stopBoardAgent } from "./agent";
 import { reportBuild } from "./holo";
-import { change, createBoard, deleteBoard, getBoard, listBoards, onCommand, redo, undo, watch } from "./store";
+import { boardInside, change, createBoard, deleteBoard, getBoard, getVersion, listBoards, listVersions, onCommand, onPresence, presence, redo, restoreVersion, saveVersion, undo, watch } from "./store";
 import { loadPresets, savePresets } from "./tune";
 import type { BoardPreset } from "../../shared/boardTune";
 
@@ -57,10 +57,12 @@ export async function boardApi(
         timer ??= setTimeout(flush, 33);
       });
       const offCmd = onCommand(id, (c) => res.write(`event: command\ndata: ${JSON.stringify(c)}\n\n`));
+      const offPresence = onPresence(id, (p) => res.write(`event: presence\ndata: ${JSON.stringify(p)}\n\n`));
       const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
       req.on("close", () => {
         off();
         offCmd();
+        offPresence();
         clearTimeout(timer);
         clearInterval(ping);
       });
@@ -103,6 +105,36 @@ export async function boardApi(
     case "POST /api/board/stop": {
       const b = await body<{ id?: string }>(req);
       json(res, 200, { ok: b.id ? stopBoardAgent(b.id) : false });
+      return true;
+    }
+    case "GET /api/board/versions": {
+      json(res, 200, await listVersions(url.searchParams.get("id") ?? ""));
+      return true;
+    }
+    case "GET /api/board/version": {
+      const v = await getVersion(url.searchParams.get("id") ?? "", url.searchParams.get("v") ?? "");
+      if (!v) return json(res, 404, { error: "No such version." }), true;
+      json(res, 200, v);
+      return true;
+    }
+    case "POST /api/board/versions": {
+      const b = await body<{ id?: string; label?: string; restore?: string }>(req);
+      if (!b.id) return json(res, 400, { error: "Which board?" }), true;
+      if (b.restore) json(res, 200, { ok: await restoreVersion(b.id, b.restore) });
+      else json(res, 200, { ok: true, version: await saveVersion(b.id, b.label ?? "Saved") });
+      return true;
+    }
+    case "POST /api/board/inside": {
+      const b = await body<{ id?: string; itemId?: string }>(req);
+      const inner = b.id && b.itemId ? await boardInside(b.id, b.itemId) : null;
+      if (!inner) return json(res, 404, { error: "No such item." }), true;
+      json(res, 200, { boardId: inner.id });
+      return true;
+    }
+    case "POST /api/board/presence": {
+      const b = await body<{ id?: string; p?: { id?: string } }>(req);
+      if (b.id && b.p?.id) presence(b.id, { ...b.p, at: Date.now() });
+      res.writeHead(204).end();
       return true;
     }
     case "GET /api/board/presets":

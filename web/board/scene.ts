@@ -5,6 +5,7 @@ import { Bloom } from "../xr/bloom";
 import { ItemView } from "./items";
 import { LinkView } from "./links";
 import { LOOK, makeDust, makeTable, shared } from "./look";
+import { Fx } from "./fx";
 import { num, on, onTune } from "./tune";
 
 /**
@@ -40,7 +41,7 @@ export class BoardScene {
   readonly itemsGroup = new THREE.Group();
   readonly linksGroup = new THREE.Group();
   /** Previews: the stroke being drawn, the link being pulled. */
-  readonly fx = new THREE.Group();
+  readonly previews = new THREE.Group();
   readonly controls: OrbitControls;
   readonly views = new Map<string, ItemView>();
   readonly linkViews = new Map<string, LinkView>();
@@ -52,6 +53,7 @@ export class BoardScene {
   private dust = makeDust();
   private roomStuff = new THREE.Group();
   private offTune: () => void;
+  readonly fx: Fx;
   /** Items held in a hand or under the mouse: placed at once, never glided. */
   isHeld: (id: string) => boolean = () => false;
   private frameFns = new Set<FrameFn>();
@@ -94,13 +96,14 @@ export class BoardScene {
     this.room.add(this.roomStuff);
     this.roomStuff.add(makeRoom());
 
-    this.rig.add(this.table.group, this.dust.points, this.linksGroup, this.itemsGroup, this.fx);
+    this.fx = new Fx(this.views, (ids) => this.focus(ids), (ids) => this.spot(ids));
+    this.rig.add(this.table.group, this.dust.points, this.linksGroup, this.itemsGroup, this.previews, this.fx.group);
     this.scene.add(this.rig);
     this.overlay.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2238, 2.2));
 
     this.inkLine = previewLine(LOOK.cyan, 4096);
     this.pullLine = previewLine(LOOK.select, 64);
-    this.fx.add(this.inkLine, this.pullLine);
+    this.previews.add(this.inkLine, this.pullLine);
 
     this.raycaster.params.Line = { threshold: 0.006 };
     this.raycaster.params.Points = { threshold: 0 };
@@ -230,6 +233,12 @@ export class BoardScene {
     v.place({ pos: p.pos ?? v.item.pos, quat: p.quat ?? v.item.quat, rotY: v.item.rotY, scale: p.scale ?? v.item.scale }, true);
   }
 
+  /** Light items up for a tour or a flow (and let the rest go). */
+  spot(ids: string[]) {
+    const on = new Set(ids);
+    for (const [id, v] of this.views) v.spot = on.has(id) ? 0.9 : 0;
+  }
+
   setSelected(ids: string[]) {
     this.selected = new Set(ids);
     for (const [id, v] of this.views) v.selected = this.selected.has(id);
@@ -267,7 +276,8 @@ export class BoardScene {
         while (n && !n.userData.itemId && !n.userData.linkId) n = n.parent;
         if (!n) continue;
         if (n.userData.itemId) {
-          if (n.userData.itemId === o.ignore || this.views.get(n.userData.itemId)?.dying) continue;
+          const pv = this.views.get(n.userData.itemId);
+          if (n.userData.itemId === o.ignore || pv?.dying || pv?.hidden || pv?.dim) continue;
           // Frames lie flat under everything: only picked where nothing else is.
           const v = this.views.get(n.userData.itemId);
           if (v?.item.kind === "frame") {
@@ -339,7 +349,8 @@ export class BoardScene {
       box.union(new THREE.Box3().setFromCenterAndSize(v.center(), new THREE.Vector3(r, r, r).multiplyScalar(2)));
     }
     const c = box.getCenter(new THREE.Vector3());
-    const r = Math.max(0.15, box.getSize(new THREE.Vector3()).length() / 2);
+    // Never closer than a small group fills the view: one block alone shouldn't fill the screen.
+    const r = Math.max(0.42, box.getSize(new THREE.Vector3()).length() / 2);
     this.flyTo(c, r);
   }
 
@@ -477,17 +488,29 @@ export class BoardScene {
       }
     }
     if (this.board) {
+      const hideLinks = this.fx.linksHidden;
       for (const l of this.board.links) {
         const lv = this.linkViews.get(l.id);
         const a = this.views.get(l.from);
         const b = this.views.get(l.to);
-        if (lv && a && b) lv.update(l, a, b);
+        if (lv && a && b) {
+          lv.update(l, a, b);
+          lv.root.visible = !hideLinks && !a.hidden && !b.hidden && !(a.dim && b.dim);
+        }
       }
+      this.fx.update(this.board);
     }
+    this.fx.tick(t);
     for (const lv of this.linkViews.values()) lv.tick(dt);
 
     this.draw();
   };
+
+  /** The view as a PNG: drawn once more and read straight back, before the browser clears it. */
+  capture(): string {
+    this.draw();
+    return this.renderer.domElement.toDataURL("image/png");
+  }
 
   private draw() {
     const r = this.renderer;

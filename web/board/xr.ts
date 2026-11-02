@@ -143,6 +143,13 @@ export class XRInput {
     this.tune.invalidate();
   }
 
+  /** The hands (or controllers) and where their rays land, for the other screens on the board (world space). */
+  presenceHands(): { at: THREE.Vector3; to?: THREE.Vector3 }[] {
+    return this.ptrs
+      .filter((p) => p.source)
+      .map((p) => ({ at: this.tip(p), to: p.dot.visible ? p.dot.position.clone() : undefined }));
+  }
+
   /** A session started: nothing in your way; the dock is on your wrist. */
   entered() {
     for (const p of this.panels) p.mesh.visible = false;

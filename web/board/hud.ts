@@ -396,6 +396,7 @@ export class Dock extends HoloPanel {
       ["undo", "undo", () => this.ctl.client.undo(), false],
       ["redo", "redo", () => this.ctl.client.redo(), false],
       ["table", "table", this.on.recenter, false],
+      ...(this.ctl.client.board?.parent && this.ctl.up ? ([["up", "redo", () => this.ctl.up!(), false, AMBER]] as [string, string, () => void, boolean, string?][]) : []),
     ];
     const s = 46;
     const gap = (W - 24 - buttons.length * s) / (buttons.length - 1);
@@ -592,6 +593,7 @@ export class Callout extends HoloPanel {
     ctx.fillText(`${Math.round((it.scale ?? 1) * 100)}%`, 92, y + 30);
     this.holoButton(ctx, "bigger", 152, y, 52, 44, "+", () => patch({ scale: Math.min(10, (it.scale ?? 1) * 1.2) }, `scale:${it.id}`), { size: 26 });
     this.holoButton(ctx, "turn", 214, y, 90, 44, "Turn", () => patch({ rotY: ((it.rotY ?? 0) + 45) % 360 }, `rot:${it.id}`), { size: 19 });
+    if (ctl.inside && !["frame", "ink", "text"].includes(it.kind)) this.holoButton(ctx, "inside", 314, y, 100, 44, it.sub ? "Inside" : "Open", () => ctl.inside!(it.id), { size: 19, color: AMBER });
     this.holoButton(ctx, "delete", this.W - 30 - 110, y, 110, 44, "Delete", () => ctl.remove([it.id]), { size: 19, color: LOOK.danger });
     y += 58;
     if (it.kind === "holo") {

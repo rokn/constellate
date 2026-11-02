@@ -24,7 +24,9 @@ import {
 import { ARRANGEMENTS, arrange } from "../../shared/boardLayout";
 import { CACHE_DIR } from "../session";
 import { awaitBuild } from "./holo";
-import { agentSessionOf, change, command, getBoard, setActivity, setAgentSession } from "./store";
+import { agentSessionOf, boardInside, change, command, getBoard, saveVersion, setActivity, setAgentSession } from "./store";
+import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
+import { TEMPLATE_NAMES, layTemplate } from "../../shared/templates";
 import { TUNE_TOOLS, runBoardTune } from "./tune";
 
 /**
@@ -82,6 +84,11 @@ const itemFields = {
   size: z.tuple([z.number(), z.number()]).optional().describe("frame: [width, depth] on the table; note: [width, height]."),
   spin: z.boolean().optional(),
   explode: z.number().optional(),
+  attach: z.string().optional().describe("Pin it to another item (id, ref or label): it moves with it. For notes about a component."),
+  metrics: z
+    .array(z.object({ label: z.string(), value: z.number(), unit: z.string().optional(), max: z.number().optional() }))
+    .optional()
+    .describe("Numbers shown as gauges beside it: RPS, p99 latency, monthly cost, uptime… max sets a full gauge."),
 };
 
 const SYSTEM = `You are ${ASSISTANT}, the assistant in a holographic workshop — a 3D planning board that stands on a round holotable, seen on a desktop or in a Meta Quest 3 (often in passthrough, the hologram on their real desk). Think Tony Stark's workshop: you build what they're thinking about, in light, and you're quick, dry and capable.
@@ -112,6 +119,17 @@ A hologram is a list of parts, each {shape, pos, rot (degrees), scale, size/radi
 Shapes: box (size [w,h,d]), sphere (radius), cylinder (radius, radiusTop, height), cone (radius, height), torus (radius, tube), ring (radius, tube = inner radius; flat, lies in xz), capsule (radius, height), plane (size [w,h]), icosahedron/octahedron/tetrahedron/dodecahedron (radius), gear (radius, teeth, depth), tube (points: [[x,y,z],…], radius), lathe (points: [[r,y],…] profile spun about y), extrude (points: [[x,y],…] outline, depth), text (text, size [height]).
 Design about 0.4 m tall (the item's scale enlarges it), centred on the origin with its base near y = 0. Use 6–40 parts for a rich model. Give each meaningful part an explode vector away from the centre so pulling it apart is satisfying.
 For what's tedious to list (many teeth, a helix, a lattice, a city of towers), give a script instead of parts: the body of a JavaScript function that receives \`api\` and returns the parts array. api has: range(n) → [0..n-1], lerp(a,b,t), rand() (seeded), TAU, deg(radians→degrees). Plain Math works. No DOM, no network; it runs in a sandbox with a 2 s limit. The tool tells you if it threw; fix it and try again.
+
+## More you can do
+- simulate: play a request moving hop by hop through the architecture, with captions — the best answer to "what happens when…".
+- present: a guided tour with captions, stop by stop.
+- flag / clear_flags: a design review. When they ask for a review, flag the real issues (3–8), then tell them the top one or two.
+- metrics on items (gauges): when they ask for load, latency or cost estimates, set realistic numbers with units.
+- attach: pin notes to the item they're about.
+- place_prefab: ready-made holograms (instant). template: a whole starting layout to adapt.
+- inside: open a block's own board and design its internals there.
+- save_version: before a big change they might want to undo, or when they ask.
+- tune / tune_knobs / use_preset: how the workshop looks and behaves.
 
 Don't ask clarifying questions for things you can reasonably decide — make a good first version; they'll tell you what to change.`;
 
@@ -180,10 +198,12 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
           if (it.ref) refs.set(it.ref, id);
           const { ref: _r, ...rest } = it;
           const pos = rest.pos ?? (it.kind === "frame" ? ([focus()[0], 0, focus()[2]] as Vec3) : freeSpot(taken, focus()));
+          if (rest.attach) rest.attach = refs.get(rest.attach) ?? rest.attach;
           if (it.kind !== "frame") taken.push(pos);
           return { ...defaultsFor(it.kind), ...rest, id, kind: it.kind, pos } as Item;
         });
         const find = resolver({ ...b, items: [...b.items, ...items] }, refs);
+        for (const it of items) if (it.attach) it.attach = find(it.attach) ?? undefined;
         const links: Link[] = [];
         const missing: string[] = [];
         for (const l of a.links ?? []) {
@@ -226,6 +246,7 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
         const missing: string[] = [];
         for (const { id, ...patch } of changes) {
           const real = find(id);
+          if (patch.attach) patch.attach = find(patch.attach) ?? undefined;
           if (!real) missing.push(id);
           else ops.push({ op: "update", id: real, patch });
         }
@@ -353,6 +374,102 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
         return ok("Done.");
       },
     ),
+    tool(
+      "simulate",
+      "Play a request flowing through the system, hop by hop, on every screen: a bright pulse runs along each hop (from → to, by id or label) with a caption. For 'what happens when…', 'walk me through checkout', failure paths. 3–12 hops.",
+      { title: z.string(), steps: z.array(z.object({ from: z.string(), to: z.string(), say: z.string().describe("One short line: what happens on this hop") })).min(1).max(20) },
+      async ({ title, steps }) => {
+        const b = await current();
+        if (!b) return fail("The board is gone.");
+        const find = resolver(b, new Map());
+        const out = steps.map((s) => ({ from: find(s.from) ?? undefined, to: find(s.to) ?? undefined, say: s.say }));
+        const bad = out.filter((s) => !s.from || !s.to).length;
+        command(boardId, { cmd: "play", kind: "flow", title, steps: out.filter((s) => s.from && s.to) });
+        report(`Simulating ${title}`);
+        return ok(`Playing ${out.length - bad} hop(s) on their screens.${bad ? ` ${bad} named items that don't exist.` : ""} It takes about ${Math.round((out.length - bad) * 2.4)}s.`);
+      },
+    ),
+    tool(
+      "present",
+      "Give them a guided tour of the board on every screen: each stop brings their view to items and shows a caption. For 'walk me through this', 'present the design', onboarding someone. 3–10 stops.",
+      { title: z.string(), stops: z.array(z.object({ ids: z.array(z.string()), say: z.string().describe("One or two short sentences for this stop") })).min(1).max(15) },
+      async ({ title, stops }) => {
+        const b = await current();
+        if (!b) return fail("The board is gone.");
+        const find = resolver(b, new Map());
+        const steps = stops.map((s) => ({ ids: s.ids.map(find).filter((x): x is string => !!x), say: s.say }));
+        command(boardId, { cmd: "play", kind: "tour", title, steps });
+        report(`Presenting ${title}`);
+        return ok(`The tour is playing: ${steps.length} stops.`);
+      },
+    ),
+    tool(
+      "flag",
+      "A design review finding on an item: a beacon above it (info cyan, warn amber, risk red) with the finding in a few words. Use for single points of failure, missing auth, hot paths, unclear ownership, cost traps. Replaces that item's flags unless append.",
+      { id: z.string(), level: z.enum(["info", "warn", "risk"]), text: z.string(), append: z.boolean().optional() },
+      async ({ id, level, text, append }) => {
+        const b = await current();
+        const real = b ? resolver(b, new Map())(id) : null;
+        const it = real ? b!.items.find((i) => i.id === real) : null;
+        if (!it) return fail(`No item "${id}".`);
+        await change(boardId, [{ op: "update", id: it.id, patch: { flags: [...(append ? it.flags ?? [] : []), { level, text }] } }], run);
+        return ok("Flagged.");
+      },
+    ),
+    tool("clear_flags", "Take review flags off items (all of them when no ids).", { ids: z.array(z.string()).optional() }, async ({ ids }) => {
+      const b = await current();
+      if (!b) return fail("The board is gone.");
+      const find = resolver(b, new Map());
+      const which = ids?.length ? ids.map(find).filter((x): x is string => !!x) : b.items.filter((i) => i.flags?.length).map((i) => i.id);
+      await change(boardId, which.map((id) => ({ op: "update" as const, id, patch: { flags: null as never } })), run);
+      return ok(`Cleared ${which.length}.`);
+    }),
+    tool(
+      "place_prefab",
+      `Place a ready-made hologram from the library, instantly: ${LIBRARY.map((p) => p.name).join(", ")}. Faster than building one; use it when one fits.`,
+      { name: z.string(), pos: vec3.optional(), scale: z.number().optional(), color: z.string().optional(), label: z.string().optional() },
+      async (a) => {
+        const p = findPrefab(a.name);
+        if (!p) return fail(`No prefab "${a.name}". There are: ${LIBRARY.map((x) => x.name).join(", ")}.`);
+        const b = await current();
+        if (!b) return fail("The board is gone.");
+        const taken = b.items.filter((i) => i.kind !== "frame" && i.kind !== "ink").map((i) => i.pos);
+        const id = newId();
+        await change(boardId, [{ op: "add", items: [{ id, kind: "holo", label: a.label ?? p.name, color: a.color ?? p.color, spin: true, scale: a.scale, holo: { parts: p.parts }, pos: a.pos ?? freeSpot(taken, focus(), 0.4) }] }], run);
+        return ok(`Placed ${p.name} as ${id}.`);
+      },
+    ),
+    tool(
+      "template",
+      `Lay out a starting board around a point: ${TEMPLATE_NAMES.map((t) => `${t.name} (${t.about})`).join("; ")}. Then adapt it with update/add to what they asked.`,
+      { name: z.string(), center: vec3.optional() },
+      async ({ name, center }) => {
+        const t = layTemplate(name, center ?? [0, 0, 0]);
+        if (!t) return fail(`No template "${name}".`);
+        report(`Laying out ${name}`);
+        await change(boardId, [{ op: "add", items: t.items, links: t.links }], run);
+        return ok(`Laid out: ${t.items.map((i) => `${i.id} ${i.kind} "${nameOf(i)}"`).join("; ")}.`);
+      },
+    ),
+    tool(
+      "inside",
+      "Open the inside of an item: its own board, for what it's made of (a service's modules, a device's subsystems). Every screen goes there. With a request, you then design the inside on that board, in the background.",
+      { id: z.string(), request: z.string().optional() },
+      async ({ id, request }) => {
+        const b = await current();
+        const real = b ? resolver(b, new Map())(id) : null;
+        if (!real) return fail(`No item "${id}".`);
+        const inner = await boardInside(boardId, real);
+        if (!inner) return fail("Couldn't open it.");
+        command(boardId, { cmd: "open", boardId: inner.id });
+        if (request) setTimeout(() => void askBoard(inner.id, request, { ...screen, boardId: inner.id, selected: [], focus: [0, 0, 0] }), 1500);
+        return ok(`Opened ${inner.name} (${inner.id}).${request ? " Designing its inside there now." : ""}`);
+      },
+    ),
+    tool("save_version", "Keep the board as it is now as a named version they can go back to.", { label: z.string() }, async ({ label }) => {
+      const v = await saveVersion(boardId, label);
+      return ok(v ? `Saved "${label}".` : "Nothing's changed since the last version.");
+    }),
     tool("rename_board", "Give the board a name.", { name: z.string() }, async ({ name }) => {
       await change(boardId, [{ op: "rename", name }], run);
       return ok("Renamed.");
@@ -460,6 +577,8 @@ export async function askBoard(boardId: string, request: string, screen: BoardSc
     }
   };
 
+  // A version to come back to, before anything it does lands.
+  await saveVersion(boardId, `Before: ${request.slice(0, 80)}`).catch(() => null);
   try {
     const resume = agentSessionOf(boardId);
     try {

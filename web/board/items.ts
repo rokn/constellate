@@ -49,6 +49,10 @@ export class ItemView {
   dying = 0;
   /** Filtered out of view (layers): not drawn, not picked. */
   hidden = false;
+  /** Dimmed: something else is isolated. */
+  dim = false;
+  /** Lit by a tour or a flow passing through it. */
+  spot = 0;
 
   constructor(item: Item, fresh: boolean) {
     this.item = item;
@@ -112,7 +116,10 @@ export class ItemView {
     this.animated = [];
     this.sprites = [];
     this.selRing = null;
+    this.beacon = null;
   }
+  private beacon: THREE.Object3D | null = null;
+  private beaconY = 0;
 
   private build(item: Item) {
     this.clear();
@@ -253,11 +260,45 @@ export class ItemView {
       b.add(s);
       this.sprites.push(s);
     }
+
+    // A design review's findings: a beacon over it, in the colour of the worst, and what was found.
+    if (item.flags?.length) {
+      const worst = item.flags.some((f) => f.level === "risk") ? "risk" : item.flags.some((f) => f.level === "warn") ? "warn" : "info";
+      const fc = worst === "risk" ? LOOK.danger : worst === "warn" ? LOOK.accent : LOOK.cyan;
+      this.beaconY = labelY + 0.07 * num("labelSize") + 0.03;
+      const beacon = holoMesh(new THREE.OctahedronGeometry(0.018, 0), u, fc, { opacity: 0.5, pulse: 1 });
+      beacon.position.y = this.beaconY;
+      b.add(beacon);
+      this.beacon = beacon;
+      const t = label(item.flags.map((f) => f.text).join(" · ").slice(0, 70), fc, { height: 0.02, bracket: false });
+      t.position.y = this.beaconY + 0.025;
+      b.add(t);
+      this.sprites.push(t);
+    }
+
+    // Metrics: a gauge per number beside it, filled to its share of the max.
+    if (item.metrics?.length && on("labels")) {
+      const x0 = Math.max(0.09, this.radius * 0.8) + 0.02;
+      item.metrics.forEach((m, i) => {
+        const x = x0 + i * 0.04;
+        const H = 0.11;
+        const frac = m.max ? Math.min(1, Math.max(0.02, m.value / m.max)) : 0.65;
+        const track = holoMesh(new THREE.BoxGeometry(0.012, H, 0.012).translate(0, H / 2, 0), u, color, { wire: true });
+        track.position.set(x, 0.005, 0);
+        const mc = m.max && frac > 0.85 ? LOOK.danger : m.max && frac > 0.65 ? LOOK.accent : "#7dff9a";
+        const fill = holoMesh(new THREE.BoxGeometry(0.009, H * frac, 0.009).translate(0, (H * frac) / 2, 0), u, mc, { opacity: 0.45 });
+        fill.position.set(x, 0.005, 0);
+        const t = label(`${m.label} ${fmt(m.value)}${m.unit ?? ""}`, mc, { height: 0.014, bracket: false });
+        t.position.set(x, H + 0.012 + (i % 2) * 0.018, 0);
+        b.add(track, fill, t);
+        this.sprites.push(t);
+      });
+    }
   }
 
   /** Light it up (hovered, selected), print it in, and run its animations. */
   tick(t: number, dt: number) {
-    const want = this.selected ? 1 : this.lit;
+    const want = this.selected ? 1 : Math.max(this.lit, this.spot);
     this.u.uLit.value += (want - this.u.uLit.value) * Math.min(1, dt * 10);
 
     // Gliding to where it's going.
@@ -283,6 +324,16 @@ export class ItemView {
       this.dying = Math.max(0, this.dying - dt * 2.5);
       this.u.uFade.value = this.dying;
       for (const s of this.sprites) s.material.opacity = this.dying;
+    } else {
+      const f = this.dim ? 0.12 : 1;
+      if (Math.abs(this.u.uFade.value - f) > 0.002) {
+        this.u.uFade.value += (f - this.u.uFade.value) * Math.min(1, dt * 8);
+        for (const s of this.sprites) s.material.opacity = this.u.uFade.value;
+      }
+    }
+    if (this.beacon) {
+      this.beacon.rotation.y = t * 1.5;
+      this.beacon.position.y = this.beaconY + Math.sin(t * 2.4) * 0.006;
     }
 
     if (this.item.kind === "holo") {
@@ -430,4 +481,14 @@ function archShape(kind: Item["kind"], u: HoloUniforms, color: string): THREE.Gr
     }
   }
   return g;
+}
+
+/** 1234 → 1.2k, 0.0042 → 0.0042: short enough for a gauge. */
+function fmt(n: number) {
+  const a = Math.abs(n);
+  if (a >= 1e9) return `${+(n / 1e9).toFixed(1)}B`;
+  if (a >= 1e6) return `${+(n / 1e6).toFixed(1)}M`;
+  if (a >= 1e4) return `${+(n / 1e3).toFixed(0)}k`;
+  if (a >= 1e3) return `${+(n / 1e3).toFixed(1)}k`;
+  return `${+n.toPrecision(3)}`;
 }

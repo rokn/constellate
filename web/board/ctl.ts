@@ -21,6 +21,9 @@ export interface Ctl {
   caption(): string;
   ask(text: string): void;
   inkColor(): string;
+  /** Into an item's own board; back up out of this one. */
+  inside?(id: string): void;
+  up?(): void;
   /** A link picked: its inspector. */
   selectLink?(id: string | null): void;
 }

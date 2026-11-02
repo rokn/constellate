@@ -161,7 +161,18 @@ export type Item = {
   spin?: boolean;
   /** Tech or anything else worth a tag: "Go", "Postgres 16", "gRPC". */
   tags?: string[];
+  /** Pinned to another item: moves with it (a note on a service). */
+  attach?: string;
+  /** A design review's findings on it: a beacon above it. */
+  flags?: Flag[];
+  /** Numbers worth seeing on it: gauges beside it (RPS, latency, cost). */
+  metrics?: Metric[];
+  /** Its own board, inside it: what it's made of. */
+  sub?: string;
 };
+
+export type Flag = { level: "info" | "warn" | "risk"; text: string };
+export type Metric = { label: string; value: number; unit?: string; max?: number };
 
 export type LinkStyle = "sync" | "async" | "data" | "depends";
 export const LINK_STYLES: readonly LinkStyle[] = ["sync", "async", "data", "depends"];
@@ -186,6 +197,8 @@ export type Board = {
   updatedAt: number;
   /** Bumped on every change. */
   rev: number;
+  /** The board this one is inside: the item it opened from. */
+  parent?: { boardId: string; itemId: string; name: string };
   /** What the assistant is doing on this board right now, for the status line. */
   activity?: { busy: boolean; line?: string; answer?: string; error?: string; at: number };
 };
@@ -239,6 +252,18 @@ export function cleanItem(i: Partial<Item> & { id: string }): Item {
   if (i.explode !== undefined) out.explode = r3(clampN(i.explode, 0, 1, 0));
   if (i.spin !== undefined) out.spin = !!i.spin;
   if (Array.isArray(i.tags)) out.tags = i.tags.filter((t) => typeof t === "string").slice(0, 8).map((t) => t.slice(0, 40));
+  if (typeof i.attach === "string" && i.attach !== i.id) out.attach = i.attach.slice(0, 40);
+  if (Array.isArray(i.flags))
+    out.flags = i.flags
+      .filter((f) => f && typeof f.text === "string")
+      .slice(0, 6)
+      .map((f) => ({ level: (["info", "warn", "risk"] as const).includes(f.level) ? f.level : "warn", text: f.text.slice(0, 200) }));
+  if (Array.isArray(i.metrics))
+    out.metrics = i.metrics
+      .filter((m) => m && typeof m.label === "string" && typeof m.value === "number" && Number.isFinite(m.value))
+      .slice(0, 5)
+      .map((m) => ({ label: m.label.slice(0, 24), value: m.value, ...(m.unit ? { unit: String(m.unit).slice(0, 12) } : {}), ...(typeof m.max === "number" && m.max > 0 ? { max: m.max } : {}) }));
+  if (typeof i.sub === "string") out.sub = i.sub.slice(0, 40);
   return out;
 }
 
@@ -290,6 +315,8 @@ export function applyOps(b: Board, ops: Op[]): boolean {
         b.items = b.items.filter((i) => !gone.has(i.id));
         const lb = b.links.length;
         b.links = b.links.filter((l) => !gone.has(l.from) && !gone.has(l.to) && !gone.has(l.id));
+        // What was pinned to them stays, unpinned.
+        b.items = b.items.map((i) => (i.attach && gone.has(i.attach) ? (({ attach: _a, ...rest }) => rest)(i) : i));
         changed = changed || b.items.length !== before || b.links.length !== lb;
         break;
       }
@@ -419,7 +446,7 @@ export function heightOf(i: Item): number {
 export function describeBoard(b: Board, opts: { max?: number; selected?: string[] } = {}): string {
   const max = opts.max ?? 200;
   const sel = new Set(opts.selected ?? []);
-  const lines = [`Board "${b.name}" (${b.items.length} items, ${b.links.length} links).`];
+  const lines = [`Board "${b.name}" (${b.items.length} items, ${b.links.length} links).${b.parent ? ` It's the inside of "${b.parent.name}" on board ${b.parent.boardId}.` : ""}`];
   const name = new Map(b.items.map((i) => [i.id, nameOf(i)]));
   for (const i of b.items.slice(0, max)) {
     const bits = [
@@ -433,6 +460,10 @@ export function describeBoard(b: Board, opts: { max?: number; selected?: string[
       i.tags?.length ? `tags ${i.tags.join("/")}` : "",
       i.kind === "holo" ? `${i.holo?.parts?.length ?? 0} parts${i.holo?.script ? " (scripted)" : ""}${i.holo?.error ? ` ERROR: ${i.holo.error}` : ""}` : "",
       i.kind === "frame" && i.size ? `size ${i.size.join("x")}` : "",
+      i.attach ? `pinned to ${i.attach}` : "",
+      i.sub ? `has an inside board ${i.sub}` : "",
+      i.flags?.length ? `flags: ${i.flags.map((f) => `${f.level} "${f.text}"`).join("; ")}` : "",
+      i.metrics?.length ? `metrics: ${i.metrics.map((m) => `${m.label} ${m.value}${m.unit ?? ""}`).join(", ")}` : "",
       sel.has(i.id) ? "SELECTED" : "",
     ].filter(Boolean);
     lines.push(`- ${bits.join(" · ")}`);
@@ -466,4 +497,23 @@ export type BoardCommand =
   /** Turn Tune knobs (a preset is all of them). */
   | { cmd: "tune"; values: Record<string, number | boolean> }
   /** The saved presets changed: fetch them again. */
-  | { cmd: "presets" };
+  | { cmd: "presets" }
+  /** Play a sequence: a request flowing through the system, or a guided tour. */
+  | { cmd: "play"; kind: "flow" | "tour"; title?: string; steps: Step[] }
+  | { cmd: "stopPlay" }
+  /** What's shown: kinds (or "notes", "ink", …) hidden, and items isolated (everything else dimmed). */
+  | { cmd: "layers"; hide?: string[]; isolate?: string[] | null };
+
+/** One beat of a flow or a tour: what lights up (items, or a hop from one to another) and what's said. */
+export type Step = { ids?: string[]; from?: string; to?: string; say?: string };
+
+/** Someone else on the board, live: a desktop's camera, or a headset's head and hands (board space). */
+export type Presence = {
+  id: string;
+  mode: "flat" | "vr" | "ar";
+  head: Vec3;
+  /** Where the head (or camera) looks, as a point it's looking at. */
+  look: Vec3;
+  hands?: { at: Vec3; to?: Vec3 }[];
+  at: number;
+};

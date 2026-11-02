@@ -126,6 +126,7 @@ export async function change(id: string, ops: Op[], merge?: string, o: { noUndo?
   l.lastMerge = merge ? { key: merge, at: now } : null;
   l.redo = [];
   touch(l);
+  if (!o.noUndo) noteChange(id);
   return l.board;
 }
 
@@ -200,6 +201,113 @@ export function command(id: string, c: BoardCommand) {
 export function onCommand(id: string, f: CommandListener): () => void {
   let set = commandListeners.get(id);
   if (!set) commandListeners.set(id, (set = new Set()));
+  set.add(f);
+  return () => set!.delete(f);
+}
+
+/* ------------------------------- versions ------------------------------- */
+
+/**
+ * Versions: the board as it was, kept apart from it (boards/<id>.versions.json).
+ * One is kept before each request to the assistant, before a template or a
+ * restore lands, when you save one, and every so often as you work.
+ */
+export type Version = { id: string; at: number; label: string; items: Board["items"]; links: Board["links"]; name: string };
+export type VersionSummary = { id: string; at: number; label: string; items: number; links: number };
+
+const VERSIONS_KEEP = 60;
+const AUTO_EVERY = 40;
+const AUTO_MS = 5 * 60_000;
+const versionFile = (id: string) => path.join(DIR, `${id.replace(/[^a-zA-Z0-9_-]/g, "")}.versions.json`);
+const sinceVersion = new Map<string, { changes: number; at: number }>();
+
+async function readVersions(id: string): Promise<Version[]> {
+  try {
+    return JSON.parse(await readFile(versionFile(id), "utf8")) as Version[];
+  } catch {
+    return [];
+  }
+}
+
+export async function listVersions(id: string): Promise<VersionSummary[]> {
+  return (await readVersions(id)).map((v) => ({ id: v.id, at: v.at, label: v.label, items: v.items.length, links: v.links.length })).reverse();
+}
+
+export async function getVersion(id: string, vid: string): Promise<Version | null> {
+  return (await readVersions(id)).find((v) => v.id === vid) ?? null;
+}
+
+/** Keep the board as it is now, under a label. Nothing is kept if it hasn't changed since the last one. */
+export async function saveVersion(id: string, label: string): Promise<VersionSummary | null> {
+  const l = await getBoard(id);
+  if (!l) return null;
+  const list = await readVersions(id);
+  const last = list[list.length - 1];
+  if (last && JSON.stringify([last.items, last.links]) === JSON.stringify([l.board.items, l.board.links])) return null;
+  if (!l.board.items.length && !last) return null;
+  const v: Version = { id: newId("v"), at: Date.now(), label: label.slice(0, 120) || "Saved", items: structuredClone(l.board.items), links: structuredClone(l.board.links), name: l.board.name };
+  const next = [...list, v].slice(-VERSIONS_KEEP);
+  await mkdir(DIR, { recursive: true });
+  await writeFile(versionFile(id), JSON.stringify(next));
+  sinceVersion.set(id, { changes: 0, at: Date.now() });
+  return { id: v.id, at: v.at, label: v.label, items: v.items.length, links: v.links.length };
+}
+
+/** Put a version back: one step to undo, with the board as it was kept first. */
+export async function restoreVersion(id: string, vid: string): Promise<boolean> {
+  const l = await getBoard(id);
+  const v = await getVersion(id, vid);
+  if (!l || !v) return false;
+  await saveVersion(id, "Before going back");
+  l.undo.push(snapshot(l.board));
+  l.redo = [];
+  l.lastMerge = null;
+  l.board.items = structuredClone(v.items);
+  l.board.links = structuredClone(v.links);
+  touch(l);
+  return true;
+}
+
+/** Count a change; now and then, a version on its own. */
+export function noteChange(id: string) {
+  const s = sinceVersion.get(id) ?? { changes: 0, at: Date.now() };
+  s.changes++;
+  sinceVersion.set(id, s);
+  if (s.changes >= AUTO_EVERY && Date.now() - s.at > AUTO_MS) void saveVersion(id, "Autosave");
+}
+
+/* ------------------------------ inside boards ---------------------------- */
+
+/** The board inside an item, made the first time it's opened. */
+export async function boardInside(id: string, itemId: string): Promise<Board | null> {
+  const l = await getBoard(id);
+  const item = l?.board.items.find((i) => i.id === itemId);
+  if (!l || !item) return null;
+  if (item.sub) {
+    const inner = await getBoard(item.sub);
+    if (inner) return inner.board;
+  }
+  const label = item.label || item.kind;
+  const inner = await createBoard(`${l.board.name} › ${label}`);
+  inner.parent = { boardId: id, itemId, name: l.board.name };
+  saveSoon(inner.id);
+  await change(id, [{ op: "update", id: itemId, patch: { sub: inner.id } }], undefined, { noUndo: true });
+  return inner;
+}
+
+/* -------------------------------- presence ------------------------------- */
+
+type PresenceListener = (p: unknown) => void;
+const presenceListeners = new Map<string, Set<PresenceListener>>();
+
+/** Someone's head, hands or camera: passed to everyone else on the board, never kept. */
+export function presence(id: string, p: unknown) {
+  for (const f of presenceListeners.get(id) ?? []) f(p);
+}
+
+export function onPresence(id: string, f: PresenceListener): () => void {
+  let set = presenceListeners.get(id);
+  if (!set) presenceListeners.set(id, (set = new Set()));
   set.add(f);
   return () => set!.delete(f);
 }

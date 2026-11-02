@@ -3,7 +3,9 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { ARCH_KINDS, COLORS, ITEM_KINDS, STATUSES, defaultsFor, describeBoard, nameOf, newId, type Board, type BoardScreen, type Item, type ItemKind, type Op, type Vec3 } from "../../shared/board";
 import { ASSISTANT, askBoard, stopBoardAgent } from "./agent";
-import { change, command, getBoard, redo, undo, watch } from "./store";
+import { boardInside, change, command, getBoard, listVersions, redo, restoreVersion, saveVersion, undo, watch } from "./store";
+import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
+import { TEMPLATE_NAMES, layTemplate } from "../../shared/templates";
 import { TUNE_TOOLS, runBoardTune } from "./tune";
 
 /**
@@ -67,12 +69,23 @@ const TOOLS = [
   }, ["items"]),
   fn("explode", "Pull a hologram apart (1) or put it back together (0), or anywhere between.", { items: names, amount: { type: "number" } }, ["items", "amount"]),
   fn("spin", "Start or stop a hologram turning on its own.", { items: names, on: { type: "boolean" } }, ["items", "on"]),
+  fn("hologram", `Place a ready-made hologram, instantly: ${LIBRARY.map((p) => p.name).join(", ")}. For anything else, build.`, { name: { type: "string" } }, ["name"]),
+  fn("template", `Lay out a starting board where they're looking, instantly: ${TEMPLATE_NAMES.map((t) => t.name).join(", ")}.`, { name: { type: "string" } }, ["name"]),
+  fn("open_inside", "Go inside an item: its own board, for what it's made of. Made the first time.", { item: { type: "string" } }, ["item"]),
+  fn("go_up", "Back out to the board this one is inside of."),
+  fn("save_version", "Keep the board as it is now, under a name, to come back to.", { label: { type: "string" } }, ["label"]),
+  fn("restore_version", "Go back to an earlier version: 'previous' (the last one kept) or words from its label.", { which: { type: "string" } }, ["which"]),
+  fn("layers", "What's shown: hide kinds of things (notes, ink, frames, holograms, links, architecture), show everything, or isolate items (everything else dims).", {
+    hide: { type: "array", items: { type: "string" } },
+    isolate: names,
+    reset: { type: "boolean" },
+  }),
   fn("undo", "Undo the last change."),
   fn("redo", "Redo what was undone."),
   fn("tool", "Switch what their hands or mouse do: select (pick and move), connect (pick two to link), ink (draw in the air).", { tool: { type: "string", enum: ["select", "connect", "ink"] } }, ["tool"]),
 ];
 TOOLS.push(...TUNE_TOOLS.map((t) => fn(t.name, t.description, t.properties, t.required)));
-const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect", "tune"]);
+const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect", "tune", "hologram", "layers"]);
 
 function instructions(b: Board | null, s: BoardScreen): string {
   const where = s.mode === "ar" ? "in passthrough on a Quest, the board a hologram on their desk" : s.mode === "vr" ? "in VR" : "at their desktop";
@@ -305,6 +318,52 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
         if (!items.length) return { ok: false, say: "That isn't a hologram." };
         const patch = name === "explode" ? { explode: Math.min(1, Math.max(0, Number(a.amount) || 0)) } : { spin: !!a.on };
         await edit(items.map((i) => ({ op: "update" as const, id: i.id, patch })));
+        return { ok: true };
+      }
+      case "hologram": {
+        const p = findPrefab(String(a.name ?? ""));
+        if (!p) return { ok: false, say: `Not in the library. It has: ${LIBRARY.map((x) => x.name).join(", ")}. Or build it.` };
+        const f: Vec3 = screen.focus ?? [0, 0, 0];
+        const item = { id: newId(), kind: "holo", label: p.name, color: p.color, spin: true, holo: { parts: p.parts }, pos: [f[0], 0, f[2]] } as Item;
+        await edit([{ op: "add", items: [item] }]);
+        command(id, { cmd: "select", ids: [item.id] });
+        return { ok: true };
+      }
+      case "template": {
+        const t = layTemplate(String(a.name ?? ""), screen.focus ?? [0, 0, 0]);
+        if (!t) return { ok: false, say: `No such template. There are: ${TEMPLATE_NAMES.map((x) => x.name).join(", ")}.` };
+        await saveVersion(id, `Before template ${a.name}`);
+        await edit([{ op: "add", items: t.items, links: t.links }]);
+        command(id, { cmd: "overview" });
+        return { ok: true, added: t.items.length };
+      }
+      case "open_inside": {
+        const [it] = pick([a.item]);
+        if (!it) return { ok: false, say: "Couldn't find it; ask which." };
+        const inner = await boardInside(id, it.id);
+        if (!inner) return { ok: false };
+        command(id, { cmd: "open", boardId: inner.id });
+        return { ok: true, say: `You're inside ${nameOf(it)} now. It's ${inner.items.length ? "got things in it" : "empty — offer to design it"}.` };
+      }
+      case "go_up": {
+        if (!b.parent) return { ok: false, say: "This board isn't inside anything." };
+        command(id, { cmd: "open", boardId: b.parent.boardId });
+        return { ok: true };
+      }
+      case "save_version": {
+        const v = await saveVersion(id, String(a.label ?? "Saved"));
+        return { ok: true, say: v ? "Saved." : "Nothing's changed since the last one." };
+      }
+      case "restore_version": {
+        const list = await listVersions(id);
+        const w = String(a.which ?? "previous").toLowerCase();
+        const v = w === "previous" || w === "last" ? list[0] : list.find((x) => x.label.toLowerCase().includes(w));
+        if (!v) return { ok: false, say: list.length ? `No version like that. The latest: ${list.slice(0, 4).map((x) => x.label).join("; ")}.` : "No versions kept yet." };
+        return { ok: await restoreVersion(id, v.id), restored: v.label };
+      }
+      case "layers": {
+        const isolate = Array.isArray(a.isolate) && a.isolate.length ? pick(a.isolate).map((i) => i.id) : null;
+        command(id, a.reset ? { cmd: "layers", hide: [], isolate: null } : { cmd: "layers", hide: Array.isArray(a.hide) ? a.hide.map(String) : undefined, isolate });
         return { ok: true };
       }
       case "undo":

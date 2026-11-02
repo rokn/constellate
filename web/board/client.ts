@@ -1,4 +1,4 @@
-import { applyOps, type Board, type BoardCommand, type ItemPatch, type Op } from "../../shared/board";
+import { applyOps, type Board, type BoardCommand, type ItemPatch, type Op, type Presence, type Vec3 } from "../../shared/board";
 import { runScript } from "./holo";
 
 /**
@@ -26,6 +26,11 @@ export class BoardClient {
   private cmdListeners = new Set<(c: BoardCommand) => void>();
   private shown: Board | null = null;
   private building = new Set<string>();
+  /** Where held items (and what's pinned to them) were when they were taken: pinned things move by the same amount. */
+  private holdBase = new Map<string, { pos: Vec3; children: { id: string; pos: Vec3 }[] }>();
+  private presenceListeners = new Set<(p: Presence) => void>();
+  /** This screen, among the others on the board. */
+  readonly me = Math.random().toString(36).slice(2, 10);
   connected = false;
 
   constructor(readonly id: string) {}
@@ -40,6 +45,11 @@ export class BoardClient {
       this.pending = this.pending.filter((p) => p.ack === null || p.ack > b.rev);
       this.emit();
       this.buildScripts(b);
+    });
+    es.addEventListener("presence", (e) => {
+      const p = JSON.parse((e as MessageEvent).data) as Presence;
+      if (p.id === this.me) return;
+      for (const f of this.presenceListeners) f(p);
     });
     es.addEventListener("command", (e) => {
       const c = JSON.parse((e as MessageEvent).data) as BoardCommand;
@@ -106,8 +116,28 @@ export class BoardClient {
       });
   }
 
-  /** An item in a hand: shown where it is every frame; sent now and then. */
+  onPresence(f: (p: Presence) => void) {
+    this.presenceListeners.add(f);
+    return () => this.presenceListeners.delete(f);
+  }
+
+  /** Where this screen is looking, and its hands: for the others on the board. */
+  sendPresence(p: Omit<Presence, "id" | "at">) {
+    void fetch("/api/board/presence", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: this.id, p: { ...p, id: this.me } }) }).catch(() => {});
+  }
+
+  /** An item in a hand: shown where it is every frame; sent now and then. What's pinned to it comes along. */
   hold(id: string, patch: ItemPatch) {
+    if (patch.pos && !this.holdBase.has(id)) {
+      const items = this.shown?.items ?? [];
+      const it = items.find((i) => i.id === id);
+      if (it) this.holdBase.set(id, { pos: it.pos, children: items.filter((c) => c.attach === id && !this.held.has(c.id)).map((c) => ({ id: c.id, pos: c.pos })) });
+    }
+    const base = this.holdBase.get(id);
+    if (patch.pos && base) {
+      const d = [patch.pos[0] - base.pos[0], patch.pos[1] - base.pos[1], patch.pos[2] - base.pos[2]];
+      for (const c of base.children) this.held.set(c.id, { ...this.held.get(c.id), pos: [round(c.pos[0] + d[0]), round(Math.max(0, c.pos[1] + d[1])), round(c.pos[2] + d[2])] });
+    }
     this.held.set(id, { ...this.held.get(id), ...patch });
     this.emit();
     if (!this.holdTimers.has(id)) {
@@ -116,7 +146,8 @@ export class BoardClient {
         setTimeout(() => {
           this.holdTimers.delete(id);
           const p = this.held.get(id);
-          if (p) this.send([{ op: "update", id, patch: p }], `hold:${id}`);
+          const kids = this.holdBase.get(id)?.children ?? [];
+          if (p) this.send([{ op: "update", id, patch: p }, ...kids.filter((c) => this.held.has(c.id)).map((c) => ({ op: "update" as const, id: c.id, patch: this.held.get(c.id)! }))], `hold:${id}`);
         }, HOLD_SEND_MS),
       );
     }
@@ -128,7 +159,14 @@ export class BoardClient {
     this.holdTimers.delete(id);
     const p = { ...this.held.get(id), ...extra };
     this.held.delete(id);
-    if (Object.keys(p).length) this.apply([{ op: "update", id, patch: p }], `hold:${id}`);
+    const kids = (this.holdBase.get(id)?.children ?? []).filter((c) => this.held.has(c.id));
+    this.holdBase.delete(id);
+    const ops: Op[] = Object.keys(p).length ? [{ op: "update", id, patch: p }] : [];
+    for (const c of kids) {
+      ops.push({ op: "update", id: c.id, patch: this.held.get(c.id)! });
+      this.held.delete(c.id);
+    }
+    if (ops.length) this.apply(ops, `hold:${id}`);
     else this.emit();
   }
 
@@ -176,3 +214,5 @@ function hash(s: string) {
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
 }
+
+const round = (n: number) => Math.round(n * 1000) / 1000;

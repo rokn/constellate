@@ -5,6 +5,7 @@ import {
   STATUSES,
   colorOf,
   defaultsFor,
+  nameOf,
   newId,
   type Board,
   type BoardScreen,
@@ -22,6 +23,11 @@ import { BoardScene, type Mode } from "./scene";
 import type { XRInput } from "./xr";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
+import { Breadcrumbs, ExchangeDialog, FindPalette, HistoryPanel, LayersPopover, LibraryList, LinkInspector, PlayerBar, PreviewBar, TemplateList } from "./panels";
+import type { Layers } from "./fx";
+import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
+import { TEMPLATE_NAMES, layTemplate } from "../../shared/templates";
+import * as THREE from "three";
 import { applyPreset, num, on, onTune, setTune, tuneChanged } from "./tune";
 import { BUILT_IN_PRESETS, type BoardPreset } from "../../shared/boardTune";
 
@@ -32,6 +38,8 @@ import { BUILT_IN_PRESETS, type BoardPreset } from "../../shared/boardTune";
  */
 
 const ASSISTANT = "Jarvis";
+const LIBRARY_NAMES = LIBRARY.map((p) => p.name);
+const TEMPLATE_LIST = TEMPLATE_NAMES;
 const KIND_NAME: Partial<Record<ItemKind, string>> = { function: "Lambda", holo: "Hologram" };
 const kindName = (k: ItemKind) => KIND_NAME[k] ?? k[0].toUpperCase() + k.slice(1);
 const INK_COLORS = ["cyan", "amber", "magenta", "green", "white"];
@@ -119,6 +127,17 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   }, []);
   useEffect(loadPresets, [loadPresets]);
   const askRef = useRef<HTMLInputElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [exchangeOpen, setExchangeOpen] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [layers, setLayers] = useState<Layers>({ hide: [], isolate: null });
+  const [preview, setPreview] = useState<{ id: string; label: string; board: Board } | null>(null);
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  const [selLink, setSelLink] = useState<string | null>(null);
+  const [playCaption, setPlayCaption] = useState<{ text: string; title?: string; step: number; of: number } | null>(null);
+  const [palTab, setPalTab] = useState<"blocks" | "holo" | "plans">("blocks");
 
   const selRef = useRef(selected);
   selRef.current = selected;
@@ -129,6 +148,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
 
   const setSelected = useCallback((ids: string[]) => {
     setSelectedState(ids);
+    if (ids.length) setSelLink(null);
     sceneRef.current?.setSelected(ids);
   }, []);
 
@@ -162,6 +182,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   );
   const sendAskRef = useRef(sendAsk);
   sendAskRef.current = sendAsk;
+  const insideRef = useRef<(id: string) => void>(() => {});
+  const openRef = useRef(open);
+  openRef.current = open;
 
   /** Everything the desktop and the headset do to the board. */
   const ctl: Ctl = useMemo(
@@ -202,7 +225,19 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         else v.stop();
       },
       voiceState: () => voiceRef.current.state,
-      caption: () => voiceRef.current.caption || voiceRef.current.heard,
+      caption: () => {
+        const c = sceneRef.current?.fx.caption;
+        return c ? `${c.step}/${c.of} · ${c.text}` : voiceRef.current.caption || voiceRef.current.heard;
+      },
+      inside: (id) => insideRef.current(id),
+      up: () => {
+        const p = client.board?.parent;
+        if (p) openRef.current(p.boardId);
+      },
+      selectLink: (id) => {
+        setSelLink(id);
+        if (id) setSelected([]);
+      },
       ask: (t) => sendAskRef.current(t),
       inkColor: () => colorOf(inkRef.current),
     }),
@@ -218,8 +253,14 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     const offDesk = attachDesktop(s, ctl);
     const offClient = client.open();
     let raf = 0;
+    let booted = false;
     const offBoard = client.subscribe((b) => {
-      s.setBoard(b);
+      if (!booted) {
+        booted = true;
+        s.fx.startBoot(b.name);
+      }
+      // While an old version is shown, the live board waits.
+      if (!previewRef.current) s.setBoard(b);
       // The page re-renders at most once a frame, however fast the board changes.
       if (!raf)
         raf = requestAnimationFrame(() => {
@@ -234,7 +275,33 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (c.cmd === "tool") setToolState(c.tool);
       else if (c.cmd === "tune") setTune(c.values);
       else if (c.cmd === "presets") loadPresets();
+      else if (c.cmd === "open") open(c.boardId);
+      else if (c.cmd === "play") s.fx.start(c.kind, c.steps, c.title);
+      else if (c.cmd === "stopPlay") s.fx.stop();
+      else if (c.cmd === "layers") {
+        s.fx.setLayers({ hide: c.hide, isolate: c.isolate }, client.board);
+        setLayers({ ...s.fx.layers });
+      }
     });
+    s.fx.onCaption = () => setPlayCaption(s.fx.caption ? { ...s.fx.caption } : null);
+    const offPresence = client.onPresence((p) => s.fx.presence(p));
+    // Where this screen is, for the others: the camera on a desktop, the head and hands in a headset.
+    let lastSent = "";
+    const pres = setInterval(() => {
+      const r3 = (v: THREE.Vector3): Vec3 => [round(v.x), round(v.y), round(v.z)];
+      let p: Parameters<typeof client.sendPresence>[0];
+      if (s.mode === "flat") p = { mode: "flat", head: r3(s.camera.position), look: r3(s.controls.target) };
+      else {
+        const cam = s.renderer.xr.getCamera();
+        const head = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+        const look = head.clone().add(new THREE.Vector3(0, 0, -0.5).transformDirection(cam.matrixWorld));
+        p = { mode: s.mode, head: r3(s.toBoard(head)), look: r3(s.toBoard(look)), hands: xrRef.current?.presenceHands().map((h) => ({ at: r3(s.toBoard(h.at)), to: h.to ? r3(s.toBoard(h.to)) : undefined })) };
+      }
+      const key = JSON.stringify(p);
+      if (key === lastSent) return;
+      lastSent = key;
+      client.sendPresence(p);
+    }, 150);
     s.onMode = (m) => {
       setMode(m);
       if (m === "flat") xrRef.current?.left();
@@ -247,6 +314,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     }, 1000);
     return () => {
       clearInterval(t);
+      clearInterval(pres);
+      offPresence();
       cancelAnimationFrame(raf);
       offDesk();
       offClient();
@@ -257,7 +326,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       s.dispose();
       sceneRef.current = null;
     };
-  }, [client, ctl, setSelected, loadPresets]);
+  }, [client, ctl, setSelected, loadPresets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A headset? Then the buttons, and its hands, ready before you press.
   useEffect(() => {
@@ -276,7 +345,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   /** What the headset's palette and Tune panel offer beyond the components. */
   function xrExtras() {
     return {
-      extras: () => ({ library: [], templates: [] }),
+      extras: () => ({
+        library: LIBRARY_NAMES.map((name) => ({ name, make: () => placePrefab(name) })),
+        templates: TEMPLATE_LIST.map((t) => ({ name: t.name, make: () => placeTemplate(t.name) })),
+      }),
       presets: () => [...BUILT_IN_PRESETS, ...presetsRef.current],
       onPreset: (p: BoardPreset) => applyPreset(p.values),
     };
@@ -306,8 +378,16 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       if (e.key === "/" || (e.key === "k" && (e.metaKey || e.ctrlKey))) {
         e.preventDefault();
         askRef.current?.focus();
-      } else if (e.key === "?") setHelp((h) => !h);
+      } else if (e.key === "f" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setFindOpen(true);
+      } else if (e.metaKey || e.ctrlKey || e.altKey) return;
+      else if (e.key === "?") setHelp((h) => !h);
       else if (e.key === ",") setTuneOpen((o) => !o);
+      else if (e.key === "h") setHistoryOpen((o) => !o);
+      else if (e.key === "l") setLayersOpen((o) => !o);
+      else if (e.key === "i" && selRef.current.length === 1) void goInside(selRef.current[0]);
+      else if (e.key === "u" && client.board?.parent) open(client.board.parent.boardId);
       else if (e.key === " " && e.target === document.body) {
         e.preventDefault();
         ctl.toggleVoice();
@@ -315,7 +395,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
-  }, [ctl]);
+  }, [ctl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addAtFocus = (kind: ItemKind) => {
     const s = sceneRef.current;
@@ -329,6 +409,43 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     }
     const id = ctl.add(kind, pos);
     setSelected([id]);
+  };
+
+  /** A hologram from the library, where they're looking. */
+  function placePrefab(name: string) {
+    const p = findPrefab(name);
+    const s = sceneRef.current;
+    if (!p || !s) return;
+    const f = s.focusPoint();
+    const id = ctl.add("holo", [f[0], 0, f[2]], { label: p.name, color: p.color, spin: true, holo: { parts: p.parts } });
+    setSelected([id]);
+  }
+
+  /** A template, laid out where they're looking (with a version kept first, to go back to). */
+  async function placeTemplate(name: string) {
+    const s = sceneRef.current;
+    const t = layTemplate(name, s?.focusPoint() ?? [0, 0, 0]);
+    if (!t) return;
+    await fetch("/api/board/versions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: boardId, label: `Before template ${name}` }) }).catch(() => {});
+    client.apply([{ op: "add", items: t.items, links: t.links }]);
+    s?.overview();
+  }
+
+  /** Into the selected item's own board (made the first time). */
+  const goInside = async (itemId: string) => {
+    const r = await fetch("/api/board/inside", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: boardId, itemId }) });
+    if (r.ok) open(((await r.json()) as { boardId: string }).boardId);
+  };
+
+  insideRef.current = (id) => void goInside(id);
+
+  const showPreview = (v: { id: string; label: string; board: Board } | null) => {
+    setPreview(v);
+    previewRef.current = v;
+    const s = sceneRef.current;
+    if (!s) return;
+    if (v) s.setBoard(v.board);
+    else if (client.board) s.setBoard(client.board);
   };
 
   const rename = (name: string) => client.apply([{ op: "rename", name }]);
@@ -412,9 +529,27 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                   </div>
                 )}
               </div>
+              {board?.parent && (
+                <button className="ws-chip" onClick={() => open(board.parent!.boardId)} title="Back up to the board this is inside (U)">
+                  ↑ Up
+                </button>
+              )}
+              {board && <Breadcrumbs board={board} open={open} />}
               {!client.connected && board === null && <span className="text-xs text-[#7fa6bd]">connecting…</span>}
             </div>
             <div className="pointer-events-auto flex items-center gap-2">
+              <button className="ws-chip" onClick={() => setFindOpen(true)} title="Find (⌘F)">
+                Find
+              </button>
+              <button className={`ws-chip ${layersOpen || layers.hide.length || layers.isolate ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setLayersOpen((o) => !o)} title="Layers (L)">
+                Layers
+              </button>
+              <button className={`ws-chip ${historyOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setHistoryOpen((o) => !o)} title="History: versions to go back to (H)">
+                History
+              </button>
+              <button className="ws-chip" onClick={() => setExchangeOpen(true)} title="Export and import">
+                Export
+              </button>
               <button className={`ws-chip ${tuneOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setTuneOpen((o) => !o)} title="Tune: how everything looks and behaves (,)">
                 Tune
               </button>
@@ -436,7 +571,33 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
           {xrError && <div className="absolute right-4 top-16 max-w-sm rounded bg-red-900/70 px-3 py-2 text-sm text-red-100">{xrError}</div>}
 
           {/* The palette. */}
-          <div className="ws-panel absolute left-4 top-20 w-44 p-3">
+          <div className="ws-panel absolute bottom-24 left-4 top-20 flex w-56 flex-col p-3">
+            <div className="mb-3 flex gap-1">
+              {(
+                [
+                  ["blocks", "Build"],
+                  ["holo", "Holo"],
+                  ["plans", "Plans"],
+                ] as const
+              ).map(([id, label]) => (
+                <button key={id} className={`ws-tool !h-7 !text-[11px] uppercase tracking-widest ${palTab === id ? "ws-tool-on" : ""}`} onClick={() => setPalTab(id)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+            {palTab === "holo" && (
+              <Section title="Hologram library">
+                <LibraryList onPick={placePrefab} />
+                <div className="mt-2 text-[11px] leading-tight text-[#7fa6bd]">Or ask {ASSISTANT} for any object: “a hologram of a jet engine”.</div>
+              </Section>
+            )}
+            {palTab === "plans" && (
+              <Section title="Templates">
+                <TemplateList onPick={(n) => void placeTemplate(n)} />
+              </Section>
+            )}
+            {palTab === "blocks" && (<>
             <Section title="Architecture">
               <div className="grid grid-cols-2 gap-1.5">
                 {ARCH_KINDS.map((k) => (
@@ -467,9 +628,11 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                 </div>
               )}
               <div className="mt-2 text-[11px] leading-tight text-[#7fa6bd]">
-                {tool === "connect" ? "Drag from one item to another." : tool === "ink" ? "Draw on the table." : "Drag to move · Shift-drag to lift · double-click to edit"}
+                {tool === "connect" ? "Drag from one item to another." : tool === "ink" ? "Draw on the table." : "Drag to move · Shift-drag on an item to lift it, on the table to box-select · double-click to edit"}
               </div>
             </Section>
+            </>)}
+            </div>
             <div className="mt-2 flex gap-1.5">
               <button className="ws-btn flex-1" onClick={() => client.undo()} title="Undo (⌘Z)">
                 Undo
@@ -484,7 +647,45 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
           </div>
 
           {/* The inspector. */}
-          {sel && <Inspector item={sel} client={client} onEdit={() => setEditing(sel.id)} onDelete={() => ctl.remove([sel.id])} onFocus={() => sceneRef.current?.focus([sel.id])} />}
+          {sel && !tuneOpen && !historyOpen && (
+            <Inspector item={sel} board={board!} client={client} onEdit={() => setEditing(sel.id)} onDelete={() => ctl.remove([sel.id])} onFocus={() => sceneRef.current?.focus([sel.id])} onInside={() => void goInside(sel.id)} />
+          )}
+          {selLink && board?.links.find((l) => l.id === selLink) && !tuneOpen && !historyOpen && (
+            <LinkInspector link={board.links.find((l) => l.id === selLink)!} board={board} client={client} onClose={() => setSelLink(null)} />
+          )}
+          {historyOpen && <HistoryPanel boardId={boardId} previewing={preview?.id ?? null} onPreview={showPreview} onClose={() => (setHistoryOpen(false), showPreview(null))} />}
+          {preview && (
+            <PreviewBar
+              label={preview.label}
+              onExit={() => showPreview(null)}
+              onRestore={() => {
+                void fetch("/api/board/versions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: boardId, restore: preview.id }) }).then(() => showPreview(null));
+              }}
+            />
+          )}
+          {layersOpen && (
+            <LayersPopover
+              layers={layers}
+              selected={selected}
+              onClose={() => setLayersOpen(false)}
+              onChange={(l) => {
+                sceneRef.current?.fx.setLayers(l, client.board);
+                setLayers({ ...sceneRef.current!.fx.layers });
+              }}
+            />
+          )}
+          {findOpen && board && (
+            <FindPalette
+              board={board}
+              onClose={() => setFindOpen(false)}
+              onPick={(id) => {
+                setSelected([id]);
+                sceneRef.current?.focus([id]);
+              }}
+            />
+          )}
+          {exchangeOpen && board && <ExchangeDialog board={board} client={client} capture={() => sceneRef.current!.capture()} focus={() => sceneRef.current!.focusPoint()} onClose={() => setExchangeOpen(false)} />}
+          {playCaption && <PlayerBar caption={playCaption} onStop={() => sceneRef.current?.fx.stop()} />}
           {selected.length > 1 && (
             <div className="ws-panel absolute right-4 top-20 w-64 p-3">
               <div className="ws-title">{selected.length} selected</div>
@@ -607,7 +808,7 @@ function PaletteItem({ kind, onAdd }: { kind: ItemKind; onAdd: () => void }) {
   );
 }
 
-function Inspector({ item, client, onEdit, onDelete, onFocus }: { item: Item; client: BoardClient; onEdit: () => void; onDelete: () => void; onFocus: () => void }) {
+function Inspector({ item, board, client, onEdit, onDelete, onFocus, onInside }: { item: Item; board: Board; client: BoardClient; onEdit: () => void; onDelete: () => void; onFocus: () => void; onInside: () => void }) {
   const patch = (p: Partial<Item>, merge?: string) => client.apply([{ op: "update", id: item.id, patch: p }], merge);
   const [label, setLabel] = useState(item.label ?? "");
   const [tags, setTags] = useState((item.tags ?? []).join(", "));
@@ -720,9 +921,55 @@ function Inspector({ item, client, onEdit, onDelete, onFocus }: { item: Item; cl
           <div className="mt-1 text-[11px] text-[#7fa6bd]">{item.holo?.parts?.length ?? 0} parts{item.holo?.script ? " · scripted" : ""}</div>
         </>
       )}
-      <button className="ws-btn mt-3 w-full !text-red-300" onClick={onDelete}>
-        Delete (⌫)
-      </button>
+      {item.flags?.length ? (
+        <>
+          <div className="ws-title mb-1 mt-3">Review</div>
+          {item.flags.map((f, k) => (
+            <div key={k} className="mb-1 flex items-start gap-1.5 text-xs" style={{ color: f.level === "risk" ? LOOK.danger : f.level === "warn" ? LOOK.accent : LOOK.cyan }}>
+              <span className="mt-1 h-1.5 w-1.5 flex-none rotate-45" style={{ background: "currentColor" }} />
+              <span className="flex-1 text-[#cfeaf6]">{f.text}</span>
+            </div>
+          ))}
+          <button className="text-[11px] text-[#7fa6bd] hover:text-white" onClick={() => patch({ flags: null as never })}>
+            clear findings
+          </button>
+        </>
+      ) : null}
+      {item.metrics?.length ? (
+        <>
+          <div className="ws-title mb-1 mt-3">Metrics</div>
+          {item.metrics.map((m, k) => (
+            <div key={k} className="flex justify-between text-xs text-[#cfeaf6]">
+              <span>{m.label}</span>
+              <span className="font-mono text-[#7dff9a]">
+                {m.value}
+                {m.unit ?? ""}
+                {m.max ? <span className="text-[#4f7286]"> / {m.max}</span> : null}
+              </span>
+            </div>
+          ))}
+        </>
+      ) : null}
+      {item.attach && (
+        <div className="mt-3 flex items-center justify-between text-xs text-[#7fa6bd]">
+          <span>
+            Pinned to <span className="text-[#dff6ff]">{(() => { const p = board.items.find((i) => i.id === item.attach); return p ? nameOf(p) : "?"; })()}</span>
+          </span>
+          <button className="hover:text-white" onClick={() => patch({ attach: null as never })}>
+            unpin
+          </button>
+        </div>
+      )}
+      <div className="mt-3 flex gap-1.5">
+        {item.kind !== "frame" && item.kind !== "ink" && item.kind !== "text" && (
+          <button className="ws-btn flex-1" onClick={onInside} title="Its own board, for what it's made of (I)">
+            {item.sub ? "Go inside ↘" : "Open inside ↘"}
+          </button>
+        )}
+        <button className="ws-btn flex-1 !text-red-300" onClick={onDelete}>
+          Delete (⌫)
+        </button>
+      </div>
     </div>
   );
 }
@@ -821,6 +1068,11 @@ function Help({ onClose }: { onClose: () => void }) {
     ["E", "Pull a hologram apart"],
     ["F · O", "Frame the selection · the whole table"],
     ["⌘Z · ⇧⌘Z", "Undo · redo"],
+    ["⌘C · ⌘X · ⌘V", "Copy · cut · paste (also a Mermaid diagram)"],
+    ["Shift-drag on the table", "Box-select"],
+    ["⌘F", "Find"],
+    ["I · U", "Go inside the selection · back up"],
+    ["H · L", "History · layers"],
     [",", "Tune"],
   ];
   const xr: [string, string][] = [
