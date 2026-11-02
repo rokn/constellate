@@ -192,24 +192,43 @@ roadmap, a device. It has nothing to do with the open repo.
 
 - **Components**: architecture blocks (service, database, queue, API, client, user,
   cache, storage, lambda, external, cloud), notes, floating text, frames that group
-  things on the table, ink you draw, and **holograms** — any 3D object, built from parts
-  (or from a script, run in a sandbox in the browser) that pull apart.
+  things on the table (and carry them when moved), ink you draw, and **holograms** —
+  any 3D object, built from parts (or a script, run in a sandbox in the browser),
+  that pull apart. A **library** of ten ready-made ones, and **templates** for whole
+  boards (microservices, event pipeline, three-tier, roadmap, SWOT, kanban).
 - **Jarvis** (Claude, through the Agent SDK, with only board tools) builds on it: type
   after `/`, or say it. "Design a payments platform", "build a hologram of a jet engine",
-  "group these by tier", "make the risky ones red". All of one request is one undo.
-- **The voice** (Inworld, as on the map) does the quick things itself — add a block,
-  link two, move, recolour, select, pull a hologram apart, undo — and hands anything
+  "review this", "walk me through checkout", "estimate the load", "design the inside of
+  the order service". It can **simulate** a request hop by hop and **present** the board
+  as a tour (captions on every screen), **flag** review findings as beacons, put
+  **metrics** on items as gauges, pin notes to what they're about, and open a block's
+  **inside** board. All of one request is one undo, with a version kept before it.
+- **The voice** (Inworld, as on the map) does the quick things itself — add, link, move,
+  recolour, select, pull apart, place a library hologram or a template, go inside and
+  back up, save or go back to a version, layers, every Tune knob — and hands anything
   that needs designing to Jarvis, then says what it built.
-- **Live**: the server owns each board (`.cache/boards/`); every screen on it — the
-  desktop and the headset — sees every change as it happens.
+- **Live**: the server owns each board (`.cache/boards/`); every screen on it sees every
+  change as it happens, and the others' cameras, heads and hands as ghosts.
+- **History** (`H`): versions kept as you work and before every request; preview one on
+  the table, restore it. **Export**: a Markdown design doc, Mermaid, JSON, PNG.
+  **Import**: Mermaid or JSON, or just paste either onto the board (`⌘V`).
+- **Find** (`⌘F`), **Layers** (`L`: hide kinds, isolate the selection), box select
+  (shift-drag on the table), copy and paste across boards, a link inspector (click a
+  link), and a progress ring on the table's rim.
+- **Tune** (`,`): every knob — glow, holograms, labels, links, the table, the camera,
+  editing, and the headset's placement, panels, hands, sound and voice — with built-in
+  looks (Stark, Neon, Calm, Readable, Blueprint, Quest performance) and your own presets,
+  kept on the server. The voice and Jarvis can turn any of them.
 
-In a headset it's at its best in **Passthrough**: the table sits on your desk.
-Point and pinch (or trigger) to select and drag along the ray; grab (grip, or pinch
-right on it) to carry an item in your hand, and throw it to delete it; both hands on one
-item stretch it, or pull a hologram apart; grab empty air to move the table, both hands
-to turn and scale it. A opens the toolbelt (or turn your left palm up), B undo, X voice,
-Y redo; a left middle-finger pinch is the voice, a right one undo. Press `?` on the
-desktop for its shortcuts.
+In a headset it's at its best in **Passthrough**: the table sits on your desk. Turn your
+left palm toward you for the **wrist dock** (tools, voice, palette, tune, undo). Panels
+float low and drift after you as you turn; pinch a panel's title bar to carry it, and it
+stays where you leave it. The selected item's inspector stands beside it. Point and pinch
+(or trigger) to select and drag along the ray; grab (grip, or pinch right on it) to carry
+an item, and throw it to delete it; both hands on one item stretch it, or pull a hologram
+apart; grab empty air to move the table, both hands to turn and scale it. A palette,
+B undo, X voice, Y tune; a left middle-finger pinch is the voice, a right one undo. Press
+`?` on the desktop for every shortcut.
 
 ## Shortcuts
 
