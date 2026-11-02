@@ -184,6 +184,33 @@ connection is checked, in the headset's filter too. `POST /api/checked` with
 `{"action": "check" | "uncheck", "links": [{"from", "to"}]}` or `{"action": "clear"}`
 does the same from outside.
 
+## The workshop
+
+`/board` (or **Workshop** next to the repo's name) is a separate place: a 3D planning
+board on a round holotable, for designing anything — a system's architecture, a
+roadmap, a device. It has nothing to do with the open repo.
+
+- **Components**: architecture blocks (service, database, queue, API, client, user,
+  cache, storage, lambda, external, cloud), notes, floating text, frames that group
+  things on the table, ink you draw, and **holograms** — any 3D object, built from parts
+  (or from a script, run in a sandbox in the browser) that pull apart.
+- **Jarvis** (Claude, through the Agent SDK, with only board tools) builds on it: type
+  after `/`, or say it. "Design a payments platform", "build a hologram of a jet engine",
+  "group these by tier", "make the risky ones red". All of one request is one undo.
+- **The voice** (Inworld, as on the map) does the quick things itself — add a block,
+  link two, move, recolour, select, pull a hologram apart, undo — and hands anything
+  that needs designing to Jarvis, then says what it built.
+- **Live**: the server owns each board (`.cache/boards/`); every screen on it — the
+  desktop and the headset — sees every change as it happens.
+
+In a headset it's at its best in **Passthrough**: the table sits on your desk.
+Point and pinch (or trigger) to select and drag along the ray; grab (grip, or pinch
+right on it) to carry an item in your hand, and throw it to delete it; both hands on one
+item stretch it, or pull a hologram apart; grab empty air to move the table, both hands
+to turn and scale it. A opens the toolbelt (or turn your left palm up), B undo, X voice,
+Y redo; a left middle-finger pinch is the voice, a right one undo. Press `?` on the
+desktop for its shortcuts.
+
 ## Shortcuts
 
 | Key | |

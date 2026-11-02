@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ScreenContext, UiCommand } from "../../shared/types";
+import type { BoardScreen } from "../../shared/board";
 
 /**
  * The browser end of the voice: mic capture and playback at 24 kHz through
@@ -40,11 +41,14 @@ export function useVoice({
   onCommand,
   volume = 1,
   idleMinutes = DEFAULT_IDLE_MIN,
+  path = "/api/voice",
 }: {
-  screen: ScreenContext;
+  /** What's on screen: the code map's, or the workshop's (with path /api/board/voice). */
+  screen: ScreenContext | BoardScreen;
   onCommand: (cmd: UiCommand) => void;
   volume?: number;
   idleMinutes?: number;
+  path?: string;
 }) {
   const idleMin = useRef(idleMinutes);
   idleMin.current = Math.min(60, Math.max(1, Math.round(idleMinutes || DEFAULT_IDLE_MIN)));
@@ -139,7 +143,7 @@ export function useVoice({
       };
       playback.current = play;
 
-      const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice?idle=${idleMin.current}`);
+      const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}?idle=${idleMin.current}`);
       ws.current = socket;
       socket.onopen = () => socket.send(JSON.stringify({ type: "proxy.screen", screen: screenRef.current }));
       let failed = false;
@@ -237,7 +241,7 @@ export function useVoice({
       );
       setState("error");
     }
-  }, [send, commitVoice, stillHere]);
+  }, [send, commitVoice, stillHere, path]);
 
   useEffect(() => stop, [stop]);
 

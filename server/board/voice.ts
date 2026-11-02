@@ -1,0 +1,440 @@
+import { WebSocket, WebSocketServer, type RawData } from "ws";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
+import { ARCH_KINDS, COLORS, ITEM_KINDS, STATUSES, defaultsFor, describeBoard, nameOf, newId, type Board, type BoardScreen, type Item, type ItemKind, type Op, type Vec3 } from "../../shared/board";
+import { ASSISTANT, askBoard, stopBoardAgent } from "./agent";
+import { change, command, getBoard, redo, undo, watch } from "./store";
+
+/**
+ * The workshop's voice: an Inworld realtime session, bridged here, as the
+ * code map's is (server/voice.ts). It does the quick things itself — select,
+ * point, add one block, link two, move, recolour, undo — and hands anything
+ * that needs designing to the assistant (agent.ts), then says what it built.
+ */
+
+const INWORLD_WS = "wss://api.inworld.ai/api/v1/realtime/session";
+const REALTIME_MODEL = process.env.INWORLD_REALTIME_MODEL ?? "openai/gpt-5.6-luna";
+const VOICE = process.env.BOARD_VOICE ?? "Edward";
+const TTS_MODEL = process.env.BOARD_TTS_MODEL ?? "inworld-tts-2";
+const IDLE_MS = 10 * 60_000;
+const PING_MS = 30_000;
+const SYNC_MIN_MS = 2000;
+const FOLLOW_UP_SETTLE_MS = 400;
+
+const fn = (name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []) => ({
+  type: "function",
+  name,
+  description,
+  parameters: { type: "object", properties, required },
+});
+const names = { type: "array", items: { type: "string" }, description: "Item ids, or their names as said" };
+
+const TOOLS = [
+  fn(
+    "build",
+    `Hand a request to ${ASSISTANT}'s builder — the part of you that designs: architectures, plans, several items at once, holograms of anything, reorganising, rewriting notes. Pass their request in their words. Returns at once; the result comes a little later.`,
+    { request: { type: "string" } },
+    ["request"],
+  ),
+  fn("stop_building", "Cancel what the builder is doing, when they change their mind."),
+  fn("add", "Add one component, instantly, near where they're looking.", {
+    kind: { type: "string", enum: ITEM_KINDS },
+    label: { type: "string" },
+    body: { type: "string", description: "For a note or text: its words" },
+    color: { type: "string", enum: Object.keys(COLORS) },
+  }, ["kind"]),
+  fn("connect", "Link two items, instantly.", {
+    from: { type: "string" },
+    to: { type: "string" },
+    label: { type: "string" },
+    style: { type: "string", enum: ["sync", "async", "data", "depends"] },
+  }, ["from", "to"]),
+  fn("remove", "Delete items (by id or name). They can undo.", { items: names }, ["items"]),
+  fn("select", "Select items, so 'this' means them. Empty to clear the selection.", { items: names }, ["items"]),
+  fn("point", "Bring their view to items. Empty for the whole board.", { items: names }, ["items"]),
+  fn("move", "Nudge items: left, right, forward (toward them), back, up or down, by metres (0.2 by default).", {
+    items: names,
+    direction: { type: "string", enum: ["left", "right", "forward", "back", "up", "down"] },
+    metres: { type: "number" },
+  }, ["items", "direction"]),
+  fn("style", "Recolour, restatus, rescale or relabel items.", {
+    items: names,
+    color: { type: "string", enum: Object.keys(COLORS) },
+    status: { type: "string", enum: STATUSES },
+    scale: { type: "number" },
+    label: { type: "string" },
+  }, ["items"]),
+  fn("explode", "Pull a hologram apart (1) or put it back together (0), or anywhere between.", { items: names, amount: { type: "number" } }, ["items", "amount"]),
+  fn("spin", "Start or stop a hologram turning on its own.", { items: names, on: { type: "boolean" } }, ["items", "on"]),
+  fn("undo", "Undo the last change."),
+  fn("redo", "Redo what was undone."),
+  fn("tool", "Switch what their hands or mouse do: select (pick and move), connect (pick two to link), ink (draw in the air).", { tool: { type: "string", enum: ["select", "connect", "ink"] } }, ["tool"]),
+];
+const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect"]);
+
+function instructions(b: Board | null, s: BoardScreen): string {
+  const where = s.mode === "ar" ? "in passthrough on a Quest, the board a hologram on their desk" : s.mode === "vr" ? "in VR" : "at their desktop";
+  return [
+    `You are ${ASSISTANT}, the voice of a holographic workshop — a 3D planning board on a round holotable, Tony Stark style. They are ${where}.`,
+    "Speak like a quick, dry, capable assistant: short sentences, a little wit, never a lecture. One or two sentences per turn unless they ask for more.",
+    "",
+    "Do the small things yourself with your tools, instantly: add one block, connect two, select, point, move, recolour, explode or spin a hologram, undo.",
+    `Anything that needs designing — an architecture, a plan, several items, a hologram of something, rearranging, rewriting — goes to build. Don't describe what you'd build; call build with their request, say a few words ("On it."), then tell them what came back when it lands.`,
+    "Call tools without announcing them. Refer to items by name, never by id.",
+    `Kinds: architecture ${ARCH_KINDS.join(", ")}; note, text, frame, ink; holo (a 3D model — always via build).`,
+    "",
+    b ? describeBoard(b, { max: 80, selected: s.selected }) : "No board is open.",
+    s.selected?.length ? `"This", "it" and "these" mean the selected items.` : "",
+    b?.activity?.busy ? `The builder is working right now: ${b.activity.line ?? "thinking"}.` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function bridge(client: WebSocket, req?: IncomingMessage) {
+  const key = process.env.INWORLD_API_KEY?.trim();
+  if (!key) {
+    client.send(JSON.stringify({ type: "proxy.error", message: "INWORLD_API_KEY is not set — voice is off; typing to the assistant still works." }));
+    client.close();
+    return;
+  }
+  const idleMin = Number(new URL(req?.url ?? "/", "http://x").searchParams.get("idle"));
+  const idleAfter = Number.isFinite(idleMin) && idleMin >= 1 && idleMin <= 60 ? idleMin * 60_000 : IDLE_MS;
+
+  let screen: BoardScreen = {};
+  let board: Board | null = null;
+  let unwatch: (() => void) | null = null;
+  let upstream: WebSocket | null = null;
+  let ready = false;
+  let closed = false;
+  let attempt = 0;
+  let responseActive = false;
+  let userSpeaking = false;
+  let followUpWhenIdle = false;
+  let pendingSync = false;
+  let lastInstructions = "";
+  let lastSync = 0;
+  let syncTimer: ReturnType<typeof setTimeout> | undefined;
+  let followUp: ReturnType<typeof setTimeout> | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const pending: string[] = [];
+
+  const toClient = (o: unknown) => client.readyState === WebSocket.OPEN && client.send(JSON.stringify(o));
+  const send = (o: unknown) => upstream?.readyState === WebSocket.OPEN && upstream.send(JSON.stringify(o));
+  const stillHere = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      toClient({ type: "proxy.idle" });
+      client.close(4000, "idle");
+      setTimeout(() => client.terminate(), 5000).unref();
+    }, idleAfter);
+  };
+  stillHere();
+  let alive = true;
+  client.on("pong", () => (alive = true));
+  const pinger = setInterval(() => {
+    if (!alive) return client.terminate();
+    alive = false;
+    client.ping();
+  }, PING_MS);
+
+  const flush = () => {
+    clearTimeout(syncTimer);
+    syncTimer = undefined;
+    if (!ready) return;
+    const text = instructions(board, screen);
+    if (text === lastInstructions) return;
+    lastInstructions = text;
+    lastSync = Date.now();
+    send({ type: "session.update", session: { type: "realtime", instructions: text } });
+  };
+  // Never mid-turn: re-sending instructions while someone talks chops their speech.
+  const sync = () => {
+    if (syncTimer) return;
+    syncTimer = setTimeout(() => {
+      syncTimer = undefined;
+      if (userSpeaking || responseActive) pendingSync = true;
+      else flush();
+    }, Math.max(250, SYNC_MIN_MS - (Date.now() - lastSync)));
+  };
+  const respond = () => {
+    if (userSpeaking) followUpWhenIdle = true;
+    else if (responseActive) followUpWhenIdle = true;
+    else {
+      flush();
+      send({ type: "response.create" });
+    }
+  };
+  const deliver = (text: string) => {
+    send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: `[system] ${text}` }] } });
+    respond();
+  };
+
+  const openBoard = async (id: string | undefined) => {
+    if (!id || id === board?.id) return;
+    unwatch?.();
+    board = (await getBoard(id))?.board ?? null;
+    unwatch = board ? watch(id, (b) => ((board = b), sync())) : null;
+    sync();
+  };
+
+  /** Items by id or by name as said; the selection when they said nothing. */
+  const pick = (list: unknown): Item[] => {
+    const b = board;
+    if (!b) return [];
+    const said = Array.isArray(list) ? list.map((x) => String(x).trim()).filter(Boolean) : [];
+    if (!said.length) return b.items.filter((i) => screen.selected?.includes(i.id));
+    const out: Item[] = [];
+    for (const s of said) {
+      const low = s.toLowerCase();
+      const hit =
+        b.items.find((i) => i.id === s) ??
+        b.items.find((i) => nameOf(i).toLowerCase() === low) ??
+        b.items.find((i) => nameOf(i).toLowerCase().includes(low)) ??
+        b.items.find((i) => i.kind === low);
+      if (hit && !out.includes(hit)) out.push(hit);
+    }
+    return out;
+  };
+
+  const handleTool = async (name: string, a: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const b = board;
+    if (!b) return { ok: false, say: "No board is open." };
+    const id = b.id;
+    const edit = (ops: Op[]) => change(id, ops, `voice:${Date.now()}`);
+    switch (name) {
+      case "build": {
+        const request = String(a.request ?? "").trim();
+        if (!request) return { ok: false, say: "Call again with their request." };
+        const t0 = Date.now();
+        void askBoard(id, request, screen).then((r) => {
+          if (r.error === "superseded") return;
+          console.log(`[board-voice] built in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+          if (r.error) deliver(`The builder hit a problem (${r.error}). Tell them briefly and offer to try again.`);
+          else deliver(`The builder finished. It said: ${r.answer}\nTell them in your own words, in a sentence or two.`);
+        });
+        return { ok: true, status: "working", say: "A few words that you're on it. Don't describe the result yet." };
+      }
+      case "stop_building":
+        return { ok: stopBoardAgent(id) };
+      case "add": {
+        const kind = (ITEM_KINDS.includes(a.kind as ItemKind) ? a.kind : "note") as ItemKind;
+        const f: Vec3 = screen.focus ?? [0, 0, 0];
+        const taken = b.items.map((i) => i.pos);
+        let pos: Vec3 = [f[0], 0, f[2]];
+        for (let k = 1; k < 200 && taken.some((t) => Math.hypot(t[0] - pos[0], t[2] - pos[2]) < 0.24); k++) {
+          const r = 0.24 * Math.sqrt(k);
+          pos = [f[0] + Math.cos(k * 2.4) * r, 0, f[2] + Math.sin(k * 2.4) * r];
+        }
+        const item = { ...defaultsFor(kind), id: newId(), kind, pos } as Item;
+        if (a.label) item.label = String(a.label);
+        if (a.body) item.body = String(a.body);
+        if (a.color) item.color = String(a.color);
+        await edit([{ op: "add", items: [item] }]);
+        command(id, { cmd: "select", ids: [item.id] });
+        return { ok: true, id: item.id };
+      }
+      case "connect": {
+        const [from] = pick([a.from]);
+        const [to] = pick([a.to]);
+        if (!from || !to) return { ok: false, say: "Couldn't find one of those; ask which." };
+        await edit([{ op: "link", links: [{ id: newId("l"), from: from.id, to: to.id, label: a.label ? String(a.label) : undefined, style: a.style as never }] }]);
+        return { ok: true };
+      }
+      case "remove": {
+        const items = pick(a.items);
+        if (!items.length) return { ok: false, say: "Nothing matched." };
+        await edit([{ op: "remove", ids: items.map((i) => i.id) }]);
+        return { ok: true, removed: items.map(nameOf) };
+      }
+      case "select": {
+        const items = Array.isArray(a.items) && a.items.length ? pick(a.items) : [];
+        command(id, { cmd: "select", ids: items.map((i) => i.id) });
+        return { ok: true, selected: items.map(nameOf) };
+      }
+      case "point": {
+        const items = Array.isArray(a.items) && a.items.length ? pick(a.items) : [];
+        command(id, items.length ? { cmd: "focus", ids: items.map((i) => i.id) } : { cmd: "overview" });
+        return { ok: true };
+      }
+      case "move": {
+        const items = pick(a.items);
+        const m = typeof a.metres === "number" ? a.metres : 0.2;
+        const d: Record<string, Vec3> = { left: [-m, 0, 0], right: [m, 0, 0], forward: [0, 0, m], back: [0, 0, -m], up: [0, m, 0], down: [0, -m, 0] };
+        const v = d[String(a.direction)] ?? [0, 0, 0];
+        await edit(items.map((i) => ({ op: "update" as const, id: i.id, patch: { pos: [i.pos[0] + v[0], Math.max(0, i.pos[1] + v[1]), i.pos[2] + v[2]] as Vec3 } })));
+        return { ok: items.length > 0 };
+      }
+      case "style": {
+        const items = pick(a.items);
+        const patch: Partial<Item> = {};
+        if (a.color) patch.color = String(a.color);
+        if (a.status) patch.status = a.status as Item["status"];
+        if (typeof a.scale === "number") patch.scale = a.scale;
+        if (a.label) patch.label = String(a.label);
+        await edit(items.map((i) => ({ op: "update" as const, id: i.id, patch })));
+        return { ok: items.length > 0 };
+      }
+      case "explode":
+      case "spin": {
+        const items = pick(a.items).filter((i) => i.kind === "holo");
+        if (!items.length) return { ok: false, say: "That isn't a hologram." };
+        const patch = name === "explode" ? { explode: Math.min(1, Math.max(0, Number(a.amount) || 0)) } : { spin: !!a.on };
+        await edit(items.map((i) => ({ op: "update" as const, id: i.id, patch })));
+        return { ok: true };
+      }
+      case "undo":
+        return { ok: await undo(id) };
+      case "redo":
+        return { ok: await redo(id) };
+      case "tool":
+        command(id, { cmd: "tool", tool: a.tool as "select" | "connect" | "ink" });
+        return { ok: true };
+      default:
+        return { ok: false, error: `Unknown tool ${name}` };
+    }
+  };
+
+  const connect = () => {
+    if (closed) return;
+    const ws = new WebSocket(`${INWORLD_WS}?key=workshop-${Date.now()}&protocol=realtime`, { headers: { Authorization: `Basic ${key}` } });
+    upstream = ws;
+    ws.on("open", () => {
+      attempt = 0;
+      toClient({ type: "proxy.status", status: "connecting" });
+    });
+    ws.on("message", (data: RawData) => {
+      const text = data.toString();
+      let msg: { type?: string; name?: string; call_id?: string; arguments?: string };
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        return;
+      }
+      switch (msg.type) {
+        case "input_audio_buffer.speech_started":
+          userSpeaking = true;
+          stillHere();
+          break;
+        case "input_audio_buffer.speech_stopped":
+          userSpeaking = false;
+          break;
+        case "response.created":
+          responseActive = true;
+          userSpeaking = false;
+          clearTimeout(followUp);
+          break;
+        case "response.done":
+        case "response.cancelled":
+        case "response.incomplete":
+          responseActive = false;
+          if (followUpWhenIdle) {
+            followUpWhenIdle = false;
+            clearTimeout(followUp);
+            followUp = setTimeout(() => !responseActive && !userSpeaking && respond(), FOLLOW_UP_SETTLE_MS);
+          }
+          if (pendingSync) {
+            pendingSync = false;
+            sync();
+          }
+          break;
+        case "session.created":
+          lastInstructions = instructions(board, screen);
+          ws.send(
+            JSON.stringify({
+              type: "session.update",
+              session: {
+                type: "realtime",
+                model: REALTIME_MODEL,
+                instructions: lastInstructions,
+                output_modalities: ["audio"],
+                audio: {
+                  input: {
+                    transcription: { model: "assemblyai/u3-rt-pro", language: "en" },
+                    turn_detection: { type: "semantic_vad", eagerness: "medium", create_response: true, interrupt_response: true },
+                  },
+                  output: { model: TTS_MODEL, voice: VOICE },
+                },
+                tools: TOOLS,
+                providerData: { stt: { voice_profile: false } },
+              },
+            }),
+          );
+          return;
+        case "session.updated":
+          if (!ready) {
+            ready = true;
+            toClient({ type: "proxy.status", status: "ready" });
+            for (const q of pending.splice(0)) ws.send(q);
+          }
+          return;
+        case "response.function_call_arguments.done": {
+          let args: Record<string, unknown> = {};
+          try {
+            args = msg.arguments ? JSON.parse(msg.arguments) : {};
+          } catch {
+            /* tolerate malformed args */
+          }
+          const name = msg.name ?? "";
+          // Every call gets an answer, whatever happens: an unanswered one wedges the session.
+          void handleTool(name, args)
+            .catch((err) => ({ ok: false, error: String(err) }) as Record<string, unknown>)
+            .then((output) => {
+              send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: msg.call_id, output: JSON.stringify(output) } });
+              if (!SILENT.has(name) || output.ok === false) respond();
+            });
+          return;
+        }
+      }
+      if (client.readyState === WebSocket.OPEN) client.send(text);
+    });
+    ws.on("close", () => {
+      if (closed) return;
+      ready = false;
+      responseActive = userSpeaking = false;
+      toClient({ type: "proxy.status", status: "reconnecting" });
+      setTimeout(connect, Math.min(15_000, 500 * 2 ** attempt++));
+    });
+    ws.on("error", (err) => toClient({ type: "proxy.status", status: "error", message: String(err) }));
+  };
+
+  client.on("message", (data: RawData) => {
+    const text = data.toString();
+    let msg: { type?: string; screen?: BoardScreen };
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (msg.type === "proxy.screen") {
+      screen = msg.screen ?? {};
+      void openBoard(screen.boardId);
+      sync();
+      return;
+    }
+    if (msg.type === "proxy.settings") return;
+    if (upstream?.readyState === WebSocket.OPEN && ready) upstream.send(text);
+    else if (pending.length < 200) pending.push(text);
+  });
+
+  client.on("close", () => {
+    closed = true;
+    clearTimeout(idleTimer);
+    clearTimeout(syncTimer);
+    clearTimeout(followUp);
+    clearInterval(pinger);
+    unwatch?.();
+    upstream?.close();
+  });
+
+  connect();
+}
+
+export function attachBoardVoice(server: { on: (ev: "upgrade", cb: (req: IncomingMessage, socket: Duplex, head: Buffer) => void) => void }) {
+  const wss = new WebSocketServer({ noServer: true });
+  wss.on("connection", bridge);
+  server.on("upgrade", (req, socket, head) => {
+    if ((req.url ?? "").split("?")[0] !== "/api/board/voice") return;
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  });
+}

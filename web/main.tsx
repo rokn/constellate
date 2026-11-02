@@ -1,8 +1,21 @@
 import { createRoot } from "react-dom/client";
+import { lazy, Suspense } from "react";
 import { App } from "./App";
 import "./styles.css";
 
-createRoot(document.getElementById("root")!).render(<App />);
+// The workshop (planning boards) is its own page, loaded only there.
+const BoardApp = lazy(() => import("./board/BoardApp").then((m) => ({ default: m.BoardApp })));
+const onBoard = location.pathname === "/board" || location.pathname.startsWith("/board/");
+
+createRoot(document.getElementById("root")!).render(
+  onBoard ? (
+    <Suspense fallback={null}>
+      <BoardApp />
+    </Suspense>
+  ) : (
+    <App />
+  ),
+);
 
 // Installable as an app. Production only: the dev server's modules aren't
 // content-hashed, so caching them would serve stale code. Browsers only allow

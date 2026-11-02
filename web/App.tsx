@@ -1915,6 +1915,9 @@ export function App() {
     return (
       <div className="relative h-full bg-night">
         <Landing onOpen={(p) => void post("/api/open", { path: p })} error={state.error} library={state.library} />
+        <a href="/board" className="absolute right-4 top-4 font-cond text-[13px] uppercase tracking-[0.2em] text-muted hover:text-course" title="The workshop: a 3D planning board, with a voice">
+          Workshop →
+        </a>
       </div>
     );
   }
@@ -2347,6 +2350,9 @@ export function App() {
                 Switch repo
               </button>
             )}
+            <a href="/board" className="ml-2 align-[3px] text-[12px] text-muted hover:text-course" title="The workshop: a 3D planning board, with a voice">
+              Workshop
+            </a>
           </div>
         )}
         {compact ? (
