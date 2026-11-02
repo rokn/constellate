@@ -362,6 +362,9 @@ export function TemplateList({ onPick }: { onPick: (name: string) => void }) {
 /* -------------------------------- where -------------------------------- */
 
 /** The boards this one is inside, back up to the top. */
+/** How deep a board is, in C4's words: the system in its context, its containers, their components, the code. */
+export const C4_LEVELS = ["Context", "Containers", "Components", "Code", "Detail"];
+
 export function Breadcrumbs({ board, open }: { board: Board; open: (id: string) => void }) {
   const [chain, setChain] = useState<{ id: string; name: string }[]>([]);
   useEffect(() => {
@@ -381,9 +384,16 @@ export function Breadcrumbs({ board, open }: { board: Board; open: (id: string) 
       live = false;
     };
   }, [board.id, board.parent]);
-  if (!board.parent) return null;
+  const level = C4_LEVELS[Math.min(C4_LEVELS.length - 1, chain.length)];
+  if (!board.parent)
+    return board.items.length ? (
+      <span className="text-[10px] uppercase tracking-[0.25em] text-[#4f7286]" title="C4 level: zoom into an item (or press I) to go a level down">
+        {C4_LEVELS[0]}
+      </span>
+    ) : null;
   return (
     <div className="flex items-center gap-1 text-xs text-[#7fa6bd]">
+      <span className="mr-1 text-[10px] uppercase tracking-[0.25em] text-[#4f7286]">{level}</span>
       {chain.map((c) => (
         <span key={c.id} className="flex items-center gap-1">
           <button className="hover:text-white" onClick={() => open(c.id)}>

@@ -628,7 +628,9 @@ export class Dock extends HoloPanel {
     ctx.letterSpacing = "3px";
     ctx.fillStyle = withAlpha(CYAN, 0.6);
     ctx.textAlign = "center";
-    ctx.fillText(`${this.ctl.tool().toUpperCase()} · VOICE ${voiceOn ? "ON" : "OFF"} · ${(this.ctl.client.board?.name ?? "").toUpperCase().slice(0, 24)}`, W / 2, H - 14);
+    const depth = (this.ctl.client.board?.name.match(/ › /g) ?? []).length;
+    const level = ["CONTEXT", "CONTAINERS", "COMPONENTS", "CODE", "DETAIL"][Math.min(4, this.ctl.client.board?.parent ? Math.max(1, depth) : 0)];
+    ctx.fillText(`${this.ctl.tool().toUpperCase()} · VOICE ${voiceOn ? "ON" : "OFF"} · ${(this.ctl.client.board?.name.split(" › ").pop() ?? "").toUpperCase().slice(0, 22)} · ${level}`, W / 2, H - 14);
     ctx.textAlign = "left";
     ctx.letterSpacing = "0px";
   }

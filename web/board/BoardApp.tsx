@@ -21,7 +21,9 @@ import type { Ctl, Tool } from "./ctl";
 import { attachDesktop, dropPoint } from "./desktop";
 import { LOOK, STATUS_COLOR } from "./look";
 import { BoardScene, type Mode } from "./scene";
-import type { XRInput } from "./xr";
+import type { XRInput, XRPlugin } from "./xr";
+import { RoomXR } from "./room";
+import { ShelfXR } from "./shelf";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
 import { fromClip, toClip } from "../../shared/exchange";
@@ -145,6 +147,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const [selLink, setSelLink] = useState<string | null>(null);
   const [playCaption, setPlayCaption] = useState<{ text: string; title?: string; step: number; of: number } | null>(null);
   const [palTab, setPalTab] = useState<"blocks" | "holo" | "plans">("blocks");
+  const [tiersOn, setTiersOn] = useState(false);
 
   const selRef = useRef(selected);
   selRef.current = selected;
@@ -191,6 +194,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   sendAskRef.current = sendAsk;
   const insideRef = useRef<(id: string) => void>(() => {});
   const runRef = useRef<(a: string, from?: string) => void>(() => {});
+  const reloadRef = useRef(reloadBoards);
+  reloadRef.current = reloadBoards;
+  /** More of the headset (history scrubbing, snapshots, gestures), plugged in when the hands are made. */
+  const xrPluginMakers = useRef<((x: XRInput) => XRPlugin)[]>([]);
   /** Actions the later parts of the page add (sketches, photos, snapshots, …). */
   const extraActionsRef = useRef<(a: string, from?: string) => void>(() => {});
   const dictateRef = useRef<(id: string | null) => void>(() => {});
@@ -247,7 +254,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       inside: (id) => insideRef.current(id),
       up: () => {
         const p = clientRef.current.board?.parent;
-        if (p) openRef.current(p.boardId);
+        if (!p) return;
+        sceneRef.current?.dive("out", p.itemId);
+        openRef.current(p.boardId);
       },
       open: (id) => openRef.current(id),
       boards: () => boardsRef.current,
@@ -371,11 +380,38 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       setXr({ vr, ar });
       if ((vr || ar) && sceneRef.current && !xrRef.current) {
         void import("./xr").then(({ XRInput }) => {
-          if (sceneRef.current && !xrRef.current) xrRef.current = new XRInput(sceneRef.current, ctl, () => clientRef.current.board?.activity, xrExtras());
+          if (sceneRef.current && !xrRef.current) xrRef.current = makeXR(XRInput, sceneRef.current);
         });
       }
     });
   }, [ctl]);
+
+  /** The headset's hands, and what plugs into them: the room, the shelf, … */
+  function makeXR(XRInput: typeof import("./xr").XRInput, s: BoardScene) {
+    const x = new XRInput(s, ctl, () => clientRef.current.board?.activity, xrExtras());
+    const room = new RoomXR(x, {
+      boardOf: () => clientRef.current.board,
+      open: (id) => openRef.current(id),
+      inside: (id) => insideRef.current(id),
+      up: () => ctl.up?.(),
+      boards: () => boardsRef.current,
+    });
+    const shelf = new ShelfXR(x, room, {
+      boards: () => boardsRef.current,
+      current: () => clientRef.current.id,
+      open: (id) => openRef.current(id),
+      create: async () => {
+        const r = await fetch("/api/boards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Untitled board" }) });
+        if (!r.ok) return null;
+        const b = (await r.json()) as Board;
+        await reloadRef.current();
+        return b.id;
+      },
+    });
+    x.plugins.push(room, shelf);
+    for (const f of xrPluginMakers.current) x.plugins.push(f(x));
+    return x;
+  }
 
   /** What the headset's palette and Tune panel offer beyond the components. */
   function xrExtras() {
@@ -394,7 +430,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     try {
       if (!xrRef.current && sceneRef.current) {
         const { XRInput } = await import("./xr");
-        xrRef.current = new XRInput(sceneRef.current, ctl, () => clientRef.current.board?.activity, xrExtras());
+        xrRef.current = makeXR(XRInput, sceneRef.current);
       }
       // Audio starts on the press that took you in, while it still counts as one.
       const { sfx } = await import("../xr/sound");
@@ -419,10 +455,11 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       } else if (e.metaKey || e.ctrlKey || e.altKey) return;
       else if (e.key === "?") setHelp((h) => !h);
       else if (e.key === ",") setTuneOpen((o) => !o);
+      else if (e.key === "t") (runRef.current("tiers"), setTiersOn(!!sceneRef.current?.tiersOn));
       else if (e.key === "h") setHistoryOpen((o) => !o);
       else if (e.key === "l") setLayersOpen((o) => !o);
       else if (e.key === "i" && selRef.current.length === 1) insideRef.current(selRef.current[0]);
-      else if (e.key === "u" && clientRef.current.board?.parent) openRef.current(clientRef.current.board.parent.boardId);
+      else if (e.key === "u" && clientRef.current.board?.parent) ctl.up?.();
       else if (e.key === " " && e.target === document.body) {
         e.preventDefault();
         ctl.toggleVoice();
@@ -469,7 +506,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   /** Into the selected item's own board (made the first time). */
   const goInside = async (itemId: string) => {
     const r = await fetch("/api/board/inside", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: boardId, itemId }) });
-    if (r.ok) open(((await r.json()) as { boardId: string }).boardId);
+    if (!r.ok) return;
+    // The inside grows out of the item.
+    sceneRef.current?.dive("in", itemId);
+    open(((await r.json()) as { boardId: string }).boardId);
   };
 
   insideRef.current = (id) => void goInside(id);
@@ -594,6 +634,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         return setTuneOpen((o) => !o);
       case "recenter":
         return s?.overview();
+      case "tiers":
+        if (s) s.tiersOn = !s.tiersOn;
+        return;
       case "review":
         return sendAsk("Review this design: flag the real issues (single points of failure, missing auth, hot paths, cost traps), then tell me the top one or two.");
       default:
@@ -667,7 +710,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                 )}
               </div>
               {board?.parent && (
-                <button className="ws-chip" onClick={() => open(board.parent!.boardId)} title="Back up to the board this is inside (U)">
+                <button className="ws-chip" onClick={() => ctl.up?.()} title="Back up to the board this is inside (U)">
                   ↑ Up
                 </button>
               )}
@@ -683,6 +726,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               </button>
               <button className={`ws-chip ${historyOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setHistoryOpen((o) => !o)} title="History: versions to go back to (H)">
                 History
+              </button>
+              <button className={`ws-chip ${tiersOn ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => (runAction("tiers"), setTiersOn(!!sceneRef.current?.tiersOn))} title="Depth tiers: frames float as layers (T)">
+                Tiers
               </button>
               <button className="ws-chip" onClick={() => setExchangeOpen(true)} title="Export and import">
                 Export

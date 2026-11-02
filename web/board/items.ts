@@ -49,8 +49,9 @@ export class ItemView {
   dying = 0;
   /** Filtered out of view (layers): not drawn, not picked. */
   hidden = false;
-  /** Dimmed: something else is isolated. */
+  /** Dimmed: something else is isolated (or it's on a board standing apart in the room). */
   dim = false;
+  dimLevel = 0.12;
   /** Lit by a tour or a flow passing through it. */
   spot = 0;
   /** Being crumpled in a fist: 0 → 1, then it's gone. */
@@ -344,7 +345,7 @@ export class ItemView {
       this.u.uFade.value = this.dying;
       for (const s of this.sprites) s.material.opacity = this.dying;
     } else {
-      const f = this.dim ? 0.12 : 1;
+      const f = this.dim ? this.dimLevel : 1;
       if (Math.abs(this.u.uFade.value - f) > 0.002) {
         this.u.uFade.value += (f - this.u.uFade.value) * Math.min(1, dt * 8);
         for (const s of this.sprites) s.material.opacity = this.u.uFade.value;

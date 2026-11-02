@@ -225,11 +225,21 @@ export type Board = {
   rev: number;
   /** The board this one is inside: the item it opened from. */
   parent?: { boardId: string; itemId: string; name: string };
+  /** Links to items on other boards: drawn when both boards stand in the room. */
+  xlinks?: XLink[];
+  /** Views kept as cards: where the head was, what it looked at (board space). */
+  snaps?: Snap[];
   /** What the assistant is doing on this board right now, for the status line. */
   activity?: { busy: boolean; line?: string; answer?: string; error?: string; at: number };
 };
 
 export type BoardSummary = { id: string; name: string; updatedAt: number; items: number };
+
+/** A link from an item here to an item on another board. */
+export type XLink = { id: string; from: string; board: string; to: string; label?: string };
+
+/** A view kept as a card: tap it to stand there again. */
+export type Snap = { id: string; label: string; at: number; head: Vec3; look: Vec3; scale?: number; selected?: string[]; thumb?: string };
 
 /* ---------------------------------- ops --------------------------------- */
 
@@ -243,7 +253,11 @@ export type Op =
   | { op: "unlink"; ids: string[] }
   | { op: "updateLink"; id: string; patch: Partial<Omit<Link, "id">> }
   | { op: "rename"; name: string }
-  | { op: "clear" };
+  | { op: "clear" }
+  | { op: "xlink"; links: XLink[] }
+  | { op: "unxlink"; ids: string[] }
+  | { op: "snap"; snap: Snap }
+  | { op: "unsnap"; ids: string[] };
 
 /** Changes to a board are coalesced under this key: a drag's many moves are one step to undo. */
 export type OpBatch = { ops: Op[]; /** Same key as the last batch within a moment: one undo step. */ merge?: string };
@@ -344,6 +358,7 @@ export function applyOps(b: Board, ops: Op[]): boolean {
         b.items = b.items.filter((i) => !gone.has(i.id));
         const lb = b.links.length;
         b.links = b.links.filter((l) => !gone.has(l.from) && !gone.has(l.to) && !gone.has(l.id));
+        if (b.xlinks?.length) b.xlinks = b.xlinks.filter((x) => !gone.has(x.from) && !gone.has(x.id));
         // What was pinned to them stays, unpinned.
         b.items = b.items.map((i) => (i.attach && gone.has(i.attach) ? (({ attach: _a, ...rest }) => rest)(i) : i));
         changed = changed || b.items.length !== before || b.links.length !== lb;
@@ -376,9 +391,50 @@ export function applyOps(b: Board, ops: Op[]): boolean {
         if (b.items.length || b.links.length) {
           b.items = [];
           b.links = [];
+          b.xlinks = [];
           changed = true;
         }
         break;
+      case "xlink": {
+        const ids = new Set(b.items.map((i) => i.id));
+        const list = b.xlinks ?? [];
+        for (const x of o.links) {
+          if (!ids.has(x.from) || typeof x.board !== "string" || typeof x.to !== "string" || list.some((y) => y.from === x.from && y.board === x.board && y.to === x.to)) continue;
+          list.push({ id: x.id, from: x.from, board: x.board.slice(0, 40), to: x.to.slice(0, 40), ...(x.label ? { label: String(x.label).slice(0, 80) } : {}) });
+          changed = true;
+        }
+        b.xlinks = list.slice(-200);
+        break;
+      }
+      case "unxlink": {
+        const before = b.xlinks?.length ?? 0;
+        b.xlinks = (b.xlinks ?? []).filter((x) => !o.ids.includes(x.id));
+        changed = changed || b.xlinks.length !== before;
+        break;
+      }
+      case "snap": {
+        const sn = o.snap;
+        if (!sn?.id || !Array.isArray(sn.head) || !Array.isArray(sn.look)) break;
+        const clean: Snap = {
+          id: sn.id,
+          label: String(sn.label ?? "View").slice(0, 60),
+          at: typeof sn.at === "number" ? sn.at : Date.now(),
+          head: v3(sn.head),
+          look: v3(sn.look),
+          ...(typeof sn.scale === "number" ? { scale: r3(clampN(sn.scale, 0.02, 20, 1)) } : {}),
+          ...(Array.isArray(sn.selected) ? { selected: sn.selected.slice(0, 50).map(String) } : {}),
+          ...(typeof sn.thumb === "string" && sn.thumb.startsWith("data:image/") && sn.thumb.length < 60_000 ? { thumb: sn.thumb } : {}),
+        };
+        b.snaps = [...(b.snaps ?? []).filter((x) => x.id !== sn.id), clean].slice(-24);
+        changed = true;
+        break;
+      }
+      case "unsnap": {
+        const before = b.snaps?.length ?? 0;
+        b.snaps = (b.snaps ?? []).filter((x) => !o.ids.includes(x.id));
+        changed = changed || b.snaps.length !== before;
+        break;
+      }
     }
   }
   return changed;

@@ -103,7 +103,7 @@ function saveSoon(id: string) {
 }
 
 function snapshot(b: Board) {
-  return JSON.stringify({ name: b.name, items: b.items, links: b.links });
+  return JSON.stringify({ name: b.name, items: b.items, links: b.links, xlinks: b.xlinks ?? [] });
 }
 
 function publish(l: Live) {
@@ -138,10 +138,11 @@ function touch(l: Live) {
 }
 
 function restore(l: Live, snap: string) {
-  const s = JSON.parse(snap) as Pick<Board, "name" | "items" | "links">;
+  const s = JSON.parse(snap) as Pick<Board, "name" | "items" | "links" | "xlinks">;
   l.board.name = s.name;
   l.board.items = s.items;
   l.board.links = s.links;
+  l.board.xlinks = s.xlinks ?? [];
 }
 
 export async function undo(id: string): Promise<boolean> {

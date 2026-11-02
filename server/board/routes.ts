@@ -71,7 +71,9 @@ export async function boardApi(
     case "POST /api/board/ops": {
       const b = await body<{ id?: string; ops?: Op[]; merge?: string }>(req);
       if (!b.id || !Array.isArray(b.ops)) return json(res, 400, { error: "Need id and ops." }), true;
-      const board = await change(b.id, b.ops, b.merge);
+      // Keeping a view isn't an edit to undo.
+      const views = b.ops.every((o) => o.op === "snap" || o.op === "unsnap");
+      const board = await change(b.id, b.ops, b.merge, { noUndo: views });
       if (!board) return json(res, 404, { error: "No such board." }), true;
       json(res, 200, { ok: true, rev: board.rev });
       return true;

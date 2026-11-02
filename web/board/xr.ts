@@ -89,6 +89,8 @@ export interface XRPlugin {
   /** An item thrown (world space): true when it caught it (stuck to a wall, say). */
   throwItem?(id: string, at: THREE.Vector3, vel: THREE.Vector3): boolean;
   throwPanel?(panel: HoloPanel, at: THREE.Vector3, vel: THREE.Vector3): boolean;
+  /** The connect tool let go somewhere off this board: true when it made a link there. */
+  linkAcross?(from: string, origin: THREE.Vector3, dir: THREE.Vector3): boolean;
   entered?(): void;
   left?(): void;
 }
@@ -799,7 +801,7 @@ export class XRInput {
           this.ctl.link(press.from, hit.id, on("drawnLinks") ? { via: simplifyPath(press.path) } : undefined);
           sfx.play("snap", hit.point);
           this.haptic(p, 0.5, 40);
-        }
+        } else for (const pl of this.plugins) if (pl.linkAcross?.(press.from, p.origin, p.dir)) return void this.haptic(p, 0.5, 40);
         return;
       }
       case "ray": {

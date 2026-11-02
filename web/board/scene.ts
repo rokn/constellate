@@ -38,6 +38,21 @@ export class BoardScene {
   /** Over everything, crisp: panels, hands, rays. */
   readonly overlay = new THREE.Scene();
   readonly rig = new THREE.Group();
+  /** What's on the board (items, links, effects), inside the rig: moved only while diving in or out of an item. */
+  readonly content = new THREE.Group();
+  /** Other boards standing in the room. */
+  readonly stages = new THREE.Group();
+  /** Shadows under the items, drawn into the room (passthrough): on a real desk. */
+  private shadows = new THREE.Group();
+  private shadowPool = new Map<string, THREE.Mesh>();
+  private shadowTex = shadowTexture();
+  /** Shadows on (desk mode). */
+  shadowsOn = false;
+  /** Frames float as tiers. */
+  tiersOn = false;
+  private tierKey = "";
+  private morph: { t0: number; ms: number; pos: THREE.Vector3; scale: number } | null = null;
+  private pendingDive: { dir: "in"; at: THREE.Vector3; r: number } | { dir: "out"; itemId: string; r: number } | null = null;
   readonly itemsGroup = new THREE.Group();
   readonly linksGroup = new THREE.Group();
   /** Previews: the stroke being drawn, the link being pulled. */
@@ -100,8 +115,11 @@ export class BoardScene {
     this.roomStuff.add(makeRoom());
 
     this.fx = new Fx(this.views, (ids) => this.focus(ids), (ids) => this.spot(ids));
-    this.rig.add(this.table.group, this.dust.points, this.linksGroup, this.itemsGroup, this.previews, this.fx.group);
-    this.scene.add(this.rig);
+    this.content.add(this.linksGroup, this.itemsGroup, this.previews, this.fx.group);
+    this.rig.add(this.table.group, this.dust.points, this.content);
+    this.scene.add(this.rig, this.stages);
+    this.shadows.matrixAutoUpdate = false;
+    this.room.add(this.shadows);
     this.overlay.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2238, 2.2));
 
     this.inkLine = previewLine(LOOK.cyan, 4096);
@@ -207,6 +225,23 @@ export class BoardScene {
     if (this.switchPending && this.board?.id !== b.id) {
       this.switchPending = false;
       fresh = true;
+      const d = this.pendingDive;
+      this.pendingDive = null;
+      // Diving in: the inside grows out of the item. Coming out: the board shrinks back around it.
+      const ms = num("morphSeconds") * 1000;
+      if (d?.dir === "in") {
+        const k = THREE.MathUtils.clamp(d.r / 1.4, 0.03, 0.4);
+        this.morph = { t0: performance.now(), ms, pos: d.at.clone(), scale: k };
+        fresh = false;
+      } else if (d?.dir === "out") {
+        const it = b.items.find((i) => i.id === d.itemId);
+        if (it) {
+          const k = THREE.MathUtils.clamp(d.r / 1.4, 0.03, 0.4);
+          const S = 1 / k;
+          this.morph = { t0: performance.now(), ms, pos: new THREE.Vector3(...it.pos).multiplyScalar(-S), scale: S };
+          fresh = false;
+        }
+      }
       this.onSwitch?.(b);
     }
     if (this.board?.id !== b.id) {
@@ -253,6 +288,19 @@ export class BoardScene {
       lv.dispose();
       this.linkViews.delete(id);
     }
+  }
+
+  /**
+   * The next board is the inside of this item (in) or the board this one is
+   * inside (out): it morphs from (or back into) the item instead of jumping.
+   */
+  dive(dir: "in" | "out", itemId: string) {
+    if (dir === "in") {
+      const v = this.views.get(itemId);
+      if (!v) return;
+      this.pendingDive = { dir, at: new THREE.Vector3(...v.item.pos), r: Math.max(0.08, v.radius * v.root.scale.x) };
+    } else this.pendingDive = { dir, itemId, r: 0.1 };
+    this.switching();
   }
 
   /** Where an item stands, right now, without waiting for the board (an item in your hand). */
@@ -436,7 +484,8 @@ export class BoardScene {
     if (this.session) await this.session.end().catch(() => {});
     const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
       requiredFeatures: ["local-floor"],
-      optionalFeatures: ["hand-tracking"],
+      // Walls and desks from Space Setup, anchors that keep boards in place across sessions, and hit tests.
+      optionalFeatures: ["hand-tracking", ...(on("planes") ? ["plane-detection"] : []), "anchors", "hit-test"],
     });
     this.session = session;
     session.addEventListener("end", () => {
@@ -488,8 +537,17 @@ export class BoardScene {
     this.rig.scale.setScalar(p.scale);
   }
 
+  /** Where the board stands in the headset: on its table, a desk, a wall, or the whole room. */
+  rigMode: "table" | "desk" | "wall" | "room" = "table";
+
+  /** The table was put somewhere (by hand): anchor it there. */
+  onRigSaved?: () => void;
+
   saveRig() {
     if (this.mode === "flat") return;
+    this.onRigSaved?.();
+    // Only the table's own place is kept: a desk, a wall or the room is a mode, not a place.
+    if (this.rigMode !== "table") return;
     try {
       localStorage.setItem(PLACE_KEY + this.mode, JSON.stringify({ pos: this.rig.position.toArray().map(round), yaw: round(this.rig.rotation.y), scale: round(this.rig.scale.x) }));
     } catch {
@@ -529,6 +587,21 @@ export class BoardScene {
 
     for (const f of this.frameFns) f(t, dt, xr);
 
+    if (this.morph) {
+      const m = this.morph;
+      const k = Math.min(1, (now - m.t0) / Math.max(1, m.ms));
+      const e = 1 - Math.pow(1 - k, 3);
+      this.content.position.lerpVectors(m.pos, new THREE.Vector3(), e);
+      this.content.scale.setScalar(THREE.MathUtils.lerp(m.scale, 1, e));
+      if (k >= 1) {
+        this.morph = null;
+        this.content.position.set(0, 0, 0);
+        this.content.scale.setScalar(1);
+      }
+    }
+    this.updateTiers();
+    this.updateShadows();
+
     for (const [id, v] of this.views) {
       v.tick(t, dt);
       if (v.dying === 0 && !this.board?.items.some((i) => i.id === id)) {
@@ -554,6 +627,72 @@ export class BoardScene {
 
     this.draw();
   };
+
+  /** Depth tiers: each frame floats at its own height, and what's in it with it. */
+  private updateTiers() {
+    const b = this.board;
+    const key = `${b?.id}|${b?.rev}|${this.tiersOn}|${num("tierGap")}`;
+    if (key === this.tierKey) return;
+    this.tierKey = key;
+    const lift = new Map<string, number>();
+    if (b && this.tiersOn) {
+      // Frames further back float higher: a layer cake you look into from the front.
+      const frames = b.items.filter((i) => i.kind === "frame").sort((x, y) => y.pos[2] - x.pos[2]);
+      const gap = num("tierGap");
+      frames.forEach((f, i) => lift.set(f.id, i * gap));
+      for (const it of b.items) {
+        if (it.kind === "frame") continue;
+        let best: { area: number; h: number } | null = null;
+        for (const f of frames) {
+          const [w, d] = f.size ?? [0.8, 0.5];
+          if (Math.abs(it.pos[0] - f.pos[0]) <= w / 2 && Math.abs(it.pos[2] - f.pos[2]) <= d / 2 && (!best || w * d < best.area)) best = { area: w * d, h: lift.get(f.id)! };
+        }
+        if (best) lift.set(it.id, best.h);
+      }
+    }
+    for (const [id, v] of this.views) v.lift = lift.get(id) ?? 0;
+  }
+
+  /** Item ids → how high their tier floats (0 when tiers are off). */
+  liftOf(id: string) {
+    return this.views.get(id)?.lift ?? 0;
+  }
+
+  /** Shadows on the real desk under each item: dark, soft, drawn into the room so they darken the passthrough. */
+  private updateShadows() {
+    const show = this.shadowsOn && on("deskShadows") && this.mode !== "flat";
+    this.shadows.visible = show;
+    if (!show) return;
+    this.rig.updateMatrixWorld();
+    this.shadows.matrix.copy(this.rig.matrixWorld);
+    this.shadows.matrixWorldNeedsUpdate = true;
+    const seen = new Set<string>();
+    const strength = num("shadowStrength");
+    for (const [id, v] of this.views) {
+      const k = v.item.kind;
+      if (k === "frame" || k === "ink" || k === "text" || v.hidden || v.dying) continue;
+      seen.add(id);
+      let m = this.shadowPool.get(id);
+      if (!m) {
+        m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: this.shadowTex, color: 0x000000, transparent: true, depthWrite: false, toneMapped: false }));
+        m.renderOrder = -1;
+        this.shadowPool.set(id, m);
+        this.shadows.add(m);
+      }
+      const h = Math.max(0, v.root.position.y);
+      const r = v.radius * v.root.scale.x * 2.2 * (1 + h * 2);
+      m.position.set(v.root.position.x, 0.002, v.root.position.z);
+      m.scale.set(r, 1, r);
+      (m.material as THREE.MeshBasicMaterial).opacity = (strength / (1 + h * 5)) * (v.dim ? 0.3 : 1);
+    }
+    for (const [id, m] of this.shadowPool) {
+      if (seen.has(id)) continue;
+      m.removeFromParent();
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+      this.shadowPool.delete(id);
+    }
+  }
 
   /** The view as a PNG: drawn once more and read straight back, before the browser clears it. */
   capture(): string {
@@ -591,6 +730,23 @@ function ownerItem(o: THREE.Object3D): string | null {
   let n: THREE.Object3D | null = o;
   while (n && !n.userData.itemId) n = n.parent;
   return n?.userData.itemId ?? null;
+}
+
+/** A soft round shadow: black, fading out from the middle. */
+function shadowTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(64, 64, 4, 64, 64, 64);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.45, "rgba(255,255,255,0.55)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c);
+  // The texture is the shadow's shape; its colour is black: alpha from the map.
+  t.format = THREE.RGBAFormat;
+  return t;
 }
 
 function previewLine(color: string, max: number) {
