@@ -220,15 +220,56 @@ roadmap, a device. It has nothing to do with the open repo.
   looks (Stark, Neon, Calm, Readable, Blueprint, Quest performance) and your own presets,
   kept on the server. The voice and Jarvis can turn any of them.
 
-In a headset it's at its best in **Passthrough**: the table sits on your desk. Turn your
-left palm toward you for the **wrist dock** (tools, voice, palette, tune, undo). Panels
-float low and drift after you as you turn; pinch a panel's title bar to carry it, and it
-stays where you leave it. The selected item's inspector stands beside it. Point and pinch
-(or trigger) to select and drag along the ray; grab (grip, or pinch right on it) to carry
-an item, and throw it to delete it; both hands on one item stretch it, or pull a hologram
-apart; grab empty air to move the table, both hands to turn and scale it. A palette,
-B undo, X voice, Y tune; a left middle-finger pinch is the voice, a right one undo. Press
-`?` on the desktop for every shortcut.
+- **Bring things in**: **Repo → board** (Jarvis reads the repo open in the code map — its
+  charted modules, the import graph, compose files, manifests, Dockerfiles — and builds the
+  real architecture), **Photo → board** (a whiteboard photo: a file, pasted into the ask bar,
+  dropped on the table, or the Quest's camera), **Sketch → structure** (your ink, read from
+  above and rebuilt as blocks, links, notes and frames where you drew them).
+- **Links that talk their protocol**: REST packets out with replies back, gRPC streams both
+  ways, Kafka a dense stream, a queue bunching and draining, WebSocket waves, SQL in heavy
+  chunks — set on the link or guessed from its label — and a sample message riding along.
+- **Levels** (C4): going inside an item morphs its board out of it, and coming back shrinks
+  it back in; the breadcrumbs say which level (context, containers, components, code).
+  **Depth tiers** (`T`): frames float as stacked layers with what's in them.
+- **Views** (`K`): snapshot cards of where you were looking, with a picture, for every
+  screen; click one to fly back. **Lasso** (`S`) and **eraser** (`X`): drag across items to
+  select or delete them all. Items snap magnetically to their neighbours, with guides.
+- **Voice macros** ("when I say *ship it*, review the design, save a version and export"),
+  **dictation** (your next words, exactly, as a name or a note), switching boards and any
+  action by voice. Switching boards keeps you in the headset.
+
+In a headset it's at its best in **Passthrough**: the table sits on your desk.
+
+- **Buttons**: A, B, X, Y each do one thing tapped and another held, and so do the stick
+  presses — by default A the palette / held the **board shelf**, B undo / redo, X voice /
+  **dictate**, Y tune / **snapshot**, the left stick press resets the table. Hold the right
+  stick in for the **command wheel**: tilt to a slice, let go. Look at a controller to see
+  what its buttons do; a chip says what each press did. Every one of them is a Tune knob
+  (Headset · Controller buttons, Headset · Wheel and palm menu).
+- **Hands**: turn your right palm up and the wheel blooms from it; turn your left palm toward
+  you for the **wrist dock**. Poke any panel with a fingertip. Middle-finger pinches: voice
+  (left) and undo (right). **Record your own gestures** (a thumbs-up, a fist, a peace sign)
+  and bind each to any action.
+- **Items**: point and pinch (or trigger) to select and drag along the ray — the stick pushes,
+  pulls and turns it; hold still on one to talk about it. Grab one (grip, or a pinch right on
+  it) to carry it: throw it away to delete it, **close your fist** (or pull the trigger while
+  gripping) to **crumple** it. Both hands on one: **scale** it, **pull a hologram apart**, or
+  **spread wide to dive inside** — the other hand's trigger or middle pinch swaps which.
+  With the connect tool, **draw a link through the air** and it keeps your curve.
+- **The table**: grab empty air to move it, both hands to turn and scale it — past twice its
+  size over an item you dive inside, under half you come back out. **Desk mode** fits it onto
+  your real desk (from Space Setup) with shadows on the desk; **wall mode** stands it on a
+  wall; **room scale** blows it up so you walk inside it. It stays anchored where you left it.
+- **Boards around you**: the **shelf** shows every board as a small live hologram; pinch one
+  to switch, carry one to the table, into the room (it stands there, live) or throw it at a
+  wall. Walk up to a board standing in the room to use it, and link items across boards.
+  Throw a panel at a wall and it sticks there.
+- **History**: twist your wrist like a dial to **scrub through undo history**, the board
+  showing each step; pinch to go there.
+- **Sound**: effects come from where they happen — pitched by size — and the board hums,
+  louder as you lean in.
+
+Press `?` on the desktop for every shortcut.
 
 ## Shortcuts
 

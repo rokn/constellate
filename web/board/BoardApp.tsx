@@ -1459,7 +1459,7 @@ function Help({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
     ["/ or ⌘K", `Ask ${ASSISTANT}`],
     ["Space", "Voice on / off"],
-    ["V · C · D", "Select · connect · ink"],
+    ["V · C · D · S · X", "Select · connect · ink · lasso · eraser"],
     ["Drag", "Move an item across the table"],
     ["Shift-drag", "Lift or lower it"],
     ["Double-click / ↵", "Edit its words"],
@@ -1474,17 +1474,25 @@ function Help({ onClose }: { onClose: () => void }) {
     ["⌘F", "Find"],
     ["I · U", "Go inside the selection · back up"],
     ["H · L", "History · layers"],
+    ["T · K", "Depth tiers · keep this view"],
     [",", "Tune"],
+    ["Paste / drop an image", "Photo → board"],
   ];
   const xr: [string, string][] = [
-    ["Point + pinch / trigger", "Select; hold to drag along the ray"],
-    ["Grip, or pinch right on it", "Carry it in your hand; throw it to delete"],
-    ["Both hands on one", "Stretch it — or pull a hologram apart"],
-    ["Grab empty air", "Move the table; both hands turn and scale it"],
-    ["A · B · X · Y", "Palette · undo · voice · tune"],
+    ["Point + pinch / trigger", "Select; hold to drag (stick: push, pull, turn)"],
+    ["Hold still on an item", "Select it and talk about it"],
+    ["Grip, or pinch right on it", "Carry it; throw to delete; fist (or trigger) crumples"],
+    ["Both hands on one", "Scale · pull apart · spread wide to go inside (other hand swaps)"],
+    ["Grab empty air", "Move the table; both hands turn and scale it — past 2× over an item dives in"],
+    ["A · B · X · Y (and held)", "Palette / shelf · undo / redo · voice / dictate · tune / snapshot"],
+    ["Hold right stick in", "Command wheel: tilt to a slice, let go"],
+    ["Right palm up", "The wheel blooms from it: poke a slice"],
     ["Left palm toward you", "Wrist dock: tools, voice, panels"],
-    ["Pinch a panel's title", "Carry it; it stays where you let go"],
-    ["Left / right middle pinch", "Voice · undo"],
+    ["Fingertip on a panel", "Press it"],
+    ["Look at a controller", "What its buttons do"],
+    ["Pinch a panel's title", "Carry it; throw it at a wall to stick it there"],
+    ["Left / right middle pinch", "Voice · undo (both in Tune)"],
+    ["Everything", "Every button, slice and gesture is a Tune knob"],
   ];
   return (
     <div className="absolute inset-0 z-30 grid place-items-center bg-black/40" onClick={onClose}>
