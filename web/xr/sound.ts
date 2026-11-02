@@ -12,9 +12,21 @@ import * as THREE from "three";
  * has its own note, so the map hums in its own key.
  */
 
-export type Sfx = "tick" | "hover" | "pick" | "focus" | "grab" | "drop" | "snap" | "fling" | "place" | "enter" | "back";
+export type Sfx = "tick" | "hover" | "pick" | "focus" | "grab" | "drop" | "snap" | "fling" | "place" | "enter" | "back" | "wheel" | "crumple" | "materialise" | "whoosh" | "dive" | "camera" | "erase";
 
-export type SoundSettings = { sfx: boolean; sfxVolume: number; ambience: boolean; ambienceVolume: number };
+export type SoundSettings = {
+  sfx: boolean;
+  sfxVolume: number;
+  ambience: boolean;
+  ambienceVolume: number;
+  /** A hum from the board itself (the workshop): louder as you lean in. */
+  hum?: boolean;
+  humVolume?: number;
+  /** Big things sound low, small things high. */
+  pitchBySize?: boolean;
+  /** The full layered effects; off, the simple clicks. */
+  rich?: boolean;
+};
 
 /** A minor pentatonic over A, two octaves: notes that never clash. */
 const SCALE = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22];
@@ -39,6 +51,10 @@ class Sound {
   private lastHover = 0;
   private s: SoundSettings = { sfx: true, sfxVolume: 0.6, ambience: true, ambienceVolume: 0.5 };
   private live = false;
+  /** This effect's pitch: 1, or lower for big things and higher for small ones. */
+  private k = 1;
+  private humNode: { panner: PannerNode; gain: GainNode; stop: () => void } | null = null;
+  private lastMaterialise = 0;
   chimeSource: ChimeSource | null = null;
 
   /** Called from a press (a user gesture): the browser lets audio start then. */
@@ -83,6 +99,8 @@ class Sound {
       if (this.live) return;
       this.pad?.stop();
       this.pad = null;
+      this.humNode?.stop();
+      this.humNode = null;
       void ctx.suspend().catch(() => {});
     }, 900);
   }
@@ -99,6 +117,25 @@ class Sound {
     const amb = this.s.ambience ? this.s.ambienceVolume * 0.5 : 0;
     this.ambBus!.gain.setTargetAtTime(amb, ctx.currentTime, 0.8);
     if (amb > 0 && !this.pad) this.pad = this.makePad();
+    const hum = this.s.hum ? (this.s.humVolume ?? 0.35) * 0.5 : 0;
+    if (hum > 0 && !this.humNode) this.humNode = this.makeHum();
+    if (this.humNode) this.humNode.gain.gain.setTargetAtTime(hum, ctx.currentTime, 0.6);
+  }
+
+  /** Where the board is (world): the hum comes from there. Null: no hum. */
+  humAt(at: THREE.Vector3 | null) {
+    const h = this.humNode;
+    if (!h || !this.ctx) return;
+    if (!at) {
+      h.gain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.3);
+      return;
+    }
+    const t = this.ctx.currentTime;
+    if (h.panner.positionX) {
+      h.panner.positionX.setTargetAtTime(at.x, t, 0.1);
+      h.panner.positionY.setTargetAtTime(at.y, t, 0.1);
+      h.panner.positionZ.setTargetAtTime(at.z, t, 0.1);
+    } else h.panner.setPosition(at.x, at.y, at.z);
   }
 
   /** Each frame: your ears are where your head is. */
@@ -132,10 +169,18 @@ class Sound {
   }
 
   /** An effect, from `at` (world) if it belongs somewhere, else in your head. */
-  play(kind: Sfx, at?: THREE.Vector3 | null, key?: string) {
+  play(kind: Sfx, at?: THREE.Vector3 | null, key?: string, size?: number) {
     const ctx = this.ctx;
     if (!ctx || !this.live || !this.s.sfx || ctx.state !== "running") return;
     const t = ctx.currentTime;
+    // Bigger, lower: a block of 0.1 m is the middle.
+    this.k = this.s.pitchBySize !== false && size ? Math.min(2, Math.max(0.5, Math.sqrt(0.1 / Math.max(0.02, size)))) : 1;
+    if (this.s.rich === false && ["wheel", "crumple", "materialise", "whoosh", "dive", "camera", "erase"].includes(kind)) kind = kind === "materialise" ? "place" : "tick";
+    if (kind === "materialise") {
+      // Many arriving at once: one shimmer, not a roar.
+      if (t - this.lastMaterialise < 0.06) return;
+      this.lastMaterialise = t;
+    }
     if (kind === "hover") {
       // Brushing past bodies would chatter: one blip at a time.
       if (t - this.lastHover < 0.07) return;
@@ -185,6 +230,43 @@ class Sound {
       case "enter":
         [0, 2, 4, 5, 7].forEach((s, i) => this.tone(out, t + i * 0.11, { f: note(s, 440), type: "sine", gain: 0.07, a: 0.02, d: 1.2 }));
         break;
+      case "wheel":
+        // A ring of light opening: a quick rising sparkle.
+        [0, 3, 7].forEach((s, i) => this.tone(out, t + i * 0.03, { f: note(s + 5, 880), type: "sine", gain: 0.05, a: 0.004, d: 0.25 }));
+        this.burst(out, t, { band: 6000, q: 2, gain: 0.04, d: 0.08 });
+        break;
+      case "crumple":
+        // Crushed: crackling noise falling, a low thud, and a dying spark.
+        for (let i = 0; i < 6; i++) this.burst(out, t + i * 0.035 + Math.random() * 0.02, { band: 1800 + Math.random() * 2600, q: 2.5, gain: 0.22, d: 0.04 });
+        this.tone(out, t + 0.05, { f: 180, f2: 70, type: "triangle", gain: 0.3, a: 0.004, d: 0.25 });
+        this.sweep(out, t + 0.22, { from: 3000, to: 300, gain: 0.12, d: 0.35 });
+        break;
+      case "materialise":
+        // Printed out of light: a soft swell, then a glassy chime on its note.
+        this.sweep(out, t, { from: 300, to: 2400, gain: 0.05, d: 0.35 });
+        this.tone(out, t + 0.12, { f: note(k, 660), type: "sine", gain: 0.06, a: 0.01, d: 0.7 });
+        this.tone(out, t + 0.12, { f: note(k, 660) * 2.005, type: "sine", gain: 0.02, a: 0.01, d: 0.5 });
+        break;
+      case "whoosh":
+        this.sweep(out, t, { from: 250, to: 1800, gain: 0.18, d: 0.45 });
+        this.sweep(out, t + 0.05, { from: 900, to: 300, gain: 0.08, d: 0.4 });
+        break;
+      case "dive":
+        // Falling into an item: a descending sweep and a deep landing.
+        this.sweep(out, t, { from: 2600, to: 220, gain: 0.16, d: 0.7 });
+        this.tone(out, t + 0.5, { f: 82, type: "sine", gain: 0.3, a: 0.04, d: 0.9 });
+        [0, 4, 7].forEach((s, i) => this.tone(out, t + 0.55 + i * 0.07, { f: note(s, 330), type: "triangle", gain: 0.05, a: 0.01, d: 0.8 }));
+        break;
+      case "camera":
+        // A shutter: two clicks and a little whir.
+        this.burst(out, t, { band: 3500, q: 1.2, gain: 0.3, d: 0.025 });
+        this.burst(out, t + 0.09, { band: 2500, q: 1.2, gain: 0.22, d: 0.03 });
+        this.sweep(out, t + 0.02, { from: 1200, to: 2000, gain: 0.04, d: 0.15 });
+        break;
+      case "erase":
+        this.sweep(out, t, { from: 4000, to: 600, gain: 0.14, d: 0.3 });
+        this.tone(out, t, { f: 400, f2: 120, type: "sine", gain: 0.12, a: 0.004, d: 0.2 });
+        break;
     }
   }
 
@@ -214,8 +296,8 @@ class Sound {
     const ctx = this.ctx!;
     const osc = ctx.createOscillator();
     osc.type = o.type;
-    osc.frequency.setValueAtTime(o.f, t);
-    if (o.f2) osc.frequency.exponentialRampToValueAtTime(o.f2, t + o.a + o.d);
+    osc.frequency.setValueAtTime(o.f * this.k, t);
+    if (o.f2) osc.frequency.exponentialRampToValueAtTime(o.f2 * this.k, t + o.a + o.d);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(o.gain, t + o.a);
@@ -269,6 +351,68 @@ class Sound {
     const f = note(k, 660);
     this.tone(out, t, { f, type: "sine", gain: 0.06, a: 0.01, d: 2.2 });
     this.tone(out, t, { f: f * 2.01, type: "sine", gain: 0.015, a: 0.01, d: 1.4 });
+  }
+
+  /**
+   * The board's hum: a low, slightly beating drone and a whisper of air, from
+   * where the board stands, so it grows as you lean in and fades as you step back.
+   */
+  private makeHum() {
+    const ctx = this.ctx!;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    const panner = ctx.createPanner();
+    panner.panningModel = "HRTF";
+    panner.distanceModel = "inverse";
+    panner.refDistance = 0.35;
+    panner.rolloffFactor = 1.6;
+    gain.connect(panner).connect(this.sfxBus!);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 420;
+    lp.connect(gain);
+    const nodes: AudioScheduledSourceNode[] = [];
+    for (const [f, g] of [
+      [60, 0.18],
+      [60.7, 0.14],
+      [120.3, 0.06],
+      [240.9, 0.015],
+    ] as const) {
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.value = f;
+      const gn = ctx.createGain();
+      gn.gain.value = g;
+      o.connect(gn).connect(lp);
+      o.start();
+      nodes.push(o);
+    }
+    const n = ctx.createBufferSource();
+    n.buffer = this.noise;
+    n.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 900;
+    bp.Q.value = 0.8;
+    const ng = ctx.createGain();
+    ng.gain.value = 0.012;
+    n.connect(bp).connect(ng).connect(gain);
+    n.start();
+    nodes.push(n);
+    return {
+      panner,
+      gain,
+      stop: () => {
+        for (const x of nodes) {
+          try {
+            x.stop();
+          } catch {
+            /* already */
+          }
+        }
+        gain.disconnect();
+      },
+    };
   }
 
   /**

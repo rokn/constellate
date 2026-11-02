@@ -87,6 +87,8 @@ export class BoardScene {
   onMode?: (m: Mode) => void;
   /** A different board arrived (switched to). */
   onSwitch?: (b: Board) => void;
+  /** An item printed in, new. */
+  onItemBorn?: (v: ItemView) => void;
 
   constructor(private host: HTMLElement) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }));
@@ -263,6 +265,7 @@ export class BoardScene {
         nv.selected = this.selected.has(it.id);
         this.views.set(it.id, nv);
         this.itemsGroup.add(nv.root);
+        if (fresh && !this.morph) this.onItemBorn?.(nv);
       } else if (prevItems.get(it.id) !== it || v.dying) {
         v.dying = 0;
         v.u.uFade.value = 1;

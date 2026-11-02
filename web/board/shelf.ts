@@ -234,7 +234,7 @@ export class ShelfXR implements XRPlugin {
     if (!id) id = await this.o.create();
     if (!id) return;
     if (id !== this.o.current()) this.o.open(id);
-    sfx.play("place");
+    sfx.play("whoosh");
     this.close();
   }
 

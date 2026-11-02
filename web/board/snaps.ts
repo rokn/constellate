@@ -113,7 +113,7 @@ export class SnapsXR implements XRPlugin {
       const n = (this.o.board()?.snaps?.length ?? 0) + 1;
       const snap: Snap = { id: newId("s"), label: `View ${n}`, at: Date.now(), head: v3(s.toBoard(head)), look: v3(s.toBoard(look)), scale: r3(s.rig.scale.x), selected: this.xr.ctl.selected(), thumb: thumbFrom(s, head, look) };
       this.o.apply(snap);
-      sfx.play("snap" as never);
+      sfx.play("camera");
       this.xr.say(`Kept: ${snap.label}`, p ?? undefined);
     }
     if (this.panel.mesh.visible) {

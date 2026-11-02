@@ -181,7 +181,12 @@ export class XRInput {
     this.tune.presets = o.presets();
     this.setup();
     this.off = scene.onFrame((t, dt) => this.frame(t, dt));
-    const sound = () => sfx.configure({ sfx: on("sfx"), sfxVolume: num("sfxVolume"), ambience: on("ambience"), ambienceVolume: num("ambienceVolume") });
+    // Each item printed in, heard where it appears: big ones low, small ones high.
+    scene.onItemBorn = (v) => {
+      if (scene.mode !== "flat") sfx.play("materialise", v.center(), v.id, this.sizeOf(v.id));
+    };
+    const sound = () =>
+      sfx.configure({ sfx: on("sfx"), sfxVolume: num("sfxVolume"), ambience: on("ambience"), ambienceVolume: num("ambienceVolume"), hum: on("hum"), humVolume: num("humVolume"), pitchBySize: on("pitchBySize"), rich: on("richSfx") });
     sound();
     this.offTune = onTune(() => {
       sound();
@@ -295,7 +300,7 @@ export class XRInput {
     this.wheelBy = { p, via, btn };
     this.wheel.mesh.visible = true;
     this.placeWheel();
-    sfx.play("wheel" as never);
+    sfx.play("wheel");
     this.haptic(p, 0.3, 20);
   }
 
@@ -595,6 +600,12 @@ export class XRInput {
     return !!p.source?.hand;
   }
 
+  /** How big an item is in the room (m): for its pitch. */
+  sizeOf(id: string) {
+    const v = this.scene.views.get(id);
+    return v ? v.radius * v.root.scale.x * this.scene.rig.scale.x * 2 : 0.1;
+  }
+
   /** Where the hand (pinch point) or the controller's tip is, in the world. */
   tip(p: Pointer): THREE.Vector3 {
     if (this.isHand(p)) {
@@ -783,7 +794,7 @@ export class XRInput {
             if (v) this.scene.fx.burst(v.root.position.clone().setY(v.midY * v.root.scale.x + v.root.position.y), LOOK.danger, 24, 0.35);
           }
           this.ctl.remove(press.ids);
-          sfx.play("fling");
+          sfx.play("erase");
           this.say(`Erased ${press.ids.length}`, p);
         } else {
           this.ctl.select(press.ids);
@@ -883,7 +894,7 @@ export class XRInput {
     const offset = this.holdPose(p).invert().multiply(v.root.matrixWorld);
     p.carry = { id, offset, trail: [], yaw: 0, fistSince: 0 };
     this.ctl.select([id]);
-    sfx.play("grab", v.center(), id);
+    sfx.play("grab", v.center(), id, this.sizeOf(id));
     this.haptic(p, 0.6, 40);
   }
 
@@ -939,7 +950,7 @@ export class XRInput {
       const at = v.root.position.clone().add(new THREE.Vector3(0, v.midY * v.root.scale.x, 0));
       setTimeout(() => this.scene.fx.burst(at, colorOf(v.item.color), 70, 0.45), 260);
     }
-    sfx.play("crumple" as never, v?.center(), c.id);
+    sfx.play("crumple", v?.center(), c.id, this.sizeOf(c.id));
     this.haptic(p, 1, 120);
     setTimeout(() => this.ctl.remove([c.id]), 340);
   }
@@ -961,7 +972,7 @@ export class XRInput {
       }
     }
     this.ctl.client.release(c.id);
-    sfx.play("drop");
+    sfx.play("drop", this.scene.views.get(c.id)?.center(), c.id, this.sizeOf(c.id));
   }
 
   /**
@@ -1259,6 +1270,9 @@ export class XRInput {
     this.twoTag.tick();
 
     this.moveBoard();
+    // The board hums from its middle.
+    const rig = this.scene.rig;
+    sfx.humAt(on("hum") ? rig.localToWorld(new THREE.Vector3(0, 0.08, 0)) : null);
     for (const pl of this.plugins) pl.frame?.(dt, now);
     this.scene.setHover(hovered);
     this.updatePanels(dt);

@@ -362,7 +362,7 @@ export class RoomXR implements XRPlugin {
     this.enterMode(s.wall ? "wall" : "table");
     this.o.open(s.boardId);
     this.lastAuto = performance.now();
-    sfx.play("focus");
+    sfx.play("whoosh");
   }
 
   private saveRoom() {
@@ -515,6 +515,7 @@ export class RoomXR implements XRPlugin {
       if (best) {
         z.fired = true;
         this.letGo(z.scale0);
+        sfx.play("dive");
         this.o.inside(best.id);
       }
     } else if (k < 0.45 && this.o.boardOf()?.parent) {

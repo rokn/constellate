@@ -525,6 +525,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     if (!r.ok) return;
     // The inside grows out of the item.
     sceneRef.current?.dive("in", itemId);
+    void import("../xr/sound").then(({ sfx }) => sfx.play("dive"));
     open(((await r.json()) as { boardId: string }).boardId);
   };
 
