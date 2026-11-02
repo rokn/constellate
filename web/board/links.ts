@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { colorOf, type Link } from "../../shared/board";
 import type { ItemView } from "./items";
 import { LOOK, labelSprite, linkMaterial } from "./look";
+import { num, on, tuneRev } from "./tune";
 
 /**
  * A link: an arc of light from one item to another with packets running
@@ -39,7 +40,7 @@ export class LinkView {
 
   /** Follow its two items; rebuilt only when either moved or the link itself changed. */
   update(link: Link, a: ItemView, b: ItemView) {
-    const key = JSON.stringify(link);
+    const key = `${tuneRev}|${JSON.stringify(link)}`;
     const pa = a.root.position;
     const pb = b.root.position;
     const ends = `${pa.x.toFixed(3)},${pa.y.toFixed(3)},${pa.z.toFixed(3)}|${pb.x.toFixed(3)},${pb.y.toFixed(3)},${pb.z.toFixed(3)}|${a.root.scale.x.toFixed(2)}|${b.root.scale.x.toFixed(2)}`;
@@ -65,11 +66,12 @@ export class LinkView {
     const start = ca.clone().addScaledVector(flat, ra);
     const end = cb.clone().addScaledVector(flat, -rb);
     const mid = start.clone().lerp(end, 0.5);
-    mid.y += 0.04 + d * 0.12;
+    mid.y += (0.04 + d * 0.12) * num("arcHeight");
     const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
     const len = curve.getLength();
     const mat = linkMaterial(color, { dashed: st.dashed, opacity: st.opacity, speed: st.speed, len });
-    this.tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, st.radius, 6), mat);
+    const radius = st.radius * num("linkWidth");
+    this.tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, radius, 6), mat);
     this.tube.renderOrder = 4;
     this.root.add(this.tube);
 
@@ -77,7 +79,7 @@ export class LinkView {
       const at = curve.getPoint(t);
       const tan = curve.getTangent(t).multiplyScalar(flip ? -1 : 1);
       const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(st.radius * 3.2 + 0.004, 0.022, 12).translate(0, -0.011, 0),
+        new THREE.ConeGeometry(radius * 3.2 + 0.004, 0.022, 12).translate(0, -0.011, 0),
         new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
       );
       cone.position.copy(at);
@@ -85,11 +87,14 @@ export class LinkView {
       this.heads.push(cone);
       this.root.add(cone);
     };
-    head(1, false);
-    if (this.link.both) head(0, true);
+    if (on("arrows")) {
+      head(1, false);
+      if (this.link.both) head(0, true);
+    }
 
-    if (this.link.label) {
-      const s = labelSprite(this.link.label, color, { height: 0.03, bracket: false });
+    if (this.link.label && on("linkLabels") && on("labels")) {
+      const s = labelSprite(this.link.label, color, { height: 0.03 * num("labelSize"), bracket: false });
+      s.material.color.setScalar(num("labelBrightness"));
       s.position.copy(curve.getPoint(0.5)).add(new THREE.Vector3(0, 0.008, 0));
       this.label = s;
       this.root.add(s);

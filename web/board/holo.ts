@@ -177,7 +177,8 @@ function gear(r: number, teeth: number, depth: number) {
 
 /** Pull a built hologram apart (0..1) and run its animations. */
 export function animateHolo(animated: Animated[], explode: number, t: number, dt: number) {
-  const e = easeInOut(explode);
+  // Past 1 (a longer reach): eased to 1, then on in a straight line.
+  const e = explode <= 1 ? easeInOut(explode) : explode;
   for (const a of animated) {
     a.obj.position.copy(a.home).addScaledVector(a.out, e);
     if (a.bob) a.obj.position.y += Math.sin(t * 1.6 + a.phase) * a.bob;

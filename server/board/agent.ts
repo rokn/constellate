@@ -25,6 +25,7 @@ import { ARRANGEMENTS, arrange } from "../../shared/boardLayout";
 import { CACHE_DIR } from "../session";
 import { awaitBuild } from "./holo";
 import { agentSessionOf, change, command, getBoard, setActivity, setAgentSession } from "./store";
+import { TUNE_TOOLS, runBoardTune } from "./tune";
 
 /**
  * The workshop's assistant: Claude, via the Agent SDK, with nothing but
@@ -356,6 +357,14 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
       await change(boardId, [{ op: "rename", name }], run);
       return ok("Renamed.");
     }),
+    ...TUNE_TOOLS.map((t) =>
+      tool(
+        t.name,
+        t.description,
+        Object.fromEntries(Object.keys(t.properties).map((k) => [k, z.string()])),
+        async (a: Record<string, unknown>) => ok(JSON.stringify(await runBoardTune(t.name, a, boardId, screen))),
+      ),
+    ),
     tool("clear_board", "Remove everything on the board. Only when they clearly ask to start over.", {}, async () => {
       report("Clearing the board");
       await change(boardId, [{ op: "clear" }], run);

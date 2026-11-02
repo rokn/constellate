@@ -452,6 +452,8 @@ export type BoardScreen = {
   mode?: "flat" | "vr" | "ar";
   /** Where they're looking, in board space: the camera's target or the head's gaze on the table. */
   focus?: Vec3;
+  /** The Tune knobs they've changed from the defaults. */
+  tune?: Record<string, number | boolean>;
 };
 
 /** Commands the voice or the agent sends to a client's screen (they don't change the board). */
@@ -460,4 +462,8 @@ export type BoardCommand =
   | { cmd: "focus"; ids: string[] }
   | { cmd: "overview" }
   | { cmd: "tool"; tool: "select" | "connect" | "ink" }
-  | { cmd: "open"; boardId: string };
+  | { cmd: "open"; boardId: string }
+  /** Turn Tune knobs (a preset is all of them). */
+  | { cmd: "tune"; values: Record<string, number | boolean> }
+  /** The saved presets changed: fetch them again. */
+  | { cmd: "presets" };

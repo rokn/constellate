@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { ARCH_KINDS, COLORS, ITEM_KINDS, STATUSES, defaultsFor, describeBoard, nameOf, newId, type Board, type BoardScreen, type Item, type ItemKind, type Op, type Vec3 } from "../../shared/board";
 import { ASSISTANT, askBoard, stopBoardAgent } from "./agent";
 import { change, command, getBoard, redo, undo, watch } from "./store";
+import { TUNE_TOOLS, runBoardTune } from "./tune";
 
 /**
  * The workshop's voice: an Inworld realtime session, bridged here, as the
@@ -70,7 +71,8 @@ const TOOLS = [
   fn("redo", "Redo what was undone."),
   fn("tool", "Switch what their hands or mouse do: select (pick and move), connect (pick two to link), ink (draw in the air).", { tool: { type: "string", enum: ["select", "connect", "ink"] } }, ["tool"]),
 ];
-const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect"]);
+TOOLS.push(...TUNE_TOOLS.map((t) => fn(t.name, t.description, t.properties, t.required)));
+const SILENT = new Set(["select", "point", "move", "style", "explode", "spin", "tool", "add", "connect", "tune"]);
 
 function instructions(b: Board | null, s: BoardScreen): string {
   const where = s.mode === "ar" ? "in passthrough on a Quest, the board a hologram on their desk" : s.mode === "vr" ? "in VR" : "at their desktop";
@@ -81,6 +83,7 @@ function instructions(b: Board | null, s: BoardScreen): string {
     "Do the small things yourself with your tools, instantly: add one block, connect two, select, point, move, recolour, explode or spin a hologram, undo.",
     `Anything that needs designing — an architecture, a plan, several items, a hologram of something, rearranging, rewriting — goes to build. Don't describe what you'd build; call build with their request, say a few words ("On it."), then tell them what came back when it lands.`,
     "Call tools without announcing them. Refer to items by name, never by id.",
+    "How it looks and behaves (glow, label size, panels, sounds, the table, your own voice…) is the Tune panel: change it with tune (read tune_knobs for the keys), presets with use_preset / save_preset.",
     `Kinds: architecture ${ARCH_KINDS.join(", ")}; note, text, frame, ink; holo (a 3D model — always via build).`,
     "",
     b ? describeBoard(b, { max: 80, selected: s.selected }) : "No board is open.",
@@ -169,6 +172,27 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
     send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: `[system] ${text}` }] } });
     respond();
   };
+
+  /** Their voice settings, from the Tune panel: speed, eagerness, whether they can talk over it. */
+  let voiceSettings = { speed: 1, eagerness: "medium" as "low" | "medium" | "high", interrupt: true };
+  const fullSession = () => ({
+    type: "session.update",
+    session: {
+      type: "realtime",
+      model: REALTIME_MODEL,
+      instructions: lastInstructions,
+      output_modalities: ["audio"],
+      audio: {
+        input: {
+          transcription: { model: "assemblyai/u3-rt-pro", language: "en" },
+          turn_detection: { type: "semantic_vad", eagerness: voiceSettings.eagerness, create_response: true, interrupt_response: voiceSettings.interrupt },
+        },
+        output: { model: TTS_MODEL, voice: VOICE, ...(voiceSettings.speed !== 1 ? { speed: voiceSettings.speed } : {}) },
+      },
+      tools: TOOLS,
+      providerData: { stt: { voice_profile: false } },
+    },
+  });
 
   const openBoard = async (id: string | undefined) => {
     if (!id || id === board?.id) return;
@@ -291,7 +315,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
         command(id, { cmd: "tool", tool: a.tool as "select" | "connect" | "ink" });
         return { ok: true };
       default:
-        return { ok: false, error: `Unknown tool ${name}` };
+        return (await runBoardTune(name, a, id, screen)) ?? { ok: false, error: `Unknown tool ${name}` };
     }
   };
 
@@ -340,26 +364,7 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
           break;
         case "session.created":
           lastInstructions = instructions(board, screen);
-          ws.send(
-            JSON.stringify({
-              type: "session.update",
-              session: {
-                type: "realtime",
-                model: REALTIME_MODEL,
-                instructions: lastInstructions,
-                output_modalities: ["audio"],
-                audio: {
-                  input: {
-                    transcription: { model: "assemblyai/u3-rt-pro", language: "en" },
-                    turn_detection: { type: "semantic_vad", eagerness: "medium", create_response: true, interrupt_response: true },
-                  },
-                  output: { model: TTS_MODEL, voice: VOICE },
-                },
-                tools: TOOLS,
-                providerData: { stt: { voice_profile: false } },
-              },
-            }),
-          );
+          ws.send(JSON.stringify(fullSession()));
           return;
         case "session.updated":
           if (!ready) {
@@ -412,7 +417,18 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
       sync();
       return;
     }
-    if (msg.type === "proxy.settings") return;
+    if (msg.type === "proxy.settings") {
+      const v = (msg as { settings?: { voiceSpeed?: number; eagerness?: number; interrupt?: boolean } }).settings ?? {};
+      const next = {
+        speed: typeof v.voiceSpeed === "number" ? Math.min(1.5, Math.max(0.6, v.voiceSpeed)) : 1,
+        eagerness: (["low", "medium", "high"] as const)[Math.min(2, Math.max(0, Math.round((v.eagerness ?? 2) - 1)))],
+        interrupt: v.interrupt !== false,
+      };
+      if (JSON.stringify(next) === JSON.stringify(voiceSettings)) return;
+      voiceSettings = next;
+      if (ready) send(fullSession());
+      return;
+    }
     if (upstream?.readyState === WebSocket.OPEN && ready) upstream.send(text);
     else if (pending.length < 200) pending.push(text);
   });

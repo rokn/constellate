@@ -21,4 +21,6 @@ export interface Ctl {
   caption(): string;
   ask(text: string): void;
   inkColor(): string;
+  /** A link picked: its inspector. */
+  selectLink?(id: string | null): void;
 }

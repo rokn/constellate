@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { newId, type Vec3 } from "../../shared/board";
 import type { Ctl } from "./ctl";
 import type { BoardScene } from "./scene";
+import { num, on } from "./tune";
 
 /**
  * The mouse and keyboard. Left-drag on open table orbits; on an item it moves
@@ -56,8 +57,14 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
       scene.controls.enabled = false;
       const y = v.item.pos[1];
       const at = scene.tablePoint(origin, dir, y) ?? new THREE.Vector3(...v.item.pos);
-      // Moving one of the selection moves all of it.
-      const sel = ctl.selected().includes(hit.id) ? ctl.selected().filter((id) => id !== hit.id) : [];
+      // Moving one of the selection moves all of it; moving a frame moves what's in it.
+      let sel = ctl.selected().includes(hit.id) ? ctl.selected().filter((id) => id !== hit.id) : [];
+      if (v.item.kind === "frame" && on("frameCarries")) {
+        const [w, d] = v.item.size ?? [0.8, 0.5];
+        const [fx, , fz] = v.item.pos;
+        const inside = ctl.client.board?.items.filter((i) => i.id !== v.id && i.kind !== "frame" && Math.abs(i.pos[0] - fx) <= w / 2 && Math.abs(i.pos[2] - fz) <= d / 2).map((i) => i.id) ?? [];
+        sel = [...new Set([...sel, ...inside])];
+      }
       const others = sel
         .map((id) => scene.views.get(id))
         .filter((o): o is NonNullable<typeof o> => !!o)
@@ -110,7 +117,9 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
       const at = scene.tablePoint(origin, dir, drag.y);
       if (!at) return;
       at.add(drag.grabOffset);
-      pos = [round(at.x), round(drag.y), round(at.z)];
+      const g = num("gridSize");
+      const snap = (n: number) => (on("snap") ? Math.round(n / g) * g : n);
+      pos = [round(snap(at.x)), round(drag.y), round(snap(at.z))];
     }
     ctl.client.hold(drag.id, { pos });
     for (const o of drag.others) {

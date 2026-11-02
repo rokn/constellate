@@ -4,6 +4,8 @@ import { ARRANGEMENTS, arrange, type Arrangement } from "../../shared/boardLayou
 import { askBoard, stopBoardAgent } from "./agent";
 import { reportBuild } from "./holo";
 import { change, createBoard, deleteBoard, getBoard, listBoards, onCommand, redo, undo, watch } from "./store";
+import { loadPresets, savePresets } from "./tune";
+import type { BoardPreset } from "../../shared/boardTune";
 
 /** The workshop's API, under /api/board(s). Returns false for anything else. */
 export async function boardApi(
@@ -101,6 +103,14 @@ export async function boardApi(
     case "POST /api/board/stop": {
       const b = await body<{ id?: string }>(req);
       json(res, 200, { ok: b.id ? stopBoardAgent(b.id) : false });
+      return true;
+    }
+    case "GET /api/board/presets":
+      json(res, 200, await loadPresets());
+      return true;
+    case "POST /api/board/presets": {
+      const b = await body<{ presets?: BoardPreset[] }>(req);
+      json(res, 200, await savePresets(Array.isArray(b.presets) ? b.presets : []));
       return true;
     }
     case "POST /api/board/holo": {

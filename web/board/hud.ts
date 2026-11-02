@@ -1,185 +1,602 @@
 import * as THREE from "three";
 import { ARCH_KINDS, COLORS, STATUSES, colorOf, nameOf, type Board, type Item, type ItemKind } from "../../shared/board";
-import { Panel, cond, roundRect, sans, withAlpha } from "../xr/ui";
+import { BOARD_SECTIONS, BUILT_IN_PRESETS, type BoardPreset } from "../../shared/boardTune";
+import { Panel, cond, sans, withAlpha } from "../xr/ui";
 import type { Ctl, Tool } from "./ctl";
 import { LOOK, STATUS_COLOR } from "./look";
+import { num, on, resetTune, setTune } from "./tune";
 
 /**
- * The headset's panels, painted on canvases: the toolbelt (tools and every
- * component), the inspector for what's selected, and a strip under your
- * gaze with what the voice is saying and what the builder is doing.
- * Holographic glass, cyan edges and corner brackets, to match the board.
+ * The headset's panels, drawn the way Stark's are: thin light on dark glass,
+ * chamfered corners, tick marks and condensed caps — and never a slab in
+ * your way. Panels float low, drift after you when you turn, and fade back
+ * when you're not pointing at them; grab one by its title bar to pin it.
+ *
+ *  - Dock: on your left wrist (a hand turned toward you, or the controller).
+ *  - Palette: every component, and the hologram library and templates.
+ *  - Tune: every knob, and the presets.
+ *  - Callout: the selected item's inspector, beside the item itself.
+ *  - Captions: what the voice says and the builder's doing, as subtitles.
  */
 
-const GLASS = "rgba(3, 16, 28, 0.78)";
-const EDGE = "rgba(95, 212, 255, 0.85)";
+const CYAN = LOOK.cyan;
+const AMBER = LOOK.accent;
+const GLASS_TOP = "rgba(4, 22, 36, 0.62)";
+const GLASS_BOTTOM = "rgba(2, 10, 18, 0.5)";
 
-function glass(p: Panel, ctx: CanvasRenderingContext2D, title?: string) {
-  const { W, H } = p;
-  roundRect(ctx, 3, 3, W - 6, H - 6, 18);
-  ctx.fillStyle = GLASS;
-  ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = withAlpha(LOOK.cyan, 0.35);
-  ctx.stroke();
-  ctx.strokeStyle = EDGE;
-  ctx.lineWidth = 5;
-  const k = 34;
-  for (const [x, y, dx, dy] of [
-    [6, 6, 1, 1],
-    [W - 6, 6, -1, 1],
-    [6, H - 6, 1, -1],
-    [W - 6, H - 6, -1, -1],
-  ]) {
-    ctx.beginPath();
-    ctx.moveTo(x, y + dy * k);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + dx * k, y);
-    ctx.stroke();
+export function chamfer(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, c: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + c, y);
+  ctx.lineTo(x + w - c, y);
+  ctx.lineTo(x + w, y + c);
+  ctx.lineTo(x + w, y + h - c);
+  ctx.lineTo(x + w - c, y + h);
+  ctx.lineTo(x + c, y + h);
+  ctx.lineTo(x, y + h - c);
+  ctx.lineTo(x, y + c);
+  ctx.closePath();
+}
+
+function glow(ctx: CanvasRenderingContext2D, color: string, blur: number) {
+  ctx.shadowColor = color;
+  ctx.shadowBlur = blur;
+}
+
+function noGlow(ctx: CanvasRenderingContext2D) {
+  ctx.shadowBlur = 0;
+}
+
+/** Vector icons: the headset's browser may not have the glyphs. */
+export function icon(ctx: CanvasRenderingContext2D, name: string, cx: number, cy: number, s: number, color: string) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(2, s * 0.09);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  const h = s / 2;
+  ctx.beginPath();
+  switch (name) {
+    case "select":
+      ctx.moveTo(cx - h * 0.6, cy - h * 0.8);
+      ctx.lineTo(cx + h * 0.6, cy + h * 0.1);
+      ctx.lineTo(cx + h * 0.05, cy + h * 0.2);
+      ctx.lineTo(cx - h * 0.25, cy + h * 0.85);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    case "connect":
+      ctx.arc(cx - h * 0.65, cy + h * 0.45, h * 0.2, 0, Math.PI * 2);
+      ctx.moveTo(cx + h * 0.85, cy - h * 0.45);
+      ctx.arc(cx + h * 0.65, cy - h * 0.45, h * 0.2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx - h * 0.5, cy + h * 0.35);
+      ctx.quadraticCurveTo(cx, cy - h * 0.9, cx + h * 0.5, cy - h * 0.35);
+      ctx.stroke();
+      break;
+    case "ink":
+      ctx.moveTo(cx - h * 0.8, cy + h * 0.3);
+      ctx.bezierCurveTo(cx - h * 0.4, cy - h * 0.8, cx, cy + h * 0.8, cx + h * 0.4, cy - h * 0.2);
+      ctx.lineTo(cx + h * 0.8, cy - h * 0.6);
+      ctx.stroke();
+      break;
+    case "voice":
+      ctx.roundRect(cx - h * 0.25, cy - h * 0.8, h * 0.5, h * 1.05, h * 0.25);
+      ctx.moveTo(cx - h * 0.55, cy - h * 0.05);
+      ctx.quadraticCurveTo(cx - h * 0.55, cy + h * 0.55, cx, cy + h * 0.55);
+      ctx.quadraticCurveTo(cx + h * 0.55, cy + h * 0.55, cx + h * 0.55, cy - h * 0.05);
+      ctx.moveTo(cx, cy + h * 0.55);
+      ctx.lineTo(cx, cy + h * 0.85);
+      ctx.stroke();
+      break;
+    case "build":
+      ctx.moveTo(cx, cy - h * 0.85);
+      ctx.lineTo(cx + h * 0.75, cy - h * 0.42);
+      ctx.lineTo(cx + h * 0.75, cy + h * 0.42);
+      ctx.lineTo(cx, cy + h * 0.85);
+      ctx.lineTo(cx - h * 0.75, cy + h * 0.42);
+      ctx.lineTo(cx - h * 0.75, cy - h * 0.42);
+      ctx.closePath();
+      ctx.moveTo(cx - h * 0.75, cy - h * 0.42);
+      ctx.lineTo(cx, cy);
+      ctx.lineTo(cx + h * 0.75, cy - h * 0.42);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx, cy + h * 0.85);
+      ctx.stroke();
+      break;
+    case "tune":
+      for (const [y, k] of [
+        [-0.5, 0.3],
+        [0, -0.35],
+        [0.5, 0.1],
+      ]) {
+        ctx.moveTo(cx - h * 0.8, cy + y * h);
+        ctx.lineTo(cx + h * 0.8, cy + y * h);
+      }
+      ctx.stroke();
+      for (const [y, k] of [
+        [-0.5, 0.3],
+        [0, -0.35],
+        [0.5, 0.1],
+      ]) {
+        ctx.beginPath();
+        ctx.arc(cx + k * h, cy + y * h, h * 0.16, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    case "undo":
+      ctx.arc(cx, cy + h * 0.1, h * 0.6, Math.PI * 1.1, Math.PI * 0.2, false);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx - h * 0.85, cy - h * 0.35);
+      ctx.lineTo(cx - h * 0.6, cy + h * 0.15);
+      ctx.lineTo(cx - h * 0.15, cy - h * 0.15);
+      ctx.stroke();
+      break;
+    case "redo":
+      ctx.arc(cx, cy + h * 0.1, h * 0.6, Math.PI * 1.9, Math.PI * 0.8, true);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx + h * 0.85, cy - h * 0.35);
+      ctx.lineTo(cx + h * 0.6, cy + h * 0.15);
+      ctx.lineTo(cx + h * 0.15, cy - h * 0.15);
+      ctx.stroke();
+      break;
+    case "close":
+      ctx.moveTo(cx - h * 0.5, cy - h * 0.5);
+      ctx.lineTo(cx + h * 0.5, cy + h * 0.5);
+      ctx.moveTo(cx + h * 0.5, cy - h * 0.5);
+      ctx.lineTo(cx - h * 0.5, cy + h * 0.5);
+      ctx.stroke();
+      break;
+    case "pin":
+      ctx.arc(cx, cy - h * 0.25, h * 0.35, 0, Math.PI * 2);
+      ctx.moveTo(cx, cy + h * 0.1);
+      ctx.lineTo(cx, cy + h * 0.85);
+      ctx.stroke();
+      break;
+    case "table":
+      ctx.ellipse(cx, cy + h * 0.15, h * 0.85, h * 0.35, 0, 0, Math.PI * 2);
+      ctx.moveTo(cx, cy - h * 0.2);
+      ctx.lineTo(cx, cy - h * 0.85);
+      ctx.stroke();
+      break;
+    case "play":
+      ctx.moveTo(cx - h * 0.4, cy - h * 0.6);
+      ctx.lineTo(cx + h * 0.6, cy);
+      ctx.lineTo(cx - h * 0.4, cy + h * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    default:
+      ctx.arc(cx, cy, h * 0.5, 0, Math.PI * 2);
+      ctx.stroke();
   }
-  if (title) {
-    ctx.font = cond(30, 600);
+  ctx.restore();
+}
+
+/** A panel drawn as a hologram, with a title bar to grab it by. */
+export abstract class HoloPanel extends Panel {
+  /** Height (px) of the title bar: a pinch or grip there carries the panel. */
+  header = 64;
+  /** Pinned where you put it: it doesn't follow you. */
+  pinned = false;
+  /** Pointed at right now: drawn at full strength. */
+  hot = false;
+
+  constructor(name: string, w: number, h: number, private titleText: string) {
+    super(name, w, h, 1750);
+  }
+
+  /** Close it (the panel's own ✕). Set by whoever shows it. */
+  onClose?: () => void;
+
+  protected frameHolo(ctx: CanvasRenderingContext2D, title = this.titleText, sub?: string) {
+    const { W, H } = this;
+    const c = 26;
+    chamfer(ctx, 4, 4, W - 8, H - 8, c);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, GLASS_TOP);
+    g.addColorStop(1, GLASS_BOTTOM);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = withAlpha(CYAN, 0.45);
+    ctx.stroke();
+    // Faint scan lines across the glass.
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = withAlpha(CYAN, 0.035);
+    for (let y = 0; y < H; y += 6) ctx.fillRect(0, y, W, 1);
+    ctx.restore();
+    // Bright corners.
+    glow(ctx, CYAN, 10);
+    ctx.strokeStyle = CYAN;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(4, 4 + c + 30);
+    ctx.lineTo(4, 4 + c);
+    ctx.lineTo(4 + c, 4);
+    ctx.lineTo(4 + c + 60, 4);
+    ctx.moveTo(W - 4, H - 4 - c - 30);
+    ctx.lineTo(W - 4, H - 4 - c);
+    ctx.lineTo(W - 4 - c, H - 4);
+    ctx.lineTo(W - 4 - c - 60, H - 4);
+    ctx.stroke();
+    noGlow(ctx);
+    // Title bar: name, a row of ticks, pin and close.
+    ctx.font = cond(28, 600);
     ctx.letterSpacing = "6px";
-    ctx.fillStyle = LOOK.cyan;
-    ctx.fillText(title.toUpperCase(), 36, 58);
+    glow(ctx, CYAN, 8);
+    ctx.fillStyle = CYAN;
+    ctx.fillText(title.toUpperCase(), 34, 44);
+    noGlow(ctx);
+    const tw = ctx.measureText(title.toUpperCase()).width;
+    ctx.letterSpacing = "0px";
+    if (sub) {
+      ctx.font = cond(20, 500);
+      ctx.fillStyle = withAlpha(CYAN, 0.55);
+      ctx.fillText(sub.toUpperCase(), 34 + tw + 18, 44);
+    }
+    ctx.fillStyle = withAlpha(CYAN, 0.35);
+    for (let x = 34; x < W - 130; x += 9) ctx.fillRect(x, this.header - 6, 1, x % 45 === 34 % 45 ? 6 : 3);
+    this.iconButton(ctx, "pin", W - 110, 14, 40, "pin", () => (this.pinned = !this.pinned), this.pinned);
+    if (this.onClose) this.iconButton(ctx, "close", W - 62, 14, 40, "close", () => this.onClose?.());
+  }
+
+  protected iconButton(ctx: CanvasRenderingContext2D, id: string, x: number, y: number, s: number, name: string, onClick: () => void, active = false, color?: string) {
+    const hot = this.hover === id;
+    const down = this.pressed === id;
+    const col = color ?? (active ? AMBER : CYAN);
+    chamfer(ctx, x, y, s, s, s * 0.22);
+    ctx.fillStyle = down ? withAlpha(col, 0.35) : active ? withAlpha(col, 0.18) : hot ? withAlpha(col, 0.14) : "rgba(0,0,0,0)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = withAlpha(col, hot || active ? 0.95 : 0.4);
+    ctx.stroke();
+    if (hot || active) glow(ctx, col, 10);
+    icon(ctx, name, x + s / 2, y + s / 2, s * 0.62, hot || active ? "#ffffff" : col);
+    noGlow(ctx);
+    this.region({ id, x, y, w: s, h: s, onClick });
+  }
+
+  /** A chamfered button with a label (and an icon), lit when pointed at, amber when on. */
+  protected holoButton(
+    ctx: CanvasRenderingContext2D,
+    id: string,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    label: string,
+    onClick: () => void,
+    o: { active?: boolean; color?: string; icon?: string; size?: number; dot?: string } = {},
+  ) {
+    const hot = this.hover === id;
+    const down = this.pressed === id;
+    const col = o.active ? AMBER : o.color ?? CYAN;
+    chamfer(ctx, x, y, w, h, Math.min(14, h * 0.3));
+    ctx.fillStyle = down ? withAlpha(col, 0.38) : o.active ? withAlpha(col, 0.16) : hot ? withAlpha(col, 0.13) : "rgba(95, 212, 255, 0.04)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = withAlpha(col, hot || o.active ? 0.95 : 0.35);
+    ctx.stroke();
+    let tx = x + w / 2;
+    ctx.textAlign = "center";
+    if (o.icon) {
+      icon(ctx, o.icon, x + h * 0.55, y + h / 2, h * 0.5, hot || o.active ? "#fff" : col);
+      tx = x + h + (w - h) / 2 - 6;
+    }
+    if (o.dot) {
+      ctx.save();
+      ctx.translate(x + 18, y + h / 2);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = o.dot;
+      glow(ctx, o.dot, 8);
+      ctx.fillRect(-5, -5, 10, 10);
+      ctx.restore();
+      noGlow(ctx);
+      tx = x + 18 + (w - 18) / 2;
+    }
+    const size = o.size ?? 24;
+    ctx.font = cond(size, 600);
+    ctx.letterSpacing = "2px";
+    if (hot || o.active) glow(ctx, col, 8);
+    ctx.fillStyle = hot || o.active ? "#ffffff" : "#cfeaf6";
+    ctx.fillText(label.toUpperCase(), tx, y + h / 2 + size * 0.36);
+    noGlow(ctx);
+    ctx.letterSpacing = "0px";
+    ctx.textAlign = "left";
+    this.region({ id, x, y, w, h, onClick });
+  }
+
+  /** A slider: a thin track of light with a diamond to drag. */
+  protected holoSlider(ctx: CanvasRenderingContext2D, id: string, x: number, y: number, w: number, o: { value: number; min: number; max: number; step: number; onChange: (v: number) => void; onCommit?: () => void }) {
+    const u = (o.value - o.min) / (o.max - o.min || 1);
+    const ty = y + 22;
+    ctx.fillStyle = withAlpha(CYAN, 0.18);
+    ctx.fillRect(x, ty - 2, w, 4);
+    glow(ctx, CYAN, 8);
+    ctx.fillStyle = CYAN;
+    ctx.fillRect(x, ty - 2, w * u, 4);
+    ctx.save();
+    ctx.translate(x + w * u, ty);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = this.hover === id ? "#ffffff" : CYAN;
+    ctx.fillRect(-9, -9, 18, 18);
+    ctx.restore();
+    noGlow(ctx);
+    const snap = (px: number) => {
+      const k = Math.max(0, Math.min(1, (px - x) / w));
+      const v = Math.round((o.min + k * (o.max - o.min)) / o.step) * o.step;
+      o.onChange(Math.max(o.min, Math.min(o.max, +v.toFixed(5))));
+    };
+    this.region({ id, x: x - 14, y, w: w + 28, h: 44, onClick: () => {}, onDrag: (px) => snap(px), onRelease: o.onCommit });
+  }
+
+  protected holoToggle(ctx: CanvasRenderingContext2D, id: string, x: number, y: number, value: boolean, onClick: () => void) {
+    const w = 64;
+    const h = 30;
+    chamfer(ctx, x, y, w, h, 8);
+    ctx.fillStyle = value ? withAlpha(AMBER, 0.3) : "rgba(95,212,255,0.05)";
+    ctx.fill();
+    ctx.strokeStyle = withAlpha(value ? AMBER : CYAN, this.hover === id ? 1 : 0.5);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = value ? AMBER : withAlpha(CYAN, 0.7);
+    if (value) glow(ctx, AMBER, 8);
+    ctx.fillRect(value ? x + w - 26 : x + 8, y + 7, 18, h - 14);
+    noGlow(ctx);
+    this.region({ id, x: x - 6, y: y - 6, w: w + 12, h: h + 12, onClick });
+  }
+
+  protected caption(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size = 18, color = LOOK.muted) {
+    ctx.font = cond(size, 600);
+    ctx.letterSpacing = "4px";
+    ctx.fillStyle = color;
+    ctx.fillText(text.toUpperCase(), x, y);
     ctx.letterSpacing = "0px";
   }
 }
 
-function section(ctx: CanvasRenderingContext2D, text: string, x: number, y: number) {
-  ctx.font = cond(22, 600);
-  ctx.letterSpacing = "4px";
-  ctx.fillStyle = LOOK.muted;
-  ctx.fillText(text.toUpperCase(), x, y);
-  ctx.letterSpacing = "0px";
-}
+const TOOL_ICON: Record<Tool, string> = { select: "select", connect: "connect", ink: "ink" };
+const KIND_NAME: Partial<Record<ItemKind, string>> = { function: "Lambda", holo: "Hologram" };
+const kindName = (k: ItemKind) => KIND_NAME[k] ?? k[0].toUpperCase() + k.slice(1);
 
-const KIND_LABEL: Partial<Record<ItemKind, string>> = { function: "Lambda" };
-const label = (k: ItemKind) => KIND_LABEL[k] ?? k[0].toUpperCase() + k.slice(1);
+/* --------------------------------- dock --------------------------------- */
 
-/** Tools, components and the board's own buttons. */
-export class Toolbelt extends Panel {
-  constructor(private ctl: Ctl, private on: { spawn: (k: ItemKind) => void; reset: () => void; exit: () => void; close: () => void }) {
-    super("toolbelt", 0.46, 0.4, 1700);
+/** The wrist: the tools, the voice, and the way to every other panel. */
+export class Dock extends HoloPanel {
+  constructor(
+    private ctl: Ctl,
+    private on: { palette: () => void; tune: () => void; recenter: () => void; exit: () => void; isOpen: (name: string) => boolean },
+  ) {
+    super("dock", 0.26, 0.1, "");
+    this.header = 0;
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
-    glass(this, ctx, "Workshop");
-    const ctl = this.ctl;
-    const tool = ctl.tool();
-    let x = 36;
-    let y = 86;
-    section(ctx, "Tools", x, y);
-    y += 14;
-    for (const t of ["select", "connect", "ink"] as Tool[]) {
-      x = this.button(ctx, `tool:${t}`, x, y, t[0].toUpperCase() + t.slice(1), () => ctl.setTool(t), { active: tool === t, accent: LOOK.accent, w: 150 }) + 12;
-    }
-    const v = ctl.voiceState();
-    this.button(ctx, "voice", this.W - 36 - 190, y, v === "idle" || v === "error" ? "Voice off" : v === "connecting" ? "Voice…" : "Voice on", () => ctl.toggleVoice(), { active: v !== "idle" && v !== "error", accent: LOOK.cyan, w: 190 });
-
-    y += 86;
-    section(ctx, "Architecture", 36, y);
-    y += 14;
-    x = 36;
-    const cols = 4;
-    const w = (this.W - 72 - (cols - 1) * 12) / cols;
-    ARCH_KINDS.forEach((k, i) => {
-      const cx = 36 + (i % cols) * (w + 12);
-      const cy = y + Math.floor(i / cols) * 62;
-      this.button(ctx, `add:${k}`, cx, cy, label(k), () => this.on.spawn(k), { w, h: 50, size: 24 });
-    });
-    y += Math.ceil(ARCH_KINDS.length / cols) * 62 + 22;
-    section(ctx, "Board", 36, y);
-    y += 14;
-    (["note", "text", "frame", "holo"] as ItemKind[]).forEach((k, i) => {
-      this.button(ctx, `add:${k}`, 36 + i * (w + 12), y, k === "holo" ? "Hologram" : label(k), () => this.on.spawn(k), { w, h: 50, size: 24, accent: LOOK.accent });
-    });
-    y += 74;
-    x = 36;
-    x = this.button(ctx, "undo", x, y, "Undo", () => ctl.client.undo(), { w: 120, h: 50, size: 24 }) + 12;
-    x = this.button(ctx, "redo", x, y, "Redo", () => ctl.client.redo(), { w: 120, h: 50, size: 24 }) + 12;
-    x = this.button(ctx, "reset", x, y, "Reset table", () => this.on.reset(), { w: 170, h: 50, size: 24 }) + 12;
-    this.button(ctx, "exit", this.W - 36 - 120, y, "Exit", () => this.on.exit(), { w: 120, h: 50, size: 24, accent: LOOK.danger });
+    const { W, H } = this;
+    chamfer(ctx, 3, 3, W - 6, H - 6, 18);
+    ctx.fillStyle = "rgba(2, 14, 24, 0.55)";
+    ctx.fill();
+    glow(ctx, CYAN, 8);
+    ctx.strokeStyle = withAlpha(CYAN, 0.7);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    noGlow(ctx);
+    const v = this.ctl.voiceState();
+    const voiceOn = v === "listening" || v === "speaking";
+    const buttons: [string, string, () => void, boolean, string?][] = [
+      ...(["select", "connect", "ink"] as Tool[]).map((t) => [`t:${t}`, TOOL_ICON[t], () => this.ctl.setTool(t), this.ctl.tool() === t] as [string, string, () => void, boolean]),
+      ["voice", "voice", () => this.ctl.toggleVoice(), voiceOn, v === "speaking" ? AMBER : voiceOn ? "#7dff9a" : undefined],
+      ["palette", "build", this.on.palette, this.on.isOpen("palette")],
+      ["tune", "tune", this.on.tune, this.on.isOpen("tune")],
+      ["undo", "undo", () => this.ctl.client.undo(), false],
+      ["redo", "redo", () => this.ctl.client.redo(), false],
+      ["table", "table", this.on.recenter, false],
+    ];
+    const s = 46;
+    const gap = (W - 24 - buttons.length * s) / (buttons.length - 1);
+    buttons.forEach(([id, ic, f, act, col], i) => this.iconButton(ctx, id, 12 + i * (s + gap), (H - s) / 2 - 8, s, ic, f, act, col));
+    ctx.font = cond(15, 600);
+    ctx.letterSpacing = "3px";
+    ctx.fillStyle = withAlpha(CYAN, 0.6);
+    ctx.textAlign = "center";
+    ctx.fillText(`${this.ctl.tool().toUpperCase()} · VOICE ${voiceOn ? "ON" : "OFF"}`, W / 2, H - 12);
+    ctx.textAlign = "left";
+    ctx.letterSpacing = "0px";
   }
 }
 
-/** The selected item: its colour, status, size, and for a hologram how far apart it's pulled. */
-export class Inspector extends Panel {
+/* -------------------------------- palette ------------------------------- */
+
+export type PaletteExtras = {
+  /** The hologram library: name → make it. */
+  library: { name: string; make: () => void }[];
+  /** Templates: name → lay it out. */
+  templates: { name: string; make: () => void }[];
+};
+
+export class Palette extends HoloPanel {
+  tab: "blocks" | "board" | "library" | "templates" = "blocks";
+
+  constructor(
+    private ctl: Ctl,
+    private spawn: (k: ItemKind) => void,
+    private extras: () => PaletteExtras,
+  ) {
+    super("palette", 0.44, 0.3, "Fabricate");
+  }
+
+  protected draw(ctx: CanvasRenderingContext2D) {
+    this.frameHolo(ctx);
+    const tabs: [typeof this.tab, string][] = [
+      ["blocks", "Architecture"],
+      ["board", "Board"],
+      ["library", "Holograms"],
+      ["templates", "Templates"],
+    ];
+    let x = 30;
+    for (const [id, label] of tabs) {
+      const w = 170;
+      this.holoButton(ctx, `tab:${id}`, x, this.header + 8, w, 40, label, () => ((this.tab = id), this.invalidate()), { active: this.tab === id, size: 20 });
+      x += w + 10;
+    }
+    const top = this.header + 66;
+    const cols = 4;
+    const w = (this.W - 60 - (cols - 1) * 10) / cols;
+    const h = 52;
+    const grid = (list: { id: string; label: string; f: () => void; dot?: string }[]) =>
+      list.forEach((b, i) => this.holoButton(ctx, b.id, 30 + (i % cols) * (w + 10), top + Math.floor(i / cols) * (h + 10), w, h, b.label, b.f, { size: 21, dot: b.dot }));
+    const dotOf = (k: ItemKind) => colorOf(({ database: "teal", queue: "amber", cache: "orange", client: "ice", user: "white", api: "blue", function: "violet", storage: "teal", external: "magenta", cloud: "ice" } as Record<string, string>)[k] ?? "cyan");
+    if (this.tab === "blocks") grid(ARCH_KINDS.map((k) => ({ id: `add:${k}`, label: kindName(k), f: () => this.spawn(k), dot: dotOf(k) })));
+    else if (this.tab === "board") grid((["note", "text", "frame", "holo"] as ItemKind[]).map((k) => ({ id: `add:${k}`, label: kindName(k), f: () => this.spawn(k), dot: k === "note" ? COLORS.gold : k === "frame" ? COLORS.violet : CYAN })));
+    else if (this.tab === "library") grid(this.extras().library.map((l, i) => ({ id: `lib:${i}`, label: l.name, f: l.make, dot: CYAN })));
+    else grid(this.extras().templates.map((l, i) => ({ id: `tpl:${i}`, label: l.name, f: l.make, dot: AMBER })));
+    this.caption(ctx, this.tab === "templates" ? "Lays out a whole board where you're looking" : "Appears on the table where you're looking", 30, this.H - 22, 16);
+  }
+}
+
+/* ---------------------------------- tune -------------------------------- */
+
+export class TunePanel extends HoloPanel {
+  section = BOARD_SECTIONS[0].id;
+  presets: BoardPreset[] = BUILT_IN_PRESETS;
+
+  constructor(private onPreset: (p: BoardPreset) => void) {
+    super("tune", 0.52, 0.42, "Tune");
+    this.resizable = false;
+  }
+
+  protected draw(ctx: CanvasRenderingContext2D) {
+    this.frameHolo(ctx);
+    const left = 30;
+    const colW = 230;
+    let y = this.header + 10;
+    for (const s of BOARD_SECTIONS) {
+      this.holoButton(ctx, `sec:${s.id}`, left, y, colW, 34, s.title.replace("Headset · ", "⌂ "), () => ((this.section = s.id), this.invalidate()), { active: this.section === s.id, size: 17 });
+      y += 39;
+    }
+    const sec = BOARD_SECTIONS.find((s) => s.id === this.section)!;
+    const x0 = left + colW + 30;
+    const w = this.W - x0 - 30;
+    y = this.header + 14;
+    for (const k of sec.knobs) {
+      ctx.font = sans(21, 500);
+      ctx.fillStyle = "#dff6ff";
+      ctx.fillText(k.label, x0, y + 18);
+      if ("toggle" in k) {
+        this.holoToggle(ctx, `k:${k.key}`, x0 + w - 64, y, on(k.key), () => {
+          setTune({ [k.key]: !on(k.key) });
+          this.invalidate();
+        });
+        y += 46;
+      } else {
+        const v = num(k.key);
+        ctx.font = cond(20, 600);
+        ctx.fillStyle = AMBER;
+        const txt = String(+v.toFixed(3));
+        ctx.fillText(txt, x0 + w - ctx.measureText(txt).width, y + 18);
+        this.holoSlider(ctx, `k:${k.key}`, x0 + 6, y + 22, w - 12, {
+          value: v,
+          min: k.min,
+          max: k.max,
+          step: k.step,
+          onChange: (nv) => {
+            setTune({ [k.key]: nv });
+            this.invalidate();
+          },
+        });
+        y += 74;
+      }
+      if (y > this.H - 110) break;
+    }
+    // Presets, and a reset for this section.
+    let px = left;
+    const py = this.H - 62;
+    for (const p of this.presets.slice(0, 7)) {
+      ctx.font = cond(18, 600);
+      const pw = Math.max(90, ctx.measureText(p.name.toUpperCase()).width + 40);
+      if (px + pw > this.W - 170) break;
+      this.holoButton(ctx, `p:${p.name}`, px, py, pw, 38, p.name, () => this.onPreset(p), { size: 17, color: p.builtIn ? CYAN : AMBER });
+      px += pw + 8;
+    }
+    this.holoButton(ctx, "reset", this.W - 160, py, 130, 38, "Reset", () => resetTune(sec.knobs.map((k) => k.key)), { size: 17, color: LOOK.danger });
+  }
+}
+
+
+/* -------------------------------- callout ------------------------------- */
+
+/** The selected item, beside it: colour, status, size, pull apart, delete. */
+export class Callout extends HoloPanel {
   item: Item | null = null;
   count = 0;
+  private key = "";
 
   constructor(private ctl: Ctl) {
-    super("inspector", 0.4, 0.3, 1700);
+    super("callout", 0.27, 0.19, "");
+    this.header = 56;
   }
 
   set(b: Board | null, sel: string[]) {
     const it = sel.length === 1 ? b?.items.find((i) => i.id === sel[0]) ?? null : null;
-    const key = JSON.stringify([it, sel.length]);
-    if (key === this.lastKey) return;
-    this.lastKey = key;
+    const key = JSON.stringify([it?.id, it?.color, it?.status, it?.scale, it?.explode, it?.spin, it?.label, it?.body, sel.length]);
+    if (key === this.key) return;
+    this.key = key;
     this.item = it;
     this.count = sel.length;
     this.invalidate();
   }
-  private lastKey = "";
 
   protected draw(ctx: CanvasRenderingContext2D) {
     const it = this.item;
     const ctl = this.ctl;
     if (!it) {
-      glass(this, ctx, this.count > 1 ? `${this.count} selected` : "Nothing selected");
-      if (this.count > 1) this.button(ctx, "del", 36, 90, "Delete them", () => ctl.remove(ctl.selected()), { accent: LOOK.danger, w: 220 });
-      else {
-        ctx.font = sans(26);
-        ctx.fillStyle = LOOK.muted;
-        ctx.fillText("Point at something and pinch, or ask the voice.", 36, 110);
-      }
+      this.frameHolo(ctx, `${this.count} selected`);
+      this.holoButton(ctx, "del", 30, this.header + 20, 220, 50, "Delete them", () => ctl.remove(ctl.selected()), { color: LOOK.danger });
+      this.holoButton(ctx, "none", 266, this.header + 20, 180, 50, "Deselect", () => ctl.select([]));
       return;
     }
-    glass(this, ctx, nameOf(it));
-    ctx.font = cond(22, 500);
-    ctx.fillStyle = LOOK.muted;
-    ctx.fillText(it.kind.toUpperCase(), this.W - 36 - ctx.measureText(it.kind.toUpperCase()).width, 58);
+    this.frameHolo(ctx, nameOf(it).slice(0, 22), kindName(it.kind));
     const patch = (p: Partial<Item>, merge?: string) => ctl.client.apply([{ op: "update", id: it.id, patch: p }], merge);
-    let y = 84;
-    // Colours.
-    const names = Object.keys(COLORS);
-    names.forEach((n, i) => {
-      const x = 36 + i * 50;
-      const c = COLORS[n];
-      const on = colorOf(it.color) === c;
-      ctx.beginPath();
-      ctx.arc(x + 18, y + 20, on ? 18 : 14, 0, Math.PI * 2);
+    let y = this.header + 8;
+    Object.entries(COLORS).forEach(([n, c], i) => {
+      const x = 30 + i * 34;
+      const isOn = colorOf(it.color) === c;
+      ctx.save();
+      ctx.translate(x + 13, y + 16);
+      ctx.rotate(Math.PI / 4);
       ctx.fillStyle = c;
-      ctx.globalAlpha = on ? 1 : 0.7;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      if (on) {
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
-      this.region({ id: `c:${n}`, x, y, w: 40, h: 40, onClick: () => patch({ color: n }) });
+      ctx.globalAlpha = isOn ? 1 : 0.6;
+      if (isOn) glow(ctx, c, 12);
+      ctx.fillRect(isOn ? -11 : -8, isOn ? -11 : -8, isOn ? 22 : 16, isOn ? 22 : 16);
+      ctx.restore();
+      noGlow(ctx);
+      this.region({ id: `c:${n}`, x, y, w: 30, h: 32, onClick: () => patch({ color: n }) });
     });
-    y += 60;
-    let x = 36;
+    y += 46;
+    let x = 30;
     for (const s of STATUSES) {
-      x = this.button(ctx, `s:${s}`, x, y, s, () => patch({ status: (it.status === s ? null : s) as never }), { active: it.status === s, accent: STATUS_COLOR[s], size: 22, h: 44 }) + 10;
+      ctx.font = cond(18, 600);
+      const w = ctx.measureText(s.toUpperCase()).width + 34;
+      this.holoButton(ctx, `s:${s}`, x, y, w, 36, s, () => patch({ status: (it.status === s ? null : s) as never }), { size: 17, color: STATUS_COLOR[s], active: it.status === s });
+      x += w + 6;
     }
-    y += 64;
-    x = 36;
-    x = this.button(ctx, "smaller", x, y, "−", () => patch({ scale: Math.max(0.1, (it.scale ?? 1) / 1.2) }, `scale:${it.id}`), { w: 60, h: 48 }) + 8;
-    ctx.font = cond(26, 600);
-    ctx.fillStyle = LOOK.text;
-    ctx.fillText(`${Math.round((it.scale ?? 1) * 100)}%`, x + 6, y + 33);
-    x += 80;
-    x = this.button(ctx, "bigger", x, y, "+", () => patch({ scale: Math.min(10, (it.scale ?? 1) * 1.2) }, `scale:${it.id}`), { w: 60, h: 48 }) + 20;
-    x = this.button(ctx, "turn", x, y, "Turn", () => patch({ rotY: ((it.rotY ?? 0) + 45) % 360 }, `rot:${it.id}`), { w: 100, h: 48 }) + 12;
-    this.button(ctx, "delete", this.W - 36 - 140, y, "Delete", () => ctl.remove([it.id]), { w: 140, h: 48, accent: LOOK.danger });
-    y += 70;
+    y += 50;
+    this.holoButton(ctx, "smaller", 30, y, 52, 44, "−", () => patch({ scale: Math.max(0.1, (it.scale ?? 1) / 1.2) }, `scale:${it.id}`), { size: 26 });
+    ctx.font = cond(22, 600);
+    ctx.fillStyle = "#dff6ff";
+    ctx.fillText(`${Math.round((it.scale ?? 1) * 100)}%`, 92, y + 30);
+    this.holoButton(ctx, "bigger", 152, y, 52, 44, "+", () => patch({ scale: Math.min(10, (it.scale ?? 1) * 1.2) }, `scale:${it.id}`), { size: 26 });
+    this.holoButton(ctx, "turn", 214, y, 90, 44, "Turn", () => patch({ rotY: ((it.rotY ?? 0) + 45) % 360 }, `rot:${it.id}`), { size: 19 });
+    this.holoButton(ctx, "delete", this.W - 30 - 110, y, 110, 44, "Delete", () => ctl.remove([it.id]), { size: 19, color: LOOK.danger });
+    y += 58;
     if (it.kind === "holo") {
-      section(ctx, "Pull apart", 36, y + 28);
-      this.slider(ctx, "explode", 220, y, this.W - 220 - 160, {
+      this.caption(ctx, "Pull apart", 30, y + 26, 16);
+      this.holoSlider(ctx, "explode", 160, y + 2, this.W - 160 - 140, {
         value: it.explode ?? 0,
         min: 0,
         max: 1,
@@ -187,66 +604,76 @@ export class Inspector extends Panel {
         onChange: (v) => ctl.client.hold(it.id, { explode: v }),
         onCommit: () => ctl.client.release(it.id),
       });
-      this.button(ctx, "spin", this.W - 36 - 110, y, "Spin", () => patch({ spin: !it.spin }), { active: !!it.spin, w: 110, h: 44, size: 22 });
-    } else if (it.kind === "note" || it.kind === "text") {
-      ctx.font = sans(24);
+      this.holoButton(ctx, "spin", this.W - 30 - 90, y, 90, 40, "Spin", () => patch({ spin: !it.spin }), { active: !!it.spin, size: 18 });
+    } else {
+      const body = it.kind === "note" || it.kind === "text" ? it.body ?? "" : it.tags?.join(" · ") ?? "";
+      ctx.font = sans(19);
       ctx.fillStyle = LOOK.muted;
-      ctx.fillText("Say what it should say: “change this note to …”", 36, y + 28);
+      ctx.fillText(body ? body.replace(/\s+/g, " ").slice(0, 52) : "Say what to change: “make this red”, “call it Gateway”…", 30, y + 26);
     }
   }
 }
 
-/** Under your gaze: what the voice says or heard, and what the builder's doing. */
-export class Strip extends Panel {
+/* ------------------------------- captions ------------------------------- */
+
+/** Subtitles: what the voice says (or heard), and what the builder's doing. No panel, just light. */
+export class Captions extends HoloPanel {
   private key = "";
-  constructor(private ctl: Ctl, private activity: () => Board["activity"]) {
-    super("strip", 0.5, 0.075, 1700);
+  text = "";
+  color = "#dff6ff";
+
+  constructor() {
+    super("captions", 0.62, 0.07, "");
+    this.header = 0;
   }
 
-  refresh() {
-    const a = this.activity();
-    const key = JSON.stringify([this.ctl.caption(), this.ctl.voiceState(), a?.busy, a?.line, a?.error]);
-    if (key !== this.key) {
-      this.key = key;
-      this.invalidate();
-    }
+  show(text: string, color: string) {
+    const key = `${text}|${color}`;
+    if (key === this.key) return;
+    this.key = key;
+    this.text = text;
+    this.color = color;
+    this.invalidate();
   }
 
   protected draw(ctx: CanvasRenderingContext2D) {
-    const a = this.activity();
-    const cap = this.ctl.caption();
-    const v = this.ctl.voiceState();
-    roundRect(ctx, 3, 3, this.W - 6, this.H - 6, 16);
-    ctx.fillStyle = "rgba(3, 16, 28, 0.66)";
-    ctx.fill();
-    ctx.strokeStyle = withAlpha(LOOK.cyan, 0.4);
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    // A dot for the voice: listening, speaking, off.
-    ctx.beginPath();
-    ctx.arc(34, this.H / 2, 9, 0, Math.PI * 2);
-    ctx.fillStyle = v === "speaking" ? LOOK.accent : v === "listening" ? LOOK.cyan : "#33485a";
-    ctx.fill();
-    ctx.font = sans(28, 500);
-    ctx.fillStyle = LOOK.text;
-    const line = a?.busy ? `◆ ${a.line ?? "Working"}…` : a?.error ? `Builder: ${a.error}` : cap || (v === "idle" ? "Press X (or pinch your left middle finger) to talk" : "Listening");
-    let text = line;
-    while (ctx.measureText(text).width > this.W - 80 && text.length > 4) text = `…${text.slice(Math.floor(text.length * 0.15))}`;
-    ctx.fillStyle = a?.busy ? LOOK.accent : a?.error ? LOOK.danger : LOOK.text;
-    ctx.fillText(text, 56, this.H / 2 + 10);
+    if (!this.text) return;
+    const { W, H } = this;
+    ctx.font = sans(30, 500);
+    let t = this.text;
+    while (ctx.measureText(t).width > W - 60 && t.length > 8) t = `…${t.slice(Math.ceil(t.length * 0.12))}`;
+    const tw = ctx.measureText(t).width;
+    // A faint band behind the words, so they read against a bright room.
+    const g = ctx.createLinearGradient((W - tw) / 2 - 40, 0, (W + tw) / 2 + 40, 0);
+    g.addColorStop(0, "rgba(0,8,14,0)");
+    g.addColorStop(0.15, "rgba(0,8,14,0.55)");
+    g.addColorStop(0.85, "rgba(0,8,14,0.55)");
+    g.addColorStop(1, "rgba(0,8,14,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect((W - tw) / 2 - 40, 8, tw + 80, H - 16);
+    ctx.textAlign = "center";
+    glow(ctx, this.color, 12);
+    ctx.fillStyle = this.color;
+    ctx.fillText(t, W / 2, H / 2 + 11);
+    noGlow(ctx);
+    ctx.textAlign = "left";
   }
 }
 
-/** Put a panel in front of the head: `dist` out, `drop` below the eye, tilted to face you. */
-export function placeBeforeHead(p: Panel, cam: THREE.Camera, o: { dist: number; drop: number; side?: number; tilt?: number }) {
+/* ------------------------------ placement ------------------------------- */
+
+/** The head's pose, flattened: where it is, the way it faces on the floor, and its right. */
+export function headFrame(cam: THREE.Camera) {
   const head = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
   const fwd = new THREE.Vector3(0, 0, -1).transformDirection(cam.matrixWorld);
   fwd.y = 0;
   if (fwd.lengthSq() < 1e-4) fwd.set(0, 0, -1);
   fwd.normalize();
   const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
-  const at = head.clone().addScaledVector(fwd, o.dist).addScaledVector(right, o.side ?? 0);
-  at.y -= o.drop;
-  p.mesh.position.copy(at);
-  p.mesh.lookAt(head.x, at.y + (o.tilt ?? 0.25), head.z);
+  return { head, fwd, right };
+}
+
+/** Face a panel toward the head, tilted back a little as a desk display is. */
+export function faceHead(m: THREE.Object3D, head: THREE.Vector3) {
+  m.lookAt(head.x, m.position.y + (head.y - m.position.y) * 0.6, head.z);
 }

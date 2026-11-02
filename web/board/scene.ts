@@ -5,6 +5,7 @@ import { Bloom } from "../xr/bloom";
 import { ItemView } from "./items";
 import { LinkView } from "./links";
 import { LOOK, makeDust, makeTable, shared } from "./look";
+import { num, on, onTune } from "./tune";
 
 /**
  * The workshop's scene. One renderer for the desktop (orbiting the table
@@ -22,10 +23,9 @@ export type Hit = { kind: "item"; id: string; point: THREE.Vector3; dist: number
 type FrameFn = (t: number, dt: number, frame?: XRFrame) => void;
 
 const PLACE_KEY = "workshop.rig.";
-const DEFAULT_RIG: Record<"vr" | "ar", { pos: [number, number, number]; yaw: number; scale: number }> = {
-  ar: { pos: [0, 0.76, -0.7], yaw: 0, scale: 0.45 },
-  vr: { pos: [0, 0.82, -1.25], yaw: 0, scale: 0.75 },
-};
+/** Where the table stands the first time in each mode: in front of you, at desk height (from the knobs). */
+const defaultRig = (m: "vr" | "ar"): { pos: [number, number, number]; yaw: number; scale: number } =>
+  m === "ar" ? { pos: [0, num("arHeight"), -num("arDistance")], yaw: 0, scale: num("arScale") } : { pos: [0, 0.82, -1.25], yaw: 0, scale: num("vrScale") };
 
 export class BoardScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -51,6 +51,9 @@ export class BoardScene {
   private table = makeTable();
   private dust = makeDust();
   private roomStuff = new THREE.Group();
+  private offTune: () => void;
+  /** Items held in a hand or under the mouse: placed at once, never glided. */
+  isHeld: (id: string) => boolean = () => false;
   private frameFns = new Set<FrameFn>();
   private last = performance.now();
   private t0 = performance.now();
@@ -103,12 +106,50 @@ export class BoardScene {
     this.raycaster.params.Points = { threshold: 0 };
 
     window.addEventListener("resize", this.onResize);
+    this.offTune = onTune((changed) => this.applyTune(changed));
+    this.applyTune([]);
     r.setAnimationLoop(this.frame);
+  }
+
+  /** The knobs, applied: uniforms, the camera, the room, and a rebuild when how things are drawn changed. */
+  applyTune(changed: string[]) {
+    shared.uFillK.value = num("fill");
+    shared.uRimK.value = num("rim");
+    shared.uEdgeK.value = num("edges");
+    shared.uScanK.value = num("scanlines");
+    shared.uFlickK.value = num("flicker");
+    shared.uLinkK.value = num("linkBrightness");
+    shared.uFlowK.value = num("flowSpeed");
+    shared.uPacketK.value = num("packets");
+    shared.uTableK.value = num("tableBrightness");
+    shared.uColumnK.value = num("lightColumn");
+    this.table.u.uFade.value = num("tableBrightness");
+    this.table.group.visible = on("table");
+    this.bloomOn = on("bloom");
+    this.bloomParams = { strength: num("bloomStrength"), radius: num("bloomRadius"), threshold: num("bloomThreshold") };
+    const c = this.controls;
+    c.rotateSpeed = num("orbitSpeed");
+    c.zoomSpeed = num("zoomSpeed");
+    c.dampingFactor = num("damping");
+    c.autoRotate = on("autoRotate");
+    c.autoRotateSpeed = num("autoRotateSpeed");
+    if (this.camera.fov !== num("fov")) {
+      this.camera.fov = num("fov");
+      this.camera.updateProjectionMatrix();
+    }
+    const room = this.roomStuff.children[0];
+    const grid = room?.getObjectByName("grid");
+    const stars = room?.getObjectByName("stars");
+    if (grid) grid.visible = on("grid");
+    if (stars) stars.visible = on("stars");
+    if (this.session) this.renderer.xr.setFoveation(num("foveation"));
+    if (changed.length) for (const v of this.views.values()) v.update(v.item, true);
   }
 
   dispose() {
     this.renderer.setAnimationLoop(null);
     window.removeEventListener("resize", this.onResize);
+    this.offTune();
     this.controls.dispose();
     for (const v of this.views.values()) v.dispose();
     for (const l of this.linkViews.values()) l.dispose();
@@ -158,7 +199,7 @@ export class BoardScene {
       } else if (prevItems.get(it.id) !== it || v.dying) {
         v.dying = 0;
         v.u.uFade.value = 1;
-        v.update(it);
+        v.update(it, this.isHeld(it.id));
       }
     }
     for (const [id, v] of this.views) {
@@ -186,7 +227,7 @@ export class BoardScene {
   preview(id: string, p: { pos?: [number, number, number]; quat?: [number, number, number, number]; scale?: number }) {
     const v = this.views.get(id);
     if (!v) return;
-    v.place({ pos: p.pos ?? v.item.pos, quat: p.quat ?? v.item.quat, rotY: v.item.rotY, scale: p.scale ?? v.item.scale });
+    v.place({ pos: p.pos ?? v.item.pos, quat: p.quat ?? v.item.quat, rotY: v.item.rotY, scale: p.scale ?? v.item.scale }, true);
   }
 
   setSelected(ids: string[]) {
@@ -313,7 +354,7 @@ export class BoardScene {
     // Keep the angle they look from, but never from below or flat on.
     if (dir.y < 0.35) dir.y = 0.35;
     dir.normalize();
-    this.fly = { from: this.controls.target.clone(), to: c, camFrom: this.camera.position.clone(), camTo: c.clone().addScaledVector(dir, Math.max(0.35, dist)), t0: performance.now(), ms: 700 };
+    this.fly = { from: this.controls.target.clone(), to: c, camFrom: this.camera.position.clone(), camTo: c.clone().addScaledVector(dir, Math.max(0.35, dist)), t0: performance.now(), ms: num("flySeconds") * 1000 };
   }
 
   /* ------------------------------- previews ------------------------------ */
@@ -343,7 +384,8 @@ export class BoardScene {
       this.session = null;
       this.setMode("flat");
     });
-    this.renderer.xr.setFramebufferScaleFactor(1.2);
+    this.renderer.xr.setFramebufferScaleFactor(num("renderScale"));
+    this.renderer.xr.setFoveation(num("foveation"));
     await this.renderer.xr.setSession(session);
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     this.setMode(mode);
@@ -374,7 +416,7 @@ export class BoardScene {
 
   /** Where the board stood last time in this mode (in front of you, at desk height, the first time). */
   private restoreRig(m: "vr" | "ar") {
-    let p = DEFAULT_RIG[m];
+    let p = defaultRig(m);
     try {
       const s = localStorage.getItem(PLACE_KEY + m);
       if (s) p = { ...p, ...JSON.parse(s) };
@@ -413,8 +455,8 @@ export class BoardScene {
     this.last = now;
     const t = (now - this.t0) / 1000;
     shared.uTime.value = t;
-    this.table.tick(t);
-    this.dust.tick(t);
+    this.table.tick(t, num("tableMotion"));
+    this.dust.tick(t, num("dust"));
 
     if (this.fly) {
       const k = Math.min(1, (now - this.fly.t0) / this.fly.ms);
@@ -525,6 +567,7 @@ function makeRoom() {
     }),
   );
   grid.position.y = -0.82;
+  grid.name = "grid";
   g.add(grid);
   const n = 1800;
   const pos = new Float32Array(n * 3);
@@ -534,11 +577,13 @@ function makeRoom() {
     const p = Math.acos(Math.random() * 1.6 - 0.6);
     pos.set([r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t)], i * 3);
   }
-  g.add(
+  const stars = (
     new THREE.Points(
       new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(pos, 3)),
       new THREE.PointsMaterial({ color: 0x7fa6bd, size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.5, depthWrite: false }),
-    ),
+    )
   );
+  stars.name = "stars";
+  g.add(stars);
   return g;
 }

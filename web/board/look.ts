@@ -40,11 +40,21 @@ export type HoloUniforms = {
   uLitColor: { value: THREE.Color };
   /** Fades the whole item (being thrown away, or a ghost). */
   uFade: { value: number };
+  uFillK?: { value: number };
+  uRimK?: { value: number };
+  uEdgeK?: { value: number };
+  uScanK?: { value: number };
+  uFlickK?: { value: number };
 };
 
 export function holoUniforms(): HoloUniforms {
   return {
     uTime: shared.uTime,
+    uFillK: shared.uFillK,
+    uRimK: shared.uRimK,
+    uEdgeK: shared.uEdgeK,
+    uScanK: shared.uScanK,
+    uFlickK: shared.uFlickK,
     uReveal: { value: 1 },
     uBase: { value: 0 },
     uHeight: { value: 0.3 },
@@ -55,7 +65,20 @@ export function holoUniforms(): HoloUniforms {
 }
 
 /** The clock every material reads. */
-export const shared = { uTime: { value: 0 } };
+export const shared = {
+  uTime: { value: 0 },
+  // Tune knobs every hologram reads (see tune.ts).
+  uFillK: { value: 1 },
+  uRimK: { value: 1 },
+  uEdgeK: { value: 1 },
+  uScanK: { value: 1 },
+  uFlickK: { value: 1 },
+  uLinkK: { value: 1 },
+  uFlowK: { value: 1 },
+  uPacketK: { value: 1 },
+  uTableK: { value: 1 },
+  uColumnK: { value: 1 },
+};
 
 /**
  * Light added, never painted: colour adds, and coverage (alpha) adds only as
@@ -89,9 +112,16 @@ const COMMON = /* glsl */ `${LIGHT}
   uniform float uLit;
   uniform vec3 uLitColor;
   uniform float uFade;
+  uniform float uFillK;
+  uniform float uRimK;
+  uniform float uEdgeK;
+  uniform float uScanK;
+  uniform float uFlickK;
   varying vec3 vWorld;
   // The print: what's above the scan plane isn't there yet; the plane itself burns bright.
   float reveal(out float edge) {
+    // Printed: all of it, wherever it's moved since (the plane's height is only kept up while printing).
+    if (uReveal >= 1.0) { edge = 0.0; return 1.0; }
     float h = uBase + uHeight * (uReveal * 1.25 - 0.1);
     float d = h - vWorld.y;
     edge = (uReveal < 1.0) ? smoothstep(0.012, 0.0, abs(d)) : 0.0;
@@ -125,11 +155,11 @@ const FILL_FS = /* glsl */ `
     if (shown < 0.5 && edge < 0.01) discard;
     float f = 1.0 - abs(dot(normalize(vNormal), vView));
     float rim = pow(f, 2.2);
-    float scan = 0.82 + 0.18 * sin(vWorld.y * 520.0 - uTime * 3.0);
+    float scan = 1.0 - uScanK * 0.18 * (1.0 - sin(vWorld.y * 520.0 - uTime * 3.0));
     float sweep = smoothstep(0.985, 1.0, sin(vWorld.y * 7.0 - uTime * 1.6));
     float pulse = 1.0 + uPulse * 0.6 * sin(uTime * 3.2);
     vec3 col = mix(uColor, uLitColor, uLit * 0.65);
-    float a = (uOpacity + rim * 0.5 + sweep * 0.08) * scan * pulse * (1.0 + uLit * 0.25);
+    float a = (uOpacity * uFillK + rim * 0.5 * uRimK + sweep * 0.08 * uScanK) * scan * pulse * (1.0 + uLit * 0.25);
     a = a * shown + edge * 1.4;
     gl_FragColor = light(col * a * uFade);
   }
@@ -153,16 +183,24 @@ const LINE_FS = /* glsl */ `
     float edge;
     float shown = reveal(edge);
     if (shown < 0.5 && edge < 0.01) discard;
-    float flick = 0.92 + 0.08 * sin(uTime * 37.0 + vWorld.y * 40.0);
+    float flick = 1.0 - uFlickK * 0.08 * (1.0 - sin(uTime * 37.0 + vWorld.y * 40.0));
     float pulse = 1.0 + uPulse * 0.5 * sin(uTime * 3.2);
     vec3 col = mix(uColor, uLitColor, uLit * 0.8);
-    float a = uOpacity * flick * pulse * (1.0 + uLit * 0.3) * shown + edge * 1.5;
+    float a = uOpacity * uEdgeK * flick * pulse * (1.0 + uLit * 0.3) * shown + edge * 1.5;
     gl_FragColor = light(col * a * uFade);
   }
 `;
 
 
+/** Near-white light saturates to a blank glare: pale colours shine at a little over half strength. */
+function paleK(color: string) {
+  const c = new THREE.Color(color);
+  const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  return lum > 0.6 ? 0.55 : 1;
+}
+
 export function fillMaterial(u: HoloUniforms, color: string, opacity = 0.1, pulse = 0) {
+  opacity *= paleK(color);
   return new THREE.ShaderMaterial({
     vertexShader: FILL_VS,
     fragmentShader: FILL_FS,
@@ -173,6 +211,7 @@ export function fillMaterial(u: HoloUniforms, color: string, opacity = 0.1, puls
 }
 
 export function lineMaterial(u: HoloUniforms, color: string, opacity = 0.9, pulse = 0) {
+  opacity *= paleK(color);
   return new THREE.ShaderMaterial({
     vertexShader: LINE_VS,
     fragmentShader: LINE_FS,
@@ -227,17 +266,20 @@ const LINK_FS = /* glsl */ `
   uniform float uLit;
   uniform vec3 uLitColor;
   uniform float uReveal;
+  uniform float uLinkK;
+  uniform float uFlowK;
+  uniform float uPacketK;
   varying vec2 vUv;
   ${LIGHT}
   void main() {
     if (vUv.x > uReveal) discard;
     float s = vUv.x * uLen;
     // Packets running from source to target.
-    float flow = fract(s * 9.0 - uTime * uSpeed);
-    float packet = smoothstep(0.0, 0.15, flow) * smoothstep(0.55, 0.3, flow);
-    float dash = uDash > 0.5 ? step(0.45, fract(s * 22.0 - uTime * uSpeed * 0.6)) : 1.0;
+    float flow = fract(s * 9.0 * max(0.05, uPacketK) - uTime * uSpeed * uFlowK);
+    float packet = uPacketK > 0.0 ? smoothstep(0.0, 0.15, flow) * smoothstep(0.55, 0.3, flow) : 0.0;
+    float dash = uDash > 0.5 ? step(0.45, fract(s * 22.0 - uTime * uSpeed * uFlowK * 0.6)) : 1.0;
     vec3 col = mix(uColor, uLitColor, uLit * 0.7);
-    float a = uOpacity * (0.45 + 0.9 * packet) * dash * (1.0 + uLit * 0.7);
+    float a = uOpacity * uLinkK * (0.45 + 0.9 * packet) * dash * (1.0 + uLit * 0.7);
     gl_FragColor = light(col * a);
   }
 `;
@@ -248,6 +290,9 @@ export function linkMaterial(color: string, o: { dashed?: boolean; opacity?: num
     fragmentShader: LINK_FS,
     uniforms: {
       uTime: shared.uTime,
+      uLinkK: shared.uLinkK,
+      uFlowK: shared.uFlowK,
+      uPacketK: shared.uPacketK,
       uColor: { value: new THREE.Color(color) },
       uOpacity: { value: o.opacity ?? 0.9 },
       uLen: { value: o.len },
@@ -459,16 +504,16 @@ export function makeTable(radius = 1.4) {
     new THREE.ShaderMaterial({
       vertexShader: /* glsl */ `varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
       fragmentShader: /* glsl */ `
-        uniform float uR; uniform float uTime; varying vec2 vP;
+        uniform float uR; uniform float uTime; uniform float uTableK; varying vec2 vP;
         ${LIGHT}
         void main(){
           float r = length(vP) / uR;
           float glow = 0.012 + 0.05 * pow(r, 8.0);
           float grid = (step(0.985, fract(vP.x * 10.0)) + step(0.985, fract(vP.y * 10.0))) * 0.012;
           float sweep = smoothstep(0.03, 0.0, abs(fract(r * 1.0 - uTime * 0.12) - 0.5)) * 0.03;
-          gl_FragColor = light(vec3(0.37, 0.83, 1.0) * (glow + grid + sweep));
+          gl_FragColor = light(vec3(0.37, 0.83, 1.0) * (glow + grid + sweep) * uTableK);
         }`,
-      uniforms: { uR: { value: radius }, uTime: shared.uTime },
+      uniforms: { uR: { value: radius }, uTime: shared.uTime, uTableK: shared.uTableK },
       ...additive,
     }),
   );
@@ -480,18 +525,23 @@ export function makeTable(radius = 1.4) {
     new THREE.CylinderGeometry(radius, radius, 0.5, 96, 1, true).translate(0, 0.25, 0),
     new THREE.ShaderMaterial({
       vertexShader: /* glsl */ `varying float vY; void main(){ vY = position.y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: /* glsl */ `varying float vY; ${LIGHT} void main(){ float a = pow(1.0 - clamp(vY / 0.5, 0.0, 1.0), 4.0) * 0.025; gl_FragColor = light(vec3(0.37, 0.83, 1.0) * a); }`,
+      fragmentShader: /* glsl */ `uniform float uColumnK; varying float vY; ${LIGHT} void main(){ float a = pow(1.0 - clamp(vY / 0.5, 0.0, 1.0), 4.0) * 0.025 * uColumnK; gl_FragColor = light(vec3(0.37, 0.83, 1.0) * a); }`,
+      uniforms: { uColumnK: shared.uColumnK },
       side: THREE.DoubleSide,
       ...additive,
     }),
   );
   g.add(column);
 
-  const tick = (t: number) => {
-    a1.rotation.y = t * 0.05;
-    a2.rotation.y = -t * 0.08;
+  let turn = 0;
+  let last = 0;
+  const tick = (t: number, speed = 1) => {
+    turn += (t - last) * speed;
+    last = t;
+    a1.rotation.y = turn * 0.05;
+    a2.rotation.y = -turn * 0.08;
   };
-  return { group: g, tick };
+  return { group: g, tick, u };
 }
 
 /** Dust drifting in the air over the table. */
@@ -507,7 +557,10 @@ export function makeDust(radius = 1.6, n = 500) {
     geo,
     new THREE.PointsMaterial({ color: LOOK.cyan, size: 0.004, sizeAttenuation: true, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }),
   );
-  const tick = (t: number) => {
+  const tick = (t: number, amount = 1) => {
+    pts.visible = amount > 0;
+    (pts.material as THREE.PointsMaterial).opacity = 0.5 * Math.min(1, amount);
+    pts.material.size = 0.004 * Math.max(1, amount);
     pts.rotation.y = t * 0.01;
     pts.position.y = Math.sin(t * 0.2) * 0.01;
   };

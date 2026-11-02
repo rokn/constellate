@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { colorOf, heightOf, type Item } from "../../shared/board";
 import { animateHolo, buildHolo, type Animated } from "./holo";
 import { LOOK, STATUS_COLOR, holoMesh, holoUniforms, labelSprite, lineMaterial, noteTexture, type HoloUniforms } from "./look";
+import { num, on, tuneRev } from "./tune";
 
 /**
  * One item on the board, drawn. Built once from what the item is, and only
@@ -9,12 +10,19 @@ import { LOOK, STATUS_COLOR, holoMesh, holoUniforms, labelSprite, lineMaterial, 
  * it up are cheap.
  */
 
-const PRINT_MS = 900;
 
 /** What's drawn, apart from where it stands: a change here rebuilds it. */
 function shapeKey(i: Item) {
   const { pos: _p, rotY: _r, quat: _q, scale: _s, explode: _e, spin: _sp, ...rest } = i;
-  return JSON.stringify(rest);
+  // The knobs that change how things are drawn (label sizes, …) rebuild it too.
+  return `${tuneRev}|${JSON.stringify(rest)}`;
+}
+
+/** A label, sized and lit by the knobs. */
+function label(text: string, color: string, o: Parameters<typeof labelSprite>[2] = {}) {
+  const s = labelSprite(text, color, { ...o, height: (o.height ?? 0.032) * num("labelSize") });
+  s.material.color.setScalar(num("labelBrightness"));
+  return s;
 }
 
 export class ItemView {
@@ -28,6 +36,9 @@ export class ItemView {
   private born = 0;
   private explodeNow = 0;
   private spinAngle = 0;
+  /** Where it's going: it glides there (or, held or with Glide off, is there at once). */
+  private goal = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), scale: 1 };
+  private placed = false;
   /** Bounding radius (m, at scale 1) and the height of its middle: for picking, framing and the selection ring. */
   radius = 0.1;
   midY = 0.06;
@@ -36,6 +47,8 @@ export class ItemView {
   selected = false;
   /** Fading out on its way to the bin. */
   dying = 0;
+  /** Filtered out of view (layers): not drawn, not picked. */
+  hidden = false;
 
   constructor(item: Item, fresh: boolean) {
     this.item = item;
@@ -50,19 +63,39 @@ export class ItemView {
     return this.item.id;
   }
 
-  update(item: Item) {
+  update(item: Item, instant = false) {
     const rebuild = shapeKey(item) !== this.key;
     this.item = item;
     if (rebuild) this.build(item);
-    this.place(item);
+    this.place(item, instant);
+  }
+
+  /** Rebuilt with the knobs as they are now. */
+  rebuild() {
+    this.build(this.item);
+    this.place(this.item, true);
   }
 
   /** Where it stands: from the item, or (while it's held) wherever the hand puts it. */
-  place(item: Pick<Item, "pos" | "rotY" | "quat" | "scale">) {
-    this.root.position.set(...item.pos);
-    if (item.quat) this.root.quaternion.set(...item.quat);
-    else this.root.rotation.set(0, THREE.MathUtils.degToRad(item.rotY ?? 0), 0);
-    this.root.scale.setScalar(item.scale ?? 1);
+  place(item: Pick<Item, "pos" | "rotY" | "quat" | "scale">, instant = false) {
+    const g = this.goal;
+    g.pos.set(...item.pos);
+    if (item.quat) g.quat.set(...item.quat);
+    else g.quat.setFromEuler(new THREE.Euler(0, THREE.MathUtils.degToRad(item.rotY ?? 0), 0));
+    g.scale = (item.scale ?? 1) * num("itemSize");
+    if (instant || !this.placed || !on("glide")) this.snap();
+    this.placed = true;
+  }
+
+  private snap() {
+    this.root.position.copy(this.goal.pos);
+    this.root.quaternion.copy(this.goal.quat);
+    this.root.scale.setScalar(this.goal.scale);
+  }
+
+  /** Still on its way somewhere. */
+  get moving() {
+    return this.root.position.distanceToSquared(this.goal.pos) > 1e-8 || Math.abs(this.root.scale.x - this.goal.scale) > 1e-4;
   }
 
   private clear() {
@@ -88,7 +121,7 @@ export class ItemView {
     const u = this.u;
     const b = this.body;
     let labelY = heightOf({ ...item, scale: 1 }) + 0.025;
-    let label: string | undefined = item.label;
+    let labelText: string | undefined = on("labels") ? item.label : undefined;
 
     switch (item.kind) {
       case "note": {
@@ -105,13 +138,13 @@ export class ItemView {
         stand.add(plane);
         b.add(stand);
         b.add(pad(u, color, Math.max(w, 0.1) * 0.45));
-        label = undefined;
+        labelText = undefined;
         this.radius = Math.hypot(w, h) / 2;
         this.midY = h / 2 + 0.03;
         break;
       }
       case "text": {
-        const s = labelSprite(item.body || item.label || "Text", color, { height: 0.06, bracket: false });
+        const s = label(item.body || item.label || "Text", color, { height: 0.06, bracket: false });
         s.position.y = 0.01;
         b.add(s);
         this.sprites.push(s);
@@ -119,7 +152,7 @@ export class ItemView {
         const hit = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.06, 0.02), new THREE.MeshBasicMaterial({ visible: false }));
         hit.position.y = 0.04;
         b.add(hit);
-        label = undefined;
+        labelText = undefined;
         this.radius = 0.12;
         this.midY = 0.04;
         break;
@@ -146,14 +179,14 @@ export class ItemView {
           new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.045, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
         );
         b.add(fill);
-        if (item.label) {
-          const s = labelSprite(item.label, color, { height: 0.05, bracket: false });
+        if (item.label && on("labels")) {
+          const s = label(item.label, color, { height: 0.05, bracket: false });
           s.center.set(0, 0);
           s.position.set(-w / 2 + 0.01, 0.01, -d / 2);
           b.add(s);
           this.sprites.push(s);
         }
-        label = undefined;
+        labelText = undefined;
         this.radius = Math.hypot(w, d) / 2;
         this.midY = 0;
         break;
@@ -168,7 +201,7 @@ export class ItemView {
           this.radius = Math.max(0.03, box.getSize(new THREE.Vector3()).length() / 2);
           this.midY = box.getCenter(new THREE.Vector3()).y;
         }
-        label = undefined;
+        labelText = undefined;
         break;
       }
       case "holo": {
@@ -212,10 +245,10 @@ export class ItemView {
       b.add(ring);
     }
 
-    if (label) {
-      const sub = [item.status && item.status !== "planned" ? item.status : "", ...(item.tags ?? [])].filter(Boolean).join(" · ");
+    if (labelText) {
+      const sub = on("tags") ? [item.status && item.status !== "planned" ? item.status : "", ...(item.tags ?? [])].filter(Boolean).join(" · ") : "";
       const err = item.kind === "holo" && item.holo?.error ? "script error" : item.kind === "holo" && item.holo?.script && !item.holo.parts?.length ? "building…" : "";
-      const s = labelSprite(label, err === "script error" ? LOOK.danger : color, { height: 0.042, sub: err || sub || undefined });
+      const s = label(labelText, err === "script error" ? LOOK.danger : color, { height: 0.042, sub: err || sub || undefined });
       s.position.y = labelY;
       b.add(s);
       this.sprites.push(s);
@@ -227,8 +260,17 @@ export class ItemView {
     const want = this.selected ? 1 : this.lit;
     this.u.uLit.value += (want - this.u.uLit.value) * Math.min(1, dt * 10);
 
+    // Gliding to where it's going.
+    if (this.placed && on("glide")) {
+      const k = 1 - Math.exp(-dt * 12);
+      this.root.position.lerp(this.goal.pos, k);
+      this.root.quaternion.slerp(this.goal.quat, k);
+      this.root.scale.setScalar(THREE.MathUtils.lerp(this.root.scale.x, this.goal.scale, k));
+    }
+
     if (this.born) {
-      const k = Math.min(1, (performance.now() - this.born) / PRINT_MS);
+      const ms = num("printSeconds") * 1000;
+      const k = ms <= 0 ? 1 : Math.min(1, (performance.now() - this.born) / ms);
       this.u.uReveal.value = k;
       const box = new THREE.Box3().setFromObject(this.body);
       this.u.uBase.value = box.min.y;
@@ -246,10 +288,10 @@ export class ItemView {
     if (this.item.kind === "holo") {
       const target = this.item.explode ?? 0;
       this.explodeNow += (target - this.explodeNow) * Math.min(1, dt * 6);
-      if (this.item.spin) this.spinAngle += dt * 0.35;
+      if (this.item.spin) this.spinAngle += dt * 0.35 * num("spinSpeed");
       this.body.rotation.y = this.spinAngle;
     }
-    if (this.animated.length) animateHolo(this.animated, this.explodeNow, t, dt);
+    if (this.animated.length) animateHolo(this.animated, this.explodeNow * num("explodeReach"), t, dt * num("spinSpeed"));
 
     // The selection: an amber ring turning on the table under it.
     if (this.selected && !this.selRing) {

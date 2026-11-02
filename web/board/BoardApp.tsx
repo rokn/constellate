@@ -21,6 +21,9 @@ import { LOOK, STATUS_COLOR } from "./look";
 import { BoardScene, type Mode } from "./scene";
 import type { XRInput } from "./xr";
 import "./board.css";
+import { TunePanel } from "./TunePanel";
+import { applyPreset, num, on, onTune, setTune, tuneChanged } from "./tune";
+import { BUILT_IN_PRESETS, type BoardPreset } from "../../shared/boardTune";
 
 /**
  * The workshop page: /board, or /board/<id>. The scene fills the window; the
@@ -99,6 +102,22 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const [focus, setFocus] = useState<Vec3>([0, 0, 0]);
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [help, setHelp] = useState(false);
+  const [tuneOpen, setTuneOpen] = useState(false);
+  const [presets, setPresets] = useState<BoardPreset[]>([]);
+  const presetsRef = useRef(presets);
+  presetsRef.current = presets;
+  const [tuneKey, setTuneKey] = useState(0);
+  useEffect(() => onTune(() => setTuneKey((n) => n + 1)), []);
+  const loadPresets = useCallback(() => {
+    void fetch("/api/board/presets")
+      .then((r) => r.json())
+      .then((p: BoardPreset[]) => {
+        setPresets(p);
+        xrRef.current?.setPresets([...BUILT_IN_PRESETS, ...p]);
+      })
+      .catch(() => {});
+  }, []);
+  useEffect(loadPresets, [loadPresets]);
   const askRef = useRef<HTMLInputElement>(null);
 
   const selRef = useRef(selected);
@@ -113,8 +132,18 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     sceneRef.current?.setSelected(ids);
   }, []);
 
-  const screen: BoardScreen = useMemo(() => ({ boardId, selected, tool, mode, focus }), [boardId, selected, tool, mode, focus]);
-  const voice = useVoice({ screen, onCommand: () => {}, path: "/api/board/voice", volume: mode === "flat" ? 1 : 1.6 });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tuned = useMemo(() => tuneChanged(), [tuneKey]);
+  const screen: BoardScreen = useMemo(() => ({ boardId, selected, tool, mode, focus, tune: tuned }), [boardId, selected, tool, mode, focus, tuned]);
+  const voiceSettings = useMemo(() => ({ voiceSpeed: num("voiceSpeed"), eagerness: num("eagerness"), interrupt: on("interrupt") }), [tuneKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const voice = useVoice({
+    screen,
+    onCommand: () => {},
+    path: "/api/board/voice",
+    volume: num("voiceVolume") * (mode === "flat" ? 1 : 1.6),
+    idleMinutes: num("idleMinutes"),
+    settings: voiceSettings,
+  });
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
 
@@ -184,6 +213,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   useEffect(() => {
     const s = new BoardScene(host.current!);
     sceneRef.current = s;
+    s.isHeld = (id) => client.isHeld(id);
     (window as unknown as { __board: unknown }).__board = s;
     const offDesk = attachDesktop(s, ctl);
     const offClient = client.open();
@@ -202,6 +232,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (c.cmd === "focus") s.focus(c.ids);
       else if (c.cmd === "overview") s.overview();
       else if (c.cmd === "tool") setToolState(c.tool);
+      else if (c.cmd === "tune") setTune(c.values);
+      else if (c.cmd === "presets") loadPresets();
     });
     s.onMode = (m) => {
       setMode(m);
@@ -225,7 +257,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       s.dispose();
       sceneRef.current = null;
     };
-  }, [client, ctl, setSelected]);
+  }, [client, ctl, setSelected, loadPresets]);
 
   // A headset? Then the buttons, and its hands, ready before you press.
   useEffect(() => {
@@ -235,18 +267,27 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       setXr({ vr, ar });
       if ((vr || ar) && sceneRef.current && !xrRef.current) {
         void import("./xr").then(({ XRInput }) => {
-          if (sceneRef.current && !xrRef.current) xrRef.current = new XRInput(sceneRef.current, ctl, () => client.board?.activity);
+          if (sceneRef.current && !xrRef.current) xrRef.current = new XRInput(sceneRef.current, ctl, () => client.board?.activity, xrExtras());
         });
       }
     });
   }, [ctl, client]);
+
+  /** What the headset's palette and Tune panel offer beyond the components. */
+  function xrExtras() {
+    return {
+      extras: () => ({ library: [], templates: [] }),
+      presets: () => [...BUILT_IN_PRESETS, ...presetsRef.current],
+      onPreset: (p: BoardPreset) => applyPreset(p.values),
+    };
+  }
 
   const enter = async (m: "vr" | "ar") => {
     setXrError(null);
     try {
       if (!xrRef.current && sceneRef.current) {
         const { XRInput } = await import("./xr");
-        xrRef.current = new XRInput(sceneRef.current, ctl, () => client.board?.activity);
+        xrRef.current = new XRInput(sceneRef.current, ctl, () => client.board?.activity, xrExtras());
       }
       // Audio starts on the press that took you in, while it still counts as one.
       const { sfx } = await import("../xr/sound");
@@ -266,6 +307,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         e.preventDefault();
         askRef.current?.focus();
       } else if (e.key === "?") setHelp((h) => !h);
+      else if (e.key === ",") setTuneOpen((o) => !o);
       else if (e.key === " " && e.target === document.body) {
         e.preventDefault();
         ctl.toggleVoice();
@@ -373,6 +415,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               {!client.connected && board === null && <span className="text-xs text-[#7fa6bd]">connecting…</span>}
             </div>
             <div className="pointer-events-auto flex items-center gap-2">
+              <button className={`ws-chip ${tuneOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setTuneOpen((o) => !o)} title="Tune: how everything looks and behaves (,)">
+                Tune
+              </button>
               <button className="ws-chip" onClick={() => setHelp((h) => !h)} title="Shortcuts (?)">
                 ?
               </button>
@@ -513,6 +558,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
           </div>
 
           {help && <Help onClose={() => setHelp(false)} />}
+          {tuneOpen && <TunePanel presets={presets} onPresets={setPresets} onClose={() => setTuneOpen(false)} />}
         </>
       )}
 
@@ -775,14 +821,16 @@ function Help({ onClose }: { onClose: () => void }) {
     ["E", "Pull a hologram apart"],
     ["F · O", "Frame the selection · the whole table"],
     ["⌘Z · ⇧⌘Z", "Undo · redo"],
+    [",", "Tune"],
   ];
   const xr: [string, string][] = [
     ["Point + pinch / trigger", "Select; hold to drag along the ray"],
     ["Grip, or pinch right on it", "Carry it in your hand; throw it to delete"],
     ["Both hands on one", "Stretch it — or pull a hologram apart"],
     ["Grab empty air", "Move the table; both hands turn and scale it"],
-    ["A · B · X · Y", "Toolbelt · undo · voice · redo"],
-    ["Left palm up", "Toolbelt"],
+    ["A · B · X · Y", "Palette · undo · voice · tune"],
+    ["Left palm toward you", "Wrist dock: tools, voice, panels"],
+    ["Pinch a panel's title", "Carry it; it stays where you let go"],
     ["Left / right middle pinch", "Voice · undo"],
   ];
   return (

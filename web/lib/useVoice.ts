@@ -42,6 +42,7 @@ export function useVoice({
   volume = 1,
   idleMinutes = DEFAULT_IDLE_MIN,
   path = "/api/voice",
+  settings,
 }: {
   /** What's on screen: the code map's, or the workshop's (with path /api/board/voice). */
   screen: ScreenContext | BoardScreen;
@@ -49,6 +50,8 @@ export function useVoice({
   volume?: number;
   idleMinutes?: number;
   path?: string;
+  /** Voice settings for the server's session (speed, eagerness, …): sent on connect and when they change. */
+  settings?: Record<string, unknown>;
 }) {
   const idleMin = useRef(idleMinutes);
   idleMin.current = Math.min(60, Math.max(1, Math.round(idleMinutes || DEFAULT_IDLE_MIN)));
@@ -77,6 +80,14 @@ export function useVoice({
   const send = useCallback((obj: unknown) => {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(obj));
   }, []);
+
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const settingsKey = JSON.stringify(settings ?? null);
+  useEffect(() => {
+    if (settings) send({ type: "proxy.settings", settings });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsKey, send]);
 
   // Whatever changes on screen reaches the voice's instructions.
   const screenKey = JSON.stringify(screen);
@@ -145,7 +156,10 @@ export function useVoice({
 
       const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}?idle=${idleMin.current}`);
       ws.current = socket;
-      socket.onopen = () => socket.send(JSON.stringify({ type: "proxy.screen", screen: screenRef.current }));
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: "proxy.screen", screen: screenRef.current }));
+        if (settingsRef.current) socket.send(JSON.stringify({ type: "proxy.settings", settings: settingsRef.current }));
+      };
       let failed = false;
       socket.onerror = () => {
         failed = true;
