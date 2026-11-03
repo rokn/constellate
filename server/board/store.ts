@@ -34,25 +34,39 @@ const commandListeners = new Map<string, Set<CommandListener>>();
 
 const fileOf = (id: string) => path.join(DIR, `${id.replace(/[^a-zA-Z0-9_-]/g, "")}.json`);
 
-export async function listBoards(): Promise<BoardSummary[]> {
+const summary = (b: Board): BoardSummary => ({
+  id: b.id,
+  name: b.name,
+  updatedAt: b.updatedAt,
+  createdAt: b.createdAt,
+  items: b.items.length,
+  projectId: b.projectId,
+  parent: b.parent?.boardId,
+  itemId: b.parent?.itemId,
+  repo: b.repo?.root,
+  linked: b.items.filter((i) => i.code?.module || i.code?.paths?.length).length,
+});
+
+/** Every board (or one project's), most recently changed first. */
+export async function listBoards(projectId?: string): Promise<BoardSummary[]> {
   await mkdir(DIR, { recursive: true });
   const out: BoardSummary[] = [];
   for (const f of await readdir(DIR)) {
-    if (!f.endsWith(".json")) continue;
+    if (!f.endsWith(".json") || f.endsWith(".versions.json")) continue;
     const id = f.slice(0, -5);
     const held = live.get(id)?.board;
     if (held) {
-      out.push({ id, name: held.name, updatedAt: held.updatedAt, items: held.items.length });
+      out.push(summary(held));
       continue;
     }
     try {
       const b = JSON.parse(await readFile(path.join(DIR, f), "utf8")) as Board;
-      out.push({ id, name: b.name, updatedAt: b.updatedAt, items: b.items.length });
+      if (b?.id && Array.isArray(b.items)) out.push(summary(b));
     } catch {
       // A half-written or foreign file: not a board.
     }
   }
-  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+  return out.filter((b) => !projectId || b.projectId === projectId).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export async function getBoard(id: string): Promise<Live | null> {
@@ -70,19 +84,71 @@ export async function getBoard(id: string): Promise<Live | null> {
   }
 }
 
-export async function createBoard(name: string): Promise<Board> {
+/**
+ * A new board: in a project, and under another board when `parent` is given
+ * (filed under it, like a folder in a folder; it takes its project and repo).
+ */
+export async function createBoard(name: string, o: { projectId?: string; parent?: string; repo?: Board["repo"] } = {}): Promise<Board> {
   const now = Date.now();
   const board: Board = { id: newId("b"), name: name.trim().slice(0, 80) || "Untitled board", items: [], links: [], createdAt: now, updatedAt: now, rev: 1 };
+  const up = o.parent ? (await getBoard(o.parent))?.board : undefined;
+  if (up) board.parent = { boardId: up.id, name: up.name };
+  const projectId = o.projectId ?? up?.projectId;
+  if (projectId) board.projectId = projectId;
+  const repo = o.repo ?? up?.repo;
+  if (repo) board.repo = { ...repo };
   live.set(board.id, { board, undo: [], redo: [], lastMerge: null });
   await save(board.id);
   return board;
 }
 
-export async function deleteBoard(id: string) {
-  const l = live.get(id);
-  clearTimeout(l?.saveTimer);
-  live.delete(id);
-  await rm(fileOf(id), { force: true });
+/** Delete a board, and every board nested under it. Returns how many went. */
+export async function deleteBoard(id: string): Promise<number> {
+  const all = await listBoards();
+  const doomed = new Set([id]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const b of all) if (b.parent && doomed.has(b.parent) && !doomed.has(b.id)) (doomed.add(b.id), (grew = true));
+  }
+  for (const d of doomed) {
+    const l = live.get(d);
+    clearTimeout(l?.saveTimer);
+    live.delete(d);
+    await rm(fileOf(d), { force: true });
+    await rm(versionFile(d), { force: true });
+  }
+  // An item whose inside was deleted no longer has one.
+  const up = all.find((b) => b.id === id);
+  if (up?.parent && up.itemId) await change(up.parent, [{ op: "update", id: up.itemId, patch: { sub: undefined } }], undefined, { noUndo: true }).catch(() => null);
+  return doomed.size;
+}
+
+/** File a board under another (null: at the top of its project). Never under itself or its own nested boards. */
+export async function moveBoard(id: string, parent: string | null): Promise<boolean> {
+  const l = await getBoard(id);
+  if (!l) return false;
+  if (parent) {
+    const all = await listBoards();
+    for (let at: string | undefined = parent; at; at = all.find((b) => b.id === at)?.parent) if (at === id) return false;
+    const up = (await getBoard(parent))?.board;
+    if (!up) return false;
+    l.board.parent = { boardId: up.id, name: up.name };
+    if (up.projectId) l.board.projectId = up.projectId;
+  } else {
+    // An item's inside taken out to the top stays linked from the item: it's just filed elsewhere.
+    l.board.parent = undefined;
+  }
+  touch(l);
+  return true;
+}
+
+/** Set fields that aren't edits to undo: which project a board is in. */
+export async function assignProject(id: string, projectId: string) {
+  const l = await getBoard(id);
+  if (!l || l.board.projectId === projectId) return;
+  l.board.projectId = projectId;
+  saveSoon(id);
+  publish(l);
 }
 
 async function save(id: string) {
@@ -312,6 +378,7 @@ export async function boardInside(id: string, itemId: string): Promise<Board | n
   const label = item.label || item.kind;
   const inner = await createBoard(`${l.board.name} › ${label}`);
   inner.parent = { boardId: id, itemId, name: l.board.name };
+  if (l.board.projectId) inner.projectId = l.board.projectId;
   // Inside a block drawn from code, the same code: its inside can be read and linked too.
   if (l.board.repo) inner.repo = { ...l.board.repo };
   saveSoon(inner.id);

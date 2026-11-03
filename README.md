@@ -33,6 +33,44 @@ Or one container for any GitHub repo: set `CODEFLIGHT_REPOS_DIR=/data/repos` ins
 
 It has no login of its own, so put it behind an authenticating proxy before exposing it.
 
+## Projects
+
+Everything lives in a **project**: its repos, and its boards. The project's bar (top left,
+in every view) switches between its two kinds of view:
+
+- **Code**: the 3D map of one of the project's repos at a time (everything below: the
+  navigator, agents, traces, history). A project can link any number of repos; pick one in
+  the drawer, or link another (a folder on the server, or `owner/name` when it keeps GitHub
+  clones). A repo opened with **Switch repo** joins the project you're in.
+- **Boards** ([the workshop](#the-workshop)): planning boards in a tree, like folders. The top
+  level is for the big subjects (Architecture, Deployments, the roadmap…); under each, the
+  boards nested in it, whether it's an item's inside (◈) or a board filed under it (▣). Drag
+  one onto another in the drawer to nest it, ⤒ to bring it back to the top.
+
+Click the project's name for the drawer: its repos, its boards (new, nested, renamed,
+deleted), and the other projects; `/projects` lists them all and starts new ones. The
+address says where you are (`/p/<project>/code`, `/p/<project>/board/<board>`), and the
+addresses from before projects (`/`, `/board/<id>`, `/?root=…&module=…`) still work: they
+find their project. The first time it runs, everything that was there (every board, the
+repos they were drawn from, the open repo) moves into one project.
+
+**Boards and code link up.** A board item that stands for code (blocks drawn from a repo,
+or any item you give paths in the inspector) **expands into code**: **Expand into code ⤢**
+in its inspector, Shift-E, or "show me the code of this" switches to the Code view with the
+map filtered to just that code and named for the item. An item with no link gets **Find its
+code ⤢**: the navigator finds it, and shows it. Back the other way, the Code view's focus
+bar shows the board items for what's in focus (▣ Payments ↗) and ◂ Board returns to the one
+you came from.
+
+**One voice, both views.** The voice stays on as you move between views, and does whatever
+the view on screen does: on a board, it builds (Jarvis); in the Code view, it navigates and
+asks the navigator. It switches views itself: "show me the code of this" on a board (it
+follows the item's code link, or has the navigator find it), "where is this on the
+architecture board?" from the code, "open the deployments board", "go back to the board",
+"show me the other repo". A tool of the other view (fly to a file while on a board, add a
+block while in the code) switches first. Typed, the same: Jarvis on a board has `show_code`,
+and the navigator in the Code view has `open_board`.
+
 ## Go apps
 
 In a Go repository, **Organize by → Go apps** (on the desktop, in the headset's menu, or
@@ -186,9 +224,9 @@ does the same from outside.
 
 ## The workshop
 
-`/board` (or **Workshop** next to the repo's name) is a separate place: a 3D planning
-board on a round holotable, for designing anything — a system's architecture, a
-roadmap, a device. A board can stand on its own, or be drawn from a repo and stay linked to its code map.
+A project's **Boards** (see [Projects](#projects)): 3D planning boards on a round holotable,
+for designing anything — a system's architecture, a deployment, a roadmap, a device. A board
+can stand on its own, or be drawn from one of the project's repos and stay linked to its code.
 
 - **Components**: architecture blocks (service, database, queue, API, client, user,
   cache, storage, lambda, external, cloud), notes, floating text, frames that group
@@ -262,12 +300,13 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   over, a sound it ignored, reconnecting). Desktop: the **Log** chip (R; in the code map, the
   Log button by the voice, shift-V) — drag it anywhere, pin it to keep it open there. Headset:
   the dock's speech bubble (Alt-R) — pin it, carry it, or throw it at a wall.
-- **Boards ↔ the code map**: blocks drawn from a repo carry a code link (the code map's module
-  and their main paths — editable in the inspector). **Code map ↗** opens Constellate right
-  there, in its own tab, switching to the board's repo first if another is open; the toolbar's
-  ⌥ chip opens the repo's map. Back the other way, the code map's focus bar shows the board
-  items that point at what's in focus (▣ Payments ↗), and ◂ Board returns where you came from.
-  Boards inside a linked block are linked too.
+- **Boards ↔ the Code view**: blocks drawn from a repo carry a code link (the code map's module
+  and their main paths — editable in the inspector). **Expand into code ⤢** (Shift-E, the
+  "Expand into code" action, or "show me the code of this") switches to the Code view filtered to
+  that code, opening the board's repo first if another is open; the toolbar's ⌥ chip opens the
+  repo. Back the other way, the Code view's focus bar shows the board items that point at what's
+  in focus (▣ Payments ↗), and ◂ Board returns where you came from. Boards inside a linked block
+  are linked too; a board with no repo of its own reads its project's.
 - **What has a board inside** shows at a glance: amber layers float over it, a dashed amber
   ring circles it on the table, and its name reads "▣ inside · 5 items" (Tune → Labels).
 - **Lock the items**: the dock's padlock (or Shift-L / the Lock chip on the desktop) freezes

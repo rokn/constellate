@@ -3,7 +3,8 @@ import type { BoardScreen, Op, Part } from "../../shared/board";
 import { ARRANGEMENTS, arrange, type Arrangement } from "../../shared/boardLayout";
 import { askBoard, stopBoardAgent, type BoardImage } from "./agent";
 import { reportBuild } from "./holo";
-import { boardInside, change, createBoard, deleteBoard, getBoard, getVersion, historyStates, listBoards, listVersions, onCommand, onPresence, presence, redo, restoreVersion, rewind, saveVersion, undo, watch } from "./store";
+import { getProject } from "../projects";
+import { boardInside, change, createBoard, deleteBoard, moveBoard, getBoard, getVersion, historyStates, listBoards, listVersions, onCommand, onPresence, presence, redo, restoreVersion, rewind, saveVersion, undo, watch } from "./store";
 import { loadPresets, savePresets } from "./tune";
 import { loadMacros, saveMacros, type Macro } from "./macros";
 import type { BoardPreset } from "../../shared/boardTune";
@@ -20,8 +21,15 @@ export async function boardApi(
   const { json, body } = h;
   switch (route) {
     case "GET /api/boards":
-      json(res, 200, await listBoards());
+      json(res, 200, await listBoards(url.searchParams.get("project") ?? undefined));
       return true;
+    case "POST /api/board/move": {
+      // File a board under another (a folder in a folder), or at the top (parent null).
+      const b = await body<{ id?: string; parent?: string | null }>(req);
+      if (!b.id) return json(res, 400, { error: "Which board?" }), true;
+      json(res, 200, { ok: await moveBoard(b.id, b.parent ?? null) });
+      return true;
+    }
     case "GET /api/board/coderefs": {
       // Board items that point into a repo's code: the code map links back to them.
       const root = url.searchParams.get("root") ?? "";
@@ -29,22 +37,32 @@ export async function boardApi(
       const out: { boardId: string; board: string; itemId: string; label: string; module?: string; paths?: string[] }[] = [];
       for (const s of await listBoards()) {
         const b = (await getBoard(s.id))?.board;
-        if (!b?.repo || b.repo.root !== root) continue;
+        if (!b) continue;
+        // A board without its own repo reads its project's.
+        const p = !b.repo && b.projectId ? await getProject(b.projectId) : null;
+        const its = b.repo?.root ?? p?.activeRepo ?? p?.repos[0]?.root;
+        if (its !== root) continue;
         for (const i of b.items) if (i.code) out.push({ boardId: b.id, board: b.name, itemId: i.id, label: i.label || i.kind, module: i.code.module, paths: i.code.paths });
       }
       json(res, 200, out);
       return true;
     }
     case "POST /api/boards": {
-      const b = await body<{ name?: string }>(req);
-      json(res, 200, await createBoard(b.name ?? ""));
+      const b = await body<{ name?: string; project?: string; parent?: string }>(req);
+      // In a project: drawing from its repo (the one the Code view shows), unless it's under a board with its own.
+      let repo: { root: string; name: string } | undefined;
+      if (b.project && !b.parent) {
+        const p = await getProject(b.project);
+        const r = p?.repos.find((x) => x.root === p.activeRepo) ?? p?.repos[0];
+        if (r) repo = { root: r.root, name: r.name };
+      }
+      json(res, 200, await createBoard(b.name ?? "", { projectId: b.project, parent: b.parent, repo }));
       return true;
     }
     case "DELETE /api/boards": {
       const id = url.searchParams.get("id");
       if (!id) return json(res, 400, { error: "Which board?" }), true;
-      await deleteBoard(id);
-      json(res, 200, { ok: true });
+      json(res, 200, { ok: true, deleted: await deleteBoard(id) });
       return true;
     }
     case "GET /api/board": {

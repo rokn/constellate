@@ -33,6 +33,7 @@ import { repoBrief } from "./repo";
 import { grepCode, listFiles, readCode } from "./code";
 import path from "node:path";
 import { CACHE_DIR, session } from "../session";
+import { getProject } from "../projects";
 import { BOARD_ACTIONS } from "../../shared/boardActions";
 
 /**
@@ -143,7 +144,8 @@ For what's tedious to list (many teeth, a helix, a lattice, a city of towers), g
 
 ## Code
 A board drawn from a repo (or linked to one) remembers it, and you can read that repo whenever they ask: repo_files (list, by folder or glob), repo_grep (search), repo_read (a file, or a stretch of it). Use them for questions about how it works ("where do refunds happen?", "what calls the ledger?") and for redesigns — read what's really there before proposing a change, and say what you based it on. Answer from the code, briefly, not from the board alone.
-Blocks drawn from code carry a code link (code: the code map's module id and its main paths), so they open the code map right where they are. Keep those links when you change or split blocks; give new ones a link when they map to real code.
+Blocks drawn from code carry a code link (code: the code map's module id and its main paths), so they expand into the Code view right where they are. Keep those links when you change or split blocks; give new ones a link when they map to real code.
+The board is part of a project, with a Code view beside it. When they ask to see the code of something ("show me the code of this", "expand the order service", "where is that in the code?"), call show_code: it switches them to the Code view, filtered to that item's code. For an item with no link, find its code first (repo_grep / repo_files), give it the link with update, then show_code.
 
 ## More you can do
 - simulate: play a request moving hop by hop through the architecture, with captions — the best answer to "what happens when…".
@@ -191,8 +193,13 @@ function resolver(b: Board, refs: Map<string, string>) {
 
 function boardServer(boardId: string, screen: BoardScreen, report: (line: string) => void, run: string) {
   const current = async () => (await getBoard(boardId))?.board ?? null;
-  /** The repo this board reads: its own link, or (for an older board) the one open in the code map. */
-  const repoRoot = async () => (await current())?.repo?.root ?? session.state.repo?.root ?? null;
+  /** The repo this board reads: its own link, else its project's (the one the Code view shows), else the one open in the code map. */
+  const repoRoot = async () => {
+    const b = await current();
+    if (b?.repo?.root) return b.repo.root;
+    const p = b?.projectId ? await getProject(b.projectId) : null;
+    return p?.activeRepo ?? p?.repos[0]?.root ?? session.state.repo?.root ?? null;
+  };
   const focus = (): Vec3 => screen.focus ?? [0, 0, 0];
 
   const tools = [
@@ -560,6 +567,21 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
         if (!a) return fail(`No action "${action}".`);
         command(boardId, { cmd: "action", id: a.id });
         return ok(`${a.label}: done.`);
+      },
+    ),
+    tool(
+      "show_code",
+      "Open the Code view (the 3D map of the repo) on the code behind an item — 'show me the code of this', 'expand it into code'. Follows the item's code link, or the paths/module you give (find them with repo_grep first when it has none, and set its code link with update so it works next time). By default the map is filtered to only that code.",
+      { item: z.string().optional().describe("Item id or name; the selected item when omitted"), paths: z.array(z.string()).optional(), module: z.string().optional(), only: z.boolean().optional() },
+      async ({ item, paths, module, only }) => {
+        const b = await current();
+        if (!b) return fail("The board is gone.");
+        const id = item ? resolver(b, new Map())(item) : screen.selected?.[0];
+        const it = id ? b.items.find((i) => i.id === id) : undefined;
+        const ref = { module: module ?? it?.code?.module, paths: paths?.length ? paths : it?.code?.paths };
+        if (!ref.module && !ref.paths?.length) return fail(`${it ? `"${nameOf(it)}" has no code link.` : "No item."} Find its code with repo_grep / repo_files, then call again with paths.`);
+        command(boardId, { cmd: "code", link: { root: (await repoRoot()) ?? undefined, ...ref, only: only !== false, label: it ? nameOf(it) : undefined, itemId: it?.id } });
+        return ok("The Code view is opening on it.");
       },
     ),
     tool("save_version", "Keep the board as it is now as a named version they can go back to.", { label: z.string() }, async ({ label }) => {

@@ -15,6 +15,10 @@ import { AGENTS_ON } from "./agents";
 import { AGENT_ACTIONS, agentLines, describe, type Action } from "./actions";
 import { TUNE_ACTIONS, tuneNote } from "./tune";
 import { CHECK_ACTIONS } from "./checked";
+import { projectBrief, projectDetail, projectOfRepo } from "./projects";
+import { findBoardByName, flatTree } from "../shared/project";
+import { getBoard } from "./board/store";
+import { nameOf } from "../shared/board";
 import {
   afterRescan,
   addLens,
@@ -824,6 +828,41 @@ function flightServer(frameId: string | null, mode: "intro" | "ask" | "place", a
     );
   }
 
+  if (mode === "ask") {
+    // The project's boards: the other half of the app. Opening one switches the page to it.
+    const projectOf = async () => (session.state.repo ? await projectOfRepo(session.state.repo.root) : null);
+    tools.push(
+      tool(
+        "project_boards",
+        "The project's boards (architecture, deployments, plans…), nested like folders, and its other repos. Read it before open_board when you don't know the names.",
+        {},
+        async () => {
+          const p = await projectOf();
+          return p ? ok(await projectBrief(p.id)) : fail("This repo isn't in a project.");
+        },
+      ),
+      tool(
+        "open_board",
+        "Switch the page to one of the project's boards (a 3D planning board), by name, with an item on it selected and in view if given — when they ask to see the design, the architecture board, or where this code is drawn.",
+        { name: z.string(), item: z.string().optional().describe("An item on the board, by name") },
+        async ({ name, item }) => {
+          const p = await projectOf();
+          const d = p ? await projectDetail(p.id) : null;
+          const hit = d ? findBoardByName(d.tree, name) : undefined;
+          if (!hit) return fail(`No board like "${name}". ${d ? `There are: ${flatTree(d.tree).map((x) => x.node.name).join(", ") || "none"}.` : ""}`);
+          let itemId: string | undefined;
+          if (item) {
+            const b = (await getBoard(hit.id))?.board;
+            const low = item.toLowerCase();
+            itemId = b?.items.find((i) => nameOf(i).toLowerCase() === low)?.id ?? b?.items.find((i) => nameOf(i).toLowerCase().includes(low))?.id;
+          }
+          pushCommand({ cmd: "view", view: "board", boardId: hit.id, ...(itemId ? { itemId } : {}) });
+          return ok(`Opening the board "${hit.name}"${itemId ? ` on ${item}` : ""}.`);
+        },
+      ),
+    );
+  }
+
   if (mode === "ask" && actions && frameId) tools.push(...actionTools(AGENT_ACTIONS, frameId, actions));
   if (mode === "ask" && tune && frameId) tools.push(...actionTools(TUNE_ACTIONS, frameId, tune), ...actionTools(CHECK_ACTIONS, frameId, tune));
 
@@ -853,6 +892,8 @@ History: you can read git history (history), show real diffs (show_diff), and li
 Pick the picture that explains best. A request flowing through layers might be a sequence (show_custom). A lifecycle is a state machine. A config surface is a table. A hot path is a code excerpt with highlighted lines. Use show_custom freely — make it look good: clean, legible, a bit of motion where motion carries meaning, and data-path on anything that stands for code.
 
 Your final reply is spoken aloud by a voice and shown as a caption: 2–4 short conversational sentences that tell them what they're now looking at and the one thing to notice. No markdown, no lists, no code, no file paths read out character by character. Never introduce yourself.
+
+Boards: the repo is part of a project that also has planning boards (architecture, deployments, plans) — the other view of the app. When they ask to see a board, the design, or where this code is drawn, project_boards lists them and open_board switches the page there (with the item that stands for the code selected, when you know it). Asked from a board to show the code of something, find it and filter_map to just that code.
 
 Write everything — answers, view titles, notes, diagram labels, visualizations — in English, unless the reader explicitly asks for another language.`;
 
@@ -1212,6 +1253,8 @@ async function run(opts: {
     ...(opts.mode === "place" ? PLACE_TOOLS : FLIGHT_TOOLS.filter((t) => opts.mode === "intro" || t !== "set_overview")),
     ...(opts.mode === "ask" && opts.actions ? AGENT_ACTIONS.map((a) => a.name) : []),
     ...(opts.mode === "ask" && opts.tune ? [...TUNE_ACTIONS, ...CHECK_ACTIONS].map((a) => a.name) : []),
+    // The project's boards: the other view, one step away.
+    ...(opts.mode === "ask" ? ["project_boards", "open_board"] : []),
   ];
   let live = "";
   let answer = "";

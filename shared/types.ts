@@ -1,3 +1,4 @@
+import type { CodeLink } from "./project";
 import type { CheckedLink } from "./checked";
 import type { Renames } from "./renames";
 /**
@@ -601,7 +602,10 @@ export type UiCommand =
   /** Turn Tune knobs: the map's and the headset's (by key). */
   | { cmd: "tune"; map?: Record<string, number | boolean>; headset?: Record<string, number | boolean> }
   /** Switch to a preset: its knobs over the defaults (the headset's only when it keeps them). */
-  | { cmd: "apply_preset"; preset: TunePreset };
+  | { cmd: "apply_preset"; preset: TunePreset }
+  /** Switch the project's view: the Code view (on a repo, or on the code behind a board item), or a board. */
+  | { cmd: "view"; view: "code"; link?: CodeLink }
+  | { cmd: "view"; view: "board"; boardId?: string; itemId?: string };
 
 export type Layer = "imports" | "logical" | "labels" | "folders" | "beacons" | "notes";
 
