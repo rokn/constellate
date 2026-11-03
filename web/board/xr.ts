@@ -689,7 +689,7 @@ export class XRInput {
   }
 
   /** The pose an item carried in this hand follows: the grip for a controller, the pinch for a hand. */
-  private holdPose(p: Pointer): THREE.Matrix4 {
+  holdPose(p: Pointer): THREE.Matrix4 {
     if (this.isHand(p)) {
       const pos = p.gest.pinchPoint() ?? p.origin;
       return new THREE.Matrix4().compose(pos, p.ray.getWorldQuaternion(new THREE.Quaternion()), new THREE.Vector3(1, 1, 1));
@@ -760,7 +760,10 @@ export class XRInput {
     if (p.carry && !this.isHand(p) && on("crumple") && !p.carry.locked) return this.crumple(p);
     // The wheel, opened by a button: the trigger picks the slice the ray is on (handled as a panel press below).
     for (const pl of this.plugins) if (pl.press?.(p, "select")) return;
-    const ph = this.panelHit(p);
+    const hitPanel = this.panelHit(p);
+    // Bare glass (no button, no title bar, nothing to scroll) doesn't eat the trigger: the press goes
+    // through to what's behind, so a panel floating over the table (the guide, say) never deadens it.
+    const ph = hitPanel && (this.onHeader(hitPanel) || hitPanel.panel.regionAt(hitPanel.x, hitPanel.y) || hitPanel.panel.maxScroll > 0) ? hitPanel : null;
     // The wheel left open, and the trigger pulled elsewhere: it goes, and the press does what it would.
     if (this.wheelBy && this.wheelBy.via !== "palm" && ph?.panel !== this.wheel) this.closeWheel();
     if (ph) {
