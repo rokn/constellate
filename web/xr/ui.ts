@@ -92,9 +92,13 @@ export abstract class Panel {
     this.texture = this.makeTexture();
     this.mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(widthM, heightM),
-      // Never depth-tested: the engine draws a panel either over the map, or,
-      // when the map stands in front of it, before the map so it covers it.
-      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
+      // Drawn in the overlay pass, which starts from a cleared depth buffer, so
+      // the depth test only weighs a panel against the overlay's own solid
+      // things: your hands and controllers. A hand in front of a menu covers
+      // it; one behind is covered. (Panels never write depth, so they still
+      // stack by render order.) A panel the Code view draws before the map,
+      // because the map stands in front of it, isn't depth-tested at all.
+      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: true, depthWrite: false, toneMapped: false }),
     );
     this.mesh.name = name;
     this.mesh.userData.panel = this;
