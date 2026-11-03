@@ -44,6 +44,8 @@ export class RoomXR implements XRPlugin {
   private xlines = new THREE.Group();
   private xkey = "";
   private reanchor = false;
+  /** A new anchor on its way: the old one doesn't pull the table back meanwhile. */
+  private anchoring = false;
   private mainAnchor: { space: XRSpace; uuid?: string } | null = null;
   private restoring = false;
   private lastAuto = 0;
@@ -563,6 +565,9 @@ export class RoomXR implements XRPlugin {
       const r = this.xr.scene.rig;
       const pose = new XRRigidTransform({ x: r.position.x, y: r.position.y, z: r.position.z }, { x: r.quaternion.x, y: r.quaternion.y, z: r.quaternion.z, w: r.quaternion.w });
       const old = this.mainAnchor?.uuid;
+      // The old anchor holds the old place: let go of it now, so the table can't be pulled back there.
+      this.mainAnchor = null;
+      this.anchoring = true;
       try {
         const a = await (frame as XRFrame & AnchorFrame).createAnchor!(pose, ref);
         this.mainAnchor = { space: a.anchorSpace };
@@ -573,12 +578,18 @@ export class RoomXR implements XRPlugin {
           if (old && old !== uuid) void session.deletePersistentAnchor?.(old).catch(() => {});
         }
       } catch {
-        /* anchors refused: the saved pose still holds */
+        /* anchors refused: the saved pose still holds (and an old anchor doesn't come back next time) */
+        if (!this.mainAnchor && old) {
+          safeRemove(MAIN_ANCHOR_KEY);
+          void session.deletePersistentAnchor?.(old).catch(() => {});
+        }
+      } finally {
+        this.anchoring = false;
       }
       return;
     }
-    // Held to the anchor while nobody's moving the table.
-    if (this.mainAnchor && this.mode === "table" && !this.tween && !this.xr.ptrs.some((p) => p.grabbing)) {
+    // Held to the anchor while nobody's moving the table (by hand or by stick).
+    if (this.mainAnchor && this.mode === "table" && !this.tween && !this.anchoring && !this.xr.movingTable) {
       const pose = frame.getPose(this.mainAnchor.space, ref);
       if (pose) {
         const r = this.xr.scene.rig;
@@ -613,3 +624,11 @@ function safeGet(k: string) {
 }
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+
+function safeRemove(k: string) {
+  try {
+    localStorage.removeItem(k);
+  } catch {
+    /* nothing kept anyway */
+  }
+}

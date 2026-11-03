@@ -74,6 +74,8 @@ export type Pointer = {
   /** A fingertip on a panel. */
   poke: { panel: HoloPanel; down: boolean } | null;
   snapLatch: boolean;
+  /** The thumbstick is tilted (moving or turning something). */
+  tilted?: boolean;
   lastSnap: string;
   /** A pinch or grab that began while typing: its end is ignored too. */
   hushed?: boolean;
@@ -139,6 +141,11 @@ export class XRInput {
   private offTune: () => void;
   private beltKey = "";
   private dirtyRig = false;
+
+  /** The table is being moved by hand or by stick right now: its anchor lets go of it meanwhile. */
+  get movingTable() {
+    return this.dirtyRig || this.ptrs.some((q) => q.grabbing);
+  }
 
   constructor(
     readonly scene: BoardScene,
@@ -746,6 +753,8 @@ export class XRInput {
     // The wheel, opened by a button: the trigger picks the slice the ray is on (handled as a panel press below).
     for (const pl of this.plugins) if (pl.press?.(p, "select")) return;
     const ph = this.panelHit(p);
+    // The wheel left open, and the trigger pulled elsewhere: it goes, and the press does what it would.
+    if (this.wheelBy && this.wheelBy.via !== "palm" && ph?.panel !== this.wheel) this.closeWheel();
     if (ph) {
       if (this.onHeader(ph) && ph.panel !== this.wheel) {
         p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [] };
@@ -1332,6 +1341,12 @@ export class XRInput {
       p.line.material.color.set(p.hoverPanel || p.press?.kind === "panel" ? "#ffffff" : tool === "ink" ? this.ctl.inkColor() : tool === "connect" ? LOOK.accent : tool === "erase" ? LOOK.danger : tool === "lasso" ? LOOK.select : LOOK.cyan);
     }
 
+    // The sticks let go of the table: it stays (and is anchored) where they left it.
+    if (this.dirtyRig && !this.ptrs.some((q) => q.source && q.tilted)) {
+      this.dirtyRig = false;
+      this.scene.saveRig();
+    }
+
     // Two hands on one item: stretch, pull apart, or spread wide to go inside.
     if (this.two) {
       const two = this.two;
@@ -1427,7 +1442,9 @@ export class XRInput {
         p.heldFired[i] = false;
         // A stick press for the wheel opens it now: tilt, let go.
         if (tap === "wheel" && i === 3) {
-          if (this.wheelBy?.p === p) this.closeWheel();
+          // Clicked while pushed over (turning the table hard): not a call for the wheel.
+          if (Math.hypot(g.axes[2] ?? 0, g.axes[3] ?? 0) > 0.6) p.heldFired[i] = true;
+          else if (this.wheelBy?.p === p) this.closeWheel();
           else this.openWheel(p, "stick", i);
           p.heldFired[i] = true;
         } else if (hold === "none") {
@@ -1456,6 +1473,7 @@ export class XRInput {
     const sx = g.axes[2] ?? 0;
     const sy = g.axes[3] ?? 0;
     const dead = (v: number) => (Math.abs(v) < 0.15 ? 0 : v);
+    p.tilted = !!(dead(sx) || dead(sy));
     const k = num("stickSpeed");
     // The wheel opened by this stick: the stick picks the slice.
     if (this.wheelBy?.p === p && this.wheelBy.via === "stick") {
@@ -1497,10 +1515,6 @@ export class XRInput {
           sfx.play("tick");
           this.haptic(p, 0.3, 20);
         } else if (Math.abs(sx) < 0.3) p.snapLatch = false;
-      }
-      if (this.dirtyRig && !dead(sx) && !dead(sy)) {
-        this.dirtyRig = false;
-        this.scene.saveRig();
       }
     } else if (p.side === "left" && pick("leftStick") === "move" && (dead(sx) || dead(sy))) {
       // Slide it across the room, as you face.
