@@ -352,6 +352,27 @@ export class RoomXR implements XRPlugin {
     this.saveRoom();
   }
 
+  /**
+   * Boards in the room that shouldn't be there: the one on the table now (opened some other way:
+   * the shelf, a link, the voice, the Code view) or one that's gone. Left standing, the copy of the
+   * table's own board sat right on top of it and took every press aimed at it.
+   */
+  private swapping: { to: string; at: number } | null = null;
+
+  private prune() {
+    if (!this.sats.length) return;
+    const main = this.o.boardOf()?.id;
+    // Mid-swap (activate): the table's board is about to change; wait for it (a few seconds at most).
+    if (this.swapping) {
+      if (main !== this.swapping.to && performance.now() - this.swapping.at < 5000) return;
+      this.swapping = null;
+    }
+    const boards = this.o.boards();
+    if (!main || !boards.length) return;
+    const known = new Set(boards.map((b) => b.id));
+    for (const s of [...this.sats]) if (s.boardId === main || !known.has(s.boardId)) this.removeSat(s);
+  }
+
   private removeSat(s: Sat) {
     s.stage.dispose();
     this.sats = this.sats.filter((x) => x !== s);
@@ -369,6 +390,7 @@ export class RoomXR implements XRPlugin {
     this.removeSat(s);
     if (b) this.addSat({ boardId: b.id, pos: was.pos, quat: was.quat, scale: was.scale, wall: this.mode === "wall" });
     this.enterMode(s.wall ? "wall" : "table");
+    this.swapping = { to: s.boardId, at: performance.now() };
     this.o.open(s.boardId);
     this.lastAuto = performance.now();
     sfx.play("whoosh");
@@ -402,7 +424,9 @@ export class RoomXR implements XRPlugin {
     const main = this.xr.scene.pick(p.origin, p.dir);
     for (const s of this.sats) {
       const hit = s.stage.pick(p.origin, p.dir);
-      if (!hit || (main && main.dist < hit.dist)) continue;
+      // Only a board clearly in front of the one on the table takes the press (one standing in the
+      // same spot never does).
+      if (!hit || (main && main.dist <= hit.dist + 0.05)) continue;
       if (kind === "squeeze") {
         // Grip: carry it (fling it away to close it).
         if (this.carried) return false;
@@ -518,6 +542,7 @@ export class RoomXR implements XRPlugin {
       void this.anchors(frame);
     }
     this.moveCarried(now);
+    this.prune();
     if (this.tween) {
       const k = Math.min(1, (now - this.tween.t0) / this.tween.ms);
       const e = 1 - Math.pow(1 - k, 3);
