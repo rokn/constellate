@@ -21,6 +21,7 @@ type Held = { card: Card; p: Pointer; via: "ray" | "hand"; dist: number; moved: 
 const R = 0.075;
 
 export class ShelfXR implements XRPlugin {
+  readonly label = "board shelf";
   private root = new THREE.Group();
   private cards: Card[] = [];
   private cache = new Map<string, { at: number; board: Board }>();

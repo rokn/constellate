@@ -36,6 +36,7 @@ const ROOM_KEY = "workshop.room";
 const MAIN_ANCHOR_KEY = "workshop.anchor.main";
 
 export class RoomXR implements XRPlugin {
+  readonly label = "the room's boards";
   private planes: Plane[] = [];
   private planeLines = new THREE.Group();
   mode: Mode = "table";
@@ -51,6 +52,8 @@ export class RoomXR implements XRPlugin {
   private mainAnchor: { space: XRSpace; uuid?: string } | null = null;
   private restoring = false;
   private lastAuto = 0;
+  /** Boards in the room stand behind the panels: a press on a panel is the panel's. */
+  readonly behindPanels = true;
   /** A board standing in the room, in a hand: it moves with the hand. */
   private carried: { s: Sat; p: Pointer; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[] } | null = null;
   private zoom: { scale0: number; fired: boolean; dy0: number; gap0: number } | null = null;
