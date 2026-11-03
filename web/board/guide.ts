@@ -56,7 +56,7 @@ const CHAPTERS: Chapter[] = [
     steps: [
       {
         title: "Point and select",
-        text: () => "Point the ray at an item and pull the trigger: it's selected. Keep the trigger held to drag it along the ray. Hold still on it a moment and the voice listens, about that item.",
+        text: () => "Point the ray at an item and pull the trigger: it's selected. Keep the trigger held to drag it along the ray.",
         art: { kind: "controller", side: "right", lit: ["trigger"] },
         check: (x) => anyHand(x, (p) => p.press?.kind === "ray", false),
       },

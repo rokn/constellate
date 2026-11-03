@@ -19,6 +19,7 @@ export class Room {
   private model: Model | null = null;
   /** The story position the panels last painted; null forces a paint. */
   private storyKey: string | null = null;
+  private host!: HTMLDivElement;
 
   constructor(
     handlers: EngineHandlers,
@@ -26,7 +27,7 @@ export class Room {
     private story: StorySource,
   ) {
     // The headset draws into its own framebuffer; the canvas only needs to exist.
-    const host = document.createElement("div");
+    const host = (this.host = document.createElement("div"));
     host.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
     document.body.appendChild(host);
     // ?debug mirrors the headset's view over the page, for checking it without one on.
@@ -43,6 +44,12 @@ export class Room {
       },
     });
     this.panels = new Panels(this.engine, actions);
+  }
+
+  /** Gone with the Code view (a live session is handed on, not ended: see Engine.dispose). */
+  dispose() {
+    this.engine.dispose();
+    this.host.remove();
   }
 
   setMap(input: MapInput) {

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { announceInputs, handOff } from "../shell/xrHandoff";
 import { XRControllerModelFactory } from "three/examples/jsm/webxr/XRControllerModelFactory.js";
 import { XRHandModelFactory } from "three/examples/jsm/webxr/XRHandModelFactory.js";
 import { DEFAULT_XR, type XRSettings } from "../lib/xrSettings";
@@ -348,6 +349,15 @@ export class Engine {
   }
 
   dispose() {
+    // Leaving for a board in the headset: the session goes on, for it to take.
+    if (this.session && this.mode !== "flat") {
+      const s = this.session;
+      this.session = null;
+      for (const r of this.resting) if (r.source) this.restingOff(r);
+      this.hitSource?.cancel();
+      this.hitSource = null;
+      handOff(s, this.mode);
+    }
     this.renderer.setAnimationLoop(null);
     window.removeEventListener("resize", this.onResize);
     this.map.dispose();
@@ -428,7 +438,8 @@ export class Engine {
     }
   }
 
-  async enter(mode: "vr" | "ar") {
+  /** Into the headset; with `adopt`, into the session a board handed over (you never left it). */
+  async enter(mode: "vr" | "ar", adopt?: XRSession) {
     if (!navigator.xr) throw new Error("This browser has no WebXR.");
     if (this.session) {
       // Switching between VR and passthrough: end this one, then start the
@@ -440,12 +451,18 @@ export class Engine {
     this.renderer.xr.setFramebufferScaleFactor(this.settings.renderScale);
     // Audio starts on the press that took you in, while it still counts as one.
     sfx.start();
-    const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
-      requiredFeatures: ["local-floor"],
-      optionalFeatures: mode === "ar" ? ["hand-tracking", "tracked-sources", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "tracked-sources", "bounded-floor"],
-    });
+    const session =
+      adopt ??
+      (await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
+        requiredFeatures: ["local-floor"],
+        // Anchors and hit tests in VR too: the boards use them when the session moves over to one.
+        optionalFeatures: mode === "ar" ? ["hand-tracking", "tracked-sources", "hit-test", "plane-detection", "anchors"] : ["hand-tracking", "tracked-sources", "bounded-floor", "anchors", "hit-test"],
+      }));
     // With one hand free and a controller in the other, the one you set down moves here.
-    session.addEventListener("trackedsourceschange", (e) => this.trackedSourcesChange(e as XRInputSourcesChangeEvent));
+    const tracked = (e: Event) => {
+      if (this.session === session) this.trackedSourcesChange(e as XRInputSourcesChangeEvent);
+    };
+    session.addEventListener("trackedsourceschange", tracked);
     this.session = session;
     session.addEventListener("end", () => {
       if (this.session !== session) return;
@@ -458,6 +475,7 @@ export class Engine {
       this.setMode("flat");
     });
     await this.renderer.xr.setSession(session);
+    if (adopt) announceInputs(session);
     // Keys typed in the headset are the room's: none should land in a desktop field you can't see.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     // A new session is a new room: panels open in front of you again.

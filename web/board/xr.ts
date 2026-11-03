@@ -20,7 +20,7 @@ import { Hints, Toast, Wheel } from "./wheel";
  *
  *  - Point and pinch (or pull the trigger): on an item, select it, and keep
  *    holding to drag it along the ray (the stick pushes it away or pulls it
- *    in, and turns it); hold still on it to talk about it. On open table,
+ *    in, and turns it); a pinch held still on it talks about it. On open table,
  *    hold to move the table, tap to clear the selection.
  *  - Grab (grip, or a pinch right on it): carry an item in your hand. Throw
  *    it away to delete it; close your fist on it (or pull the trigger while
@@ -47,7 +47,8 @@ type Press =
   | { kind: "ink"; pts: THREE.Vector3[] }
   | { kind: "sweep"; erase: boolean; ids: string[] };
 
-type Carry = { id: string; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[]; yaw: number; fistSince: number };
+/** `locked`: taken while items are locked, so it's only borrowed: let go, it springs back. */
+type Carry = { id: string; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[]; yaw: number; fistSince: number; locked: boolean };
 
 export type Pointer = {
   i: number;
@@ -270,11 +271,18 @@ export class XRInput {
       case "recenter":
         this.scene.resetRig();
         return true;
+      case "dock": {
+        const show = !on("wristMenu");
+        setTune({ wristMenu: show });
+        this.say(show ? "Left-hand menu on" : "Left-hand menu off · left stick click brings it back", p);
+        sfx.play(show ? "pick" : "back");
+        return true;
+      }
       case "lock": {
         const lock = !on("lockItems");
         setTune({ lockItems: lock });
         if (lock) this.ctl.select([]);
-        this.say(lock ? "Items locked · you move the board" : "Items unlocked", p);
+        this.say(lock ? "Items locked · grab one, it springs back" : "Items unlocked", p);
         sfx.play(lock ? "snap" : "pick");
         this.dock.invalidate();
         return true;
@@ -749,7 +757,7 @@ export class XRInput {
       return;
     }
     // A controller gripping an item: the trigger crumples it.
-    if (p.carry && !this.isHand(p) && on("crumple")) return this.crumple(p);
+    if (p.carry && !this.isHand(p) && on("crumple") && !p.carry.locked) return this.crumple(p);
     // The wheel, opened by a button: the trigger picks the slice the ray is on (handled as a panel press below).
     for (const pl of this.plugins) if (pl.press?.(p, "select")) return;
     const ph = this.panelHit(p);
@@ -766,7 +774,11 @@ export class XRInput {
       return;
     }
     const tool = this.ctl.tool();
-    if (on("lockItems")) return this.pressTable(p);
+    if (on("lockItems")) {
+      // Locked, a hand can still take an item (a pinch right on it): it springs back when let go.
+      if (this.isHand(p) && this.grabNear(p)) return;
+      return this.pressTable(p);
+    }
     if (tool === "ink") {
       p.press = { kind: "ink", pts: [this.scene.toBoard(this.tip(p))] };
       return;
@@ -933,6 +945,8 @@ export class XRInput {
       return;
     }
     if (on("lockItems")) {
+      // Locked: a grip right on an item borrows it (it springs back); anywhere else moves the table.
+      if (this.grabNear(p)) return;
       p.grabbing = true;
       this.beginBoardGrab();
       return;
@@ -979,13 +993,31 @@ export class XRInput {
 
   /* -------------------------------- carrying ----------------------------- */
 
+  /** An item right at the hand: take it (or, the other hand has it, both on it). True when there was one. */
+  private grabNear(p: Pointer) {
+    const near = this.nearItem(p);
+    if (!near) return false;
+    const other = this.ptrs.find((q) => q !== p && q.carry);
+    if (other?.carry?.id === near) this.startTwo(p, other);
+    else this.startCarry(p, near);
+    return true;
+  }
+
+  /** Let go of a carried item: where it is now stays, or (borrowed while locked) back it goes. */
+  private letGo(c: Carry, extra?: Parameters<Ctl["client"]["release"]>[1]) {
+    if (c.locked) this.ctl.client.drop(c.id);
+    else this.ctl.client.release(c.id, extra);
+  }
+
   private startCarry(p: Pointer, id: string) {
     const v = this.scene.views.get(id);
     if (!v) return;
     this.scene.rig.updateMatrixWorld();
     v.root.updateMatrixWorld();
     const offset = this.holdPose(p).invert().multiply(v.root.matrixWorld);
-    p.carry = { id, offset, trail: [], yaw: 0, fistSince: 0 };
+    const locked = on("lockItems");
+    if (locked) this.ctl.client.ghost(id);
+    p.carry = { id, offset, trail: [], yaw: 0, fistSince: 0, locked };
     this.ctl.select([id]);
     sfx.play("grab", v.center(), id, this.sizeOf(id));
     this.haptic(p, 0.6, 40);
@@ -1019,7 +1051,7 @@ export class XRInput {
     while (c.trail.length > 2 && now - c.trail[0].t > 120) c.trail.shift();
 
     // A fist closing on it: crumpled.
-    if (this.isHand(p) && on("crumple") && p.gest.pose) {
+    if (this.isHand(p) && on("crumple") && !c.locked && p.gest.pose) {
       const g = p.gest.pose;
       const curled = (tip: THREE.Vector3, r: number) => tip.distanceTo(g.palmCenter) < r;
       const fist = curled(g.middleTip, 0.06) && curled(g.ringTip, 0.06) && curled(g.indexTip, 0.075);
@@ -1055,8 +1087,9 @@ export class XRInput {
     const v = velocity(c.trail);
     if (v && v.speed > num("flingSpeed")) {
       // Thrown: at a wall it sticks (a plugin catches it); otherwise away it goes.
-      if (on("throwToWall")) for (const pl of this.plugins) if (pl.throwItem?.(c.id, v.at, v.vel)) return void this.ctl.client.release(c.id);
-      if (on("flingDeletes")) {
+      if (on("throwToWall")) for (const pl of this.plugins) if (pl.throwItem?.(c.id, v.at, v.vel)) return void this.letGo(c);
+      // Locked items aren't thrown away: they fly home.
+      if (on("flingDeletes") && !c.locked) {
         this.ctl.client.release(c.id);
         this.ctl.remove([c.id]);
         sfx.play("fling", v.at);
@@ -1064,8 +1097,8 @@ export class XRInput {
         return;
       }
     }
-    this.ctl.client.release(c.id);
-    sfx.play("drop", this.scene.views.get(c.id)?.center(), c.id, this.sizeOf(c.id));
+    this.letGo(c);
+    sfx.play(c.locked ? "back" : "drop", this.scene.views.get(c.id)?.center(), c.id, this.sizeOf(c.id));
   }
 
   /**
@@ -1082,8 +1115,9 @@ export class XRInput {
     if (two.mode === "open" && two.k > 2.2 && this.ctl.inside) {
       // Back to its size; through it, inside.
       if (holder?.carry) {
+        const c = holder.carry;
         holder.carry = null;
-        this.ctl.client.release(two.id, { scale: two.scale0 });
+        this.letGo(c, { scale: two.scale0 });
       }
       this.ctl.inside(two.id);
       sfx.play("focus");
@@ -1177,7 +1211,7 @@ export class XRInput {
   /* --------------------------------- frame ------------------------------- */
 
   private cancel(p: Pointer) {
-    if (p.carry) this.ctl.client.release(p.carry.id);
+    if (p.carry) this.letGo(p.carry);
     if (p.press?.kind === "ray" && p.press.moved) this.ctl.client.release(p.press.id);
     if (p.poke?.down) p.poke.panel.pointer("up", -1, -1, `k${p.i}`);
     p.poke = null;
@@ -1252,8 +1286,13 @@ export class XRInput {
         const v = this.scene.views.get(press.id);
         const tipAt = p.origin.clone().addScaledVector(p.dir, press.dist);
         if (!press.moved && tipAt.distanceTo(press.at0) > 0.015) press.moved = true;
-        // Held still on it: it's selected and the voice listens — talk about it.
-        if (!press.moved && !press.talked && on("pinchToVoice") && now - press.t0 > num("holdToVoiceMs") && v) {
+        // Talking about it, then moved off after all: it's a drag (the trigger never goes dead on an item).
+        if (press.talked && tipAt.distanceTo(press.at0) > 0.04) {
+          press.talked = false;
+          press.moved = true;
+        }
+        // A pinch held still on it (a hand, not a controller's trigger): it's selected and the voice listens — talk about it.
+        if (!press.moved && !press.talked && this.isHand(p) && on("pinchToVoice") && now - press.t0 > num("holdToVoiceMs") && v) {
           press.talked = true;
           this.ctl.select([press.id]);
           this.ctl.run?.("ask-selection", "button");

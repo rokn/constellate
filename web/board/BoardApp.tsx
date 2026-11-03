@@ -19,6 +19,7 @@ import {
 import { useSharedVoice } from "../shell/voice";
 import { ProjectBar } from "../shell/ProjectBar";
 import { goBoard, goCode, navigate, reloadProject } from "../shell/nav";
+import { takeSession } from "../shell/xrHandoff";
 import { boardUrl } from "../../shared/project";
 import { BoardClient } from "./client";
 import type { Ctl, Tool } from "./ctl";
@@ -328,6 +329,9 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
       if (m === "flat") xrRef.current?.left();
       else xrRef.current?.entered();
     };
+    // Come over from the Code view in the headset: carry on in the same session.
+    const handed = takeSession();
+    if (handed) void enter(handed.mode, handed.session);
     // Where they're looking, now and then, for the voice and the builder.
     const t = setInterval(() => {
       const f = s.focusPoint();
@@ -452,7 +456,7 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
     };
   }
 
-  const enter = async (m: "vr" | "ar") => {
+  const enter = async (m: "vr" | "ar", adopt?: XRSession) => {
     setXrError(null);
     try {
       if (!xrRef.current && sceneRef.current) {
@@ -462,7 +466,7 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
       // Audio starts on the press that took you in, while it still counts as one.
       const { sfx } = await import("../xr/sound");
       sfx.start();
-      await sceneRef.current?.enter(m);
+      await sceneRef.current?.enter(m, adopt);
     } catch (e) {
       setXrError(e instanceof Error ? e.message : String(e));
     }

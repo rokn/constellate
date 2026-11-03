@@ -139,6 +139,8 @@ export type Actions = {
   toggleMenu: () => void;
   enter: (m: "vr" | "ar") => void;
   exitXR: () => void;
+  /** To the project's boards, staying in the headset. */
+  toBoards: () => void;
   /** Reload the page, and go back into the headset after if the browser allows it. */
   reload: () => void;
   placeMap: () => void;
@@ -226,6 +228,7 @@ export type AppActions = Omit<
   | "jump"
   | "enter"
   | "exitXR"
+  | "toBoards"
   | "reload"
   | "placeMap"
   | "leaveTable"
