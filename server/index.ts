@@ -44,8 +44,8 @@ import {
 import { EMPTY_FILTER, applyFilter } from "../shared/filter";
 import { cleanPreset } from "../shared/knobs";
 import { attachVoice } from "./voice";
-import { attachBoardVoice } from "./board/voice";
 import { boardApi } from "./board/routes";
+import { projectApi } from "./projectRoutes";
 import { AGENTS_ON, agentDiff, discardAgent, getAgent, mergePullRequest, messageAgent, openPullRequest, rebaseAgent, startAgent, stopAgent, stopAllAgents, syncPullRequests } from "./agents";
 import { cancel as cancelStory, cancelAll as cancelStories, defaultSettings, retryStory, revoiceIfStale, writeBranchStory, writeIntroStories, writeStory } from "./stories";
 import { listVoices, previewVoice, readAudio, ttsAvailable } from "./tts";
@@ -218,6 +218,7 @@ async function openGitHub(id: string) {
 async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   // The workshop (planning boards) has its own routes, apart from the code map's.
   if (await boardApi(req, res, url, { json, body })) return true;
+  if (await projectApi(req, res, url, { json, body })) return true;
   const route = `${req.method} ${url.pathname}`;
   const traceId = req.method === "GET" && url.pathname.match(/^\/api\/traces\/([0-9a-fA-F]{1,32})$/)?.[1];
   if (traceId) {
@@ -273,6 +274,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       });
       return true;
     }
+    case "GET /api/repo":
+      // Which repo the server has open, and how far along it is: the Code view waits on this when it switches.
+      json(res, 200, { root: session.state.repo?.root ?? null, name: session.state.repo?.name ?? null, status: session.state.status, error: session.state.error ?? null, library: !!session.state.library, locked: LOCKED });
+      return true;
     case "GET /healthz":
       json(res, 200, { ok: true, status: session.state.status });
       return true;
@@ -836,7 +841,6 @@ async function main() {
   };
   server.on("request", handle);
   attachVoice(server);
-  attachBoardVoice(server);
 
   // HTTPS alongside, when there's a certificate: browsers only allow the
   // microphone, installing the app and the clipboard on a secure origin, and
@@ -846,7 +850,6 @@ async function main() {
     const { createServer: createHttps } = await import("node:https");
     const secure = createHttps(tls, handle);
     attachVoice(secure);
-    attachBoardVoice(secure);
     secure.listen(httpsPort, () => console.log(`  🔒 https on https://localhost:${httpsPort} (and your LAN address)\n`));
   }
 

@@ -231,8 +231,13 @@ export type Board = {
   updatedAt: number;
   /** Bumped on every change. */
   rev: number;
-  /** The board this one is inside: the item it opened from. */
-  parent?: { boardId: string; itemId: string; name: string };
+  /**
+   * The board this one is under: inside one of its items (the item it opened
+   * from), or filed under it, like a folder in a folder.
+   */
+  parent?: { boardId: string; itemId?: string; name: string };
+  /** The project it belongs to (shared/project.ts). */
+  projectId?: string;
   /** Links to items on other boards: drawn when both boards stand in the room. */
   xlinks?: XLink[];
   /** Views kept as cards: where the head was, what it looked at (board space). */
@@ -243,7 +248,21 @@ export type Board = {
   activity?: { busy: boolean; line?: string; answer?: string; error?: string; at: number };
 };
 
-export type BoardSummary = { id: string; name: string; updatedAt: number; items: number };
+export type BoardSummary = {
+  id: string;
+  name: string;
+  updatedAt: number;
+  items: number;
+  createdAt?: number;
+  projectId?: string;
+  /** The board it's under, and the item it's inside of (if it's an item's inside). */
+  parent?: string;
+  itemId?: string;
+  /** The repo it's linked to (its root). */
+  repo?: string;
+  /** Items on it that point into the code. */
+  linked?: number;
+};
 
 /** A link from an item here to an item on another board. */
 export type XLink = { id: string; from: string; board: string; to: string; label?: string };
@@ -622,7 +641,9 @@ export type BoardCommand =
   /** Run an action on their screens (shared/boardActions.ts): a mode, a panel, a snapshot. */
   | { cmd: "action"; id: string }
   /** Take their next words as an item's name or text. */
-  | { cmd: "dictate"; id?: string };
+  | { cmd: "dictate"; id?: string }
+  /** Show the code behind something in the Code view (shared/project.ts CodeLink). */
+  | { cmd: "code"; link: { root?: string; module?: string; paths?: string[]; only?: boolean; label?: string; itemId?: string; ask?: string } };
 
 /** One beat of a flow or a tour: what lights up (items, or a hop from one to another) and what's said. */
 export type Step = { ids?: string[]; from?: string; to?: string; say?: string };

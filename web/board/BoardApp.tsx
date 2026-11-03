@@ -16,7 +16,10 @@ import {
   type Snap,
   type Vec3,
 } from "../../shared/board";
-import { useVoice } from "../lib/useVoice";
+import { useSharedVoice } from "../shell/voice";
+import { ProjectBar } from "../shell/ProjectBar";
+import { goBoard, goCode, navigate, reloadProject } from "../shell/nav";
+import { boardUrl } from "../../shared/project";
 import { BoardClient } from "./client";
 import type { Ctl, Tool } from "./ctl";
 import { attachDesktop, dropPoint } from "./desktop";
@@ -65,50 +68,26 @@ const EXAMPLES = [
   "Sketch an event-driven pipeline that ingests IoT telemetry into a data lake",
 ];
 
-function idFromPath() {
-  const m = location.pathname.match(/^\/board\/([\w-]+)/);
-  return m?.[1] ?? null;
-}
-
-export function BoardApp() {
-  const [boardId, setBoardId] = useState<string | null>(idFromPath());
+/**
+ * A project's boards. The shell says which board (the address); this keeps
+ * the project's list of boards for the shelf, the markers and switching.
+ */
+export function BoardApp({ projectId, boardId }: { projectId: string; boardId: string }) {
   const [boards, setBoards] = useState<BoardSummary[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
   const loadBoards = useCallback(async () => {
-    const r = await fetch("/api/boards");
+    const r = await fetch(`/api/boards?project=${encodeURIComponent(projectId)}`);
     const list = (await r.json()) as BoardSummary[];
     setBoards(list);
+    void reloadProject();
     return list;
-  }, []);
-
-  // No board in the address: the last one you had open, or a fresh one.
-  useEffect(() => {
-    void loadBoards().then(async (list) => {
-      if (boardId) return;
-      const pick = list[0]?.id ?? ((await (await fetch("/api/boards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "First board" }) })).json()) as Board).id;
-      history.replaceState(null, "", `/board/${pick}`);
-      setBoardId(pick);
-    }).catch((e) => setError(String(e)));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const open = (id: string) => {
-    history.pushState(null, "", `/board/${id}`);
-    setBoardId(id);
-  };
-  useEffect(() => {
-    const pop = () => setBoardId(idFromPath());
-    window.addEventListener("popstate", pop);
-    return () => window.removeEventListener("popstate", pop);
-  }, []);
-
-  if (error) return <div className="grid h-full place-items-center text-red-300">{error}</div>;
-  if (!boardId) return <div className="ws-root grid h-full place-items-center text-[#7fa6bd]">Powering up…</div>;
+  }, [projectId]);
+  useEffect(() => void loadBoards().catch(() => {}), [loadBoards]);
+  const open = useCallback((id: string) => navigate(boardUrl(projectId, id)), [projectId]);
   // One workshop for every board: switching boards keeps the scene (and a headset session) alive.
-  return <Workshop boardId={boardId} boards={boards} open={open} reloadBoards={loadBoards} />;
+  return <Workshop projectId={projectId} boardId={boardId} boards={boards} open={open} reloadBoards={loadBoards} />;
 }
 
-function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; boards: BoardSummary[]; open: (id: string) => void; reloadBoards: () => Promise<BoardSummary[]> }) {
+function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectId: string; boardId: string; boards: BoardSummary[]; open: (id: string) => void; reloadBoards: () => Promise<BoardSummary[]> }) {
   const host = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BoardScene | null>(null);
   const xrRef = useRef<XRInput | null>(null);
@@ -182,12 +161,13 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const tuned = useMemo(() => tuneChanged(), [tuneKey]);
   const screen: BoardScreen = useMemo(() => ({ boardId, selected, tool, mode, focus, tune: tuned }), [boardId, selected, tool, mode, focus, tuned]);
   const voiceSettings = useMemo(() => ({ voiceSpeed: num("voiceSpeed"), eagerness: num("eagerness"), interrupt: on("interrupt") }), [tuneKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const voice = useVoice({
+  // The project's one voice (it carries on into the Code view): this view hands it the board's screen.
+  const voice = useSharedVoice("board", {
     screen,
     onCommand: () => {},
     onDictated: (text) => dictatedRef.current(text),
-    path: "/api/board/voice",
     interrupt: on("interrupt"),
+    ready: true,
     audioOptions: { loopback: on("echoLoopback"), echoGuard: on("echoGuard"), talkOverDb: num("talkOverDb"), confirmMs: num("bargeConfirmMs"), prebufferMs: num("voicePrebufferMs") },
     volume: num("voiceVolume") * (mode === "flat" ? 1 : 1.6),
     idleMinutes: num("idleMinutes"),
@@ -219,6 +199,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   reloadRef.current = reloadBoards;
   // Arrived from the code map (/board/<id>?item=<item>): that item, selected and in view.
   const wantItem = useRef(new URLSearchParams(location.search).get("item"));
+  useEffect(() => {
+    wantItem.current = new URLSearchParams(location.search).get("item");
+  }, [boardId]);
   useEffect(() => {
     const id = wantItem.current;
     if (!id || !board || board.id !== boardId || !board.items.some((i) => i.id === id)) return;
@@ -297,7 +280,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       up: () => {
         const p = clientRef.current.board?.parent;
         if (!p) return;
-        sceneRef.current?.dive("out", p.itemId);
+        if (p.itemId) sceneRef.current?.dive("out", p.itemId);
         openRef.current(p.boardId);
       },
       open: (id) => openRef.current(id),
@@ -398,6 +381,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (c.cmd === "tune") setTune(c.values);
       else if (c.cmd === "presets") loadPresets();
       else if (c.cmd === "open") open(c.boardId);
+      else if (c.cmd === "code") goCode({ ...c.link, from: { boardId: clientRef.current.board?.id ?? boardId, itemId: c.link.itemId } });
       else if (c.cmd === "play") s.fx.start(c.kind, c.steps, c.title);
       else if (c.cmd === "stopPlay") s.fx.stop();
       else if (c.cmd === "layers") {
@@ -444,7 +428,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       current: () => clientRef.current.id,
       open: (id) => openRef.current(id),
       create: async () => {
-        const r = await fetch("/api/boards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Untitled board" }) });
+        const r = await fetch("/api/boards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Untitled board", project: projectId }) });
         if (!r.ok) return null;
         const b = (await r.json()) as Board;
         await reloadRef.current();
@@ -505,6 +489,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (e.key === "r" && on("transcriptLog")) setLogOpen((o) => !o);
       else if (e.key === "l") setLayersOpen((o) => !o);
       else if (e.key === "i" && selRef.current.length === 1) insideRef.current(selRef.current[0]);
+      else if (e.key === "E") runRef.current("code");
       else if (e.key === "u" && clientRef.current.board?.parent) ctl.up?.();
       else if (e.key === " " && e.target === document.body) {
         e.preventDefault();
@@ -789,6 +774,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       }
       case "explode-toggle":
         return void patchSel({ explode: (items[0]?.explode ?? 0) > 0.5 ? 0 : 1 });
+      case "code":
+        // The selected item, expanded into the Code view (or the board's whole repo).
+        if (b) expandIntoCode(b, items[0]);
+        return;
       case "spin-toggle":
         return void patchSel({ spin: !items[0]?.spin });
       case "mark-done":
@@ -863,13 +852,10 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
           {/* Top bar: the board, and the way into the headset. */}
           <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-4 p-4">
             <div className="pointer-events-auto flex items-center gap-3">
-              <a href="/" className="ws-chip" title="Back to the code map">
-                ←
-              </a>
-              <div className="ws-brand">WORKSHOP</div>
+              <ProjectBar view="board" boardId={boardId} />
               <div className="relative">
-                <button className="ws-chip min-w-[12rem] justify-between" onClick={() => setBoardsOpen((o) => !o)}>
-                  <span className="truncate">{board?.name ?? "…"}</span>
+                <button className="ws-chip min-w-[10rem] justify-between" onClick={() => setBoardsOpen((o) => !o)} title="This board: rename it, or switch to another">
+                  <span className="truncate">{board?.name.split("›").pop()?.trim() ?? "…"}</span>
                   <span className="opacity-60">▾</span>
                 </button>
                 {boardsOpen && (
@@ -911,8 +897,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               )}
               {board && <Breadcrumbs board={board} open={open} />}
               {board?.repo && (
-                <button className="ws-chip" onClick={() => openCodeMap(board)} title={`Drawn from ${board.repo.root}: Jarvis can read it. Open its code map.`}>
-                  ⌥ {board.repo.name} ↗
+                <button className="ws-chip" onClick={() => goCode({ root: board.repo!.root }, { transition: board.repo!.name })} title={`Drawn from ${board.repo.root}: Jarvis can read it. Open it in the Code view.`}>
+                  ⌥ {board.repo.name}
                 </button>
               )}
               {!client.connected && board === null && <span className="text-xs text-[#7fa6bd]">connecting…</span>}
@@ -1269,20 +1255,17 @@ function PaletteItem({ kind, onAdd }: { kind: ItemKind; onAdd: () => void }) {
 }
 
 /**
- * The code map, opened where an item is in the code: its module, or its paths.
- * A tab of its own (the board stays open here); if the code map has another
- * repo open, it switches to the board's first.
+ * A board item, expanded into the Code view: its module and paths, the map
+ * filtered to just that code and named for the item. An item with no code
+ * link has the navigator find it. Without an item, the board's repo.
  */
-export function codeMapUrl(board: Board, item?: Item | null) {
-  const q = new URLSearchParams();
-  if (board.repo) q.set("root", board.repo.root);
-  if (item?.code?.module) q.set("module", item.code.module);
-  if (item?.code?.paths?.length) q.set("paths", item.code.paths.join(","));
-  q.set("from", `${board.id}${item ? `:${item.id}` : ""}`);
-  return `/?${q}`;
-}
-export function openCodeMap(board: Board, item?: Item | null) {
-  window.open(codeMapUrl(board, item), "constellate");
+export function expandIntoCode(board: Board, item?: Item | null) {
+  const root = board.repo?.root;
+  if (!item) return goCode(root ? { root } : {}, { transition: board.repo?.name ?? "Code" });
+  const from = { boardId: board.id, itemId: item.id };
+  const label = nameOf(item);
+  if (item.code?.module || item.code?.paths?.length) return goCode({ root, module: item.code.module, paths: item.code.paths, only: true, label, from });
+  goCode({ root, label, from, ask: `Show me the code for "${label}"${item.body ? ` (${item.body.slice(0, 200)})` : ""}${item.tags?.length ? ` [${item.tags.join(", ")}]` : ""} from the board "${board.name}": find where it lives, filter the map to just that code, and say briefly what it is.` });
 }
 
 function Inspector({ item, board, client, onEdit, onDelete, onFocus, onInside }: { item: Item; board: Board; client: BoardClient; onEdit: () => void; onDelete: () => void; onFocus: () => void; onInside: () => void }) {
@@ -1444,11 +1427,9 @@ function Inspector({ item, board, client, onEdit, onDelete, onFocus, onInside }:
             <span className="min-w-0 flex-1 truncate text-[#dff6ff]" title={item.code?.paths?.join("\n")}>
               {item.code ? [item.code.module, item.code.paths?.slice(0, 2).join(", ")].filter(Boolean).join(" · ") : "not linked"}
             </span>
-            {item.code && board.repo && (
-              <button className="ws-btn !px-2 !py-0.5 text-[12px]" onClick={() => openCodeMap(board, item)} title="Open the code map right where this is">
-                Code map ↗
-              </button>
-            )}
+            <button className="ws-btn !px-2 !py-0.5 text-[12px]" onClick={() => expandIntoCode(board, item)} title={item.code ? "Expand into the Code view, filtered to this code (Shift-E)" : "Have the navigator find its code, and show it (Shift-E)"}>
+              {item.code ? "Expand into code ⤢" : "Find its code ⤢"}
+            </button>
           </div>
           <input
             className="mt-1.5 w-full rounded border border-cyan-300/15 bg-transparent px-1.5 py-1 text-[12px] text-[#dff6ff] outline-none placeholder:text-[#4f7286]"

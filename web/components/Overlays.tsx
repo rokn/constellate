@@ -280,7 +280,7 @@ export function ActivityTicker({ activity, busy }: { activity: Activity[]; busy:
 /* ---------------------------------- voice --------------------------------- */
 
 const VOICE_COPY: Record<VoiceState, string> = {
-  idle: "Talk to the navigator",
+  idle: "Talk to Jarvis",
   connecting: "Connecting",
   listening: "Listening",
   speaking: "Speaking",

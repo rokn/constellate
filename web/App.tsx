@@ -12,7 +12,9 @@ import { EMPTY_FILTER, applyFilter, crossModuleImports, describe, isActive } fro
 import { checkedKeys, countChecked, fullyChecked, linkKey, linksOf, type LinkDir, type LinkEnds } from "../shared/checked";
 import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
-import { useVoice } from "./lib/useVoice";
+import { useSharedVoice } from "./shell/voice";
+import { ProjectBar } from "./shell/ProjectBar";
+import { expectRepo, goBoard, goCode, reportRepo } from "./shell/nav";
 import { TranscriptLog, useTranscriptOpen } from "./components/TranscriptLog";
 import { territoryColors } from "./lib/colors";
 import { Space, type Grouping, type Overlay, type SpaceHandle, type TouchHit, type TouchGesture } from "./components/Space";
@@ -979,13 +981,21 @@ export function App() {
       const root = q.get("root");
       const module = q.get("module");
       const paths = (q.get("paths") ?? "").split(",").filter(Boolean);
-      return root || module || paths.length ? { root, module, paths, asked: false } : null;
+      // From a board item: `only` filters the map to its code (named for the item); `ask` has the navigator find it.
+      const only = q.get("only") === "1";
+      const label = q.get("label") ?? undefined;
+      const request = q.get("ask") ?? undefined;
+      return root || module || paths.length || request ? { root, module, paths, only, label, request, asked: false } : null;
     })(),
   );
   const [fromBoard] = useState(() => {
     const [boardId, itemId] = (new URLSearchParams(location.search).get("from") ?? "").split(":");
     return boardId ? { boardId, itemId } : null;
   });
+  // The shell keeps the project's repos in step with what's open (Switch repo adds to the project).
+  useEffect(() => {
+    if (state?.repo?.root) reportRepo(state.repo.root, state.repo.name);
+  }, [state?.repo?.root, state?.repo?.name]);
   /** Board items that point into this repo: the focus bar links to the ones in focus. */
   const [coderefs, setCoderefs] = useState<{ boardId: string; board: string; itemId: string; label: string; module?: string; paths?: string[] }[]>([]);
   useEffect(() => {
@@ -1370,6 +1380,10 @@ export function App() {
           return;
         case "apply_preset":
           return applyTunePreset(c.preset);
+        case "view":
+          // The navigator (or the voice) switches the project's view: a board, or this view on other code.
+          if (c.view === "board") return goBoard(c.boardId, c.itemId);
+          return goCode(c.link ?? {});
       }
     },
     [openFile, focus, focusModule, toOverview, back, showFrame, showRange, showSpan, startPlay, feelLanding, showBranch, closeBranch, applyTunePreset],
@@ -1406,7 +1420,8 @@ export function App() {
     }
   }, [state?.activity]);
 
-  const voice = useVoice({ screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume, idleMinutes: xrSettings.voiceIdleMinutes });
+  // The project's one voice (it carries on across views): this view hands it the map's screen.
+  const voice = useSharedVoice("code", { screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume, idleMinutes: xrSettings.voiceIdleMinutes, ready: !!graph && !!state?.repo });
   const [logOpen, setLogOpen] = useTranscriptOpen("codemap.log");
 
   // Talking over a story pauses it, so you and the voice can hear each other.
@@ -1502,14 +1517,26 @@ export function App() {
     const m = l.module ? legend?.groups.find((x) => x.id === l.module) ?? overview?.modules.find((x) => x.id === l.module) : null;
     const files = graph.files.map((f) => f.path).filter((p) => l.paths.some((q) => p === q || p.startsWith(`${q.replace(/\/$/, "")}/`)));
     // The module needs the overview; wait for it unless the paths will do.
-    if (!m && !files.length && !overview) return;
+    if (!m && !files.length && !overview && !l.request) return;
     // After the new repo's own arrival (it resets the view as it falls in from deep space).
     if (warped.current !== graph.root) return;
     boardLink.current = null;
     window.history.replaceState(window.history.state, "", location.pathname);
     setTimeout(() => {
+      if (l.request) {
+        // Nothing to follow: the navigator finds the code and shows it.
+        setIntroDone(true);
+        void ask(l.request, { screen });
+        return;
+      }
+      const shown = [...new Set([...(m?.paths ?? []), ...files])];
+      if (l.only && shown.length) {
+        // Just this code on the map, named for what it is on the board.
+        setIntroDone(true);
+        setFilter((f) => ({ ...EMPTY_FILTER, paths: shown, label: l.label ?? l.paths.join(", ") ?? m?.label, hidden: f.hidden, crossImports: f.crossImports }));
+      }
       if (m && l.module) focusModule(l.module);
-      else if (files.length) focus(files, l.paths.join(", "));
+      else if (files.length) focus(files, l.label ?? l.paths.join(", "));
     }, 900);
   }, [state?.repo?.root, graph, overview, legend, focusModule, focus]);
 
@@ -1987,10 +2014,10 @@ export function App() {
   if (status === "idle" || (!graph && status === "error")) {
     return (
       <div className="relative h-full bg-night">
-        <Landing onOpen={(p) => void post("/api/open", { path: p })} error={state.error} library={state.library} />
-        <a href="/board" className="absolute right-4 top-4 font-cond text-[13px] uppercase tracking-[0.2em] text-muted hover:text-course" title="The workshop: a 3D planning board, with a voice">
-          Workshop →
-        </a>
+        <Landing onOpen={(p) => (expectRepo(), void post("/api/open", { path: p }))} error={state.error} library={state.library} />
+        <div className="absolute left-4 top-4">
+          <ProjectBar view="code" />
+        </div>
       </div>
     );
   }
@@ -2405,27 +2432,21 @@ export function App() {
       {/* Instruments */}
       <div className={`${minimal ? "hidden " : ""}pointer-events-none absolute left-4 top-4 z-10 flex max-h-[calc(100dvh-6.5rem)] flex-col gap-2`}>
         {/* The intro shows the name large; switching away stays possible while it charts. */}
-        {showIntro && state.library && (
+        {showIntro && (
           <div className="pointer-events-auto">
-            <button onClick={() => setShelfOpen((v) => !v)} className="text-[12px] text-muted hover:text-course" title="Open another GitHub repo">
-              Switch repo
-            </button>
+            <ProjectBar view="code" onRepo={state.library ? () => (expectRepo(), setShelfOpen((v) => !v)) : undefined} />
           </div>
         )}
         {!showIntro && (
           <div className="pointer-events-auto">
+            <div className="mb-1.5">
+              <ProjectBar view="code" onRepo={state.library ? () => (expectRepo(), setShelfOpen((v) => !v)) : undefined} />
+            </div>
             <button onClick={toOverview} className="text-left" title="Back to the whole map (o)">
               <span className="font-cond text-[24px] font-semibold leading-none">{state.repo?.name}</span>
               {state.repo?.branch && <span className="ml-2 font-mono text-[11.5px] text-muted">{state.repo.branch}</span>}
             </button>
-            {state.library && (
-              <button onClick={() => setShelfOpen((v) => !v)} className="ml-2 align-[3px] text-[12px] text-muted hover:text-course" title="Open another GitHub repo">
-                Switch repo
-              </button>
-            )}
-            <a href="/board" className="ml-2 align-[3px] text-[12px] text-muted hover:text-course" title="The workshop: a 3D planning board, with a voice">
-              Workshop
-            </a>
+
           </div>
         )}
         {compact ? (
@@ -2626,16 +2647,16 @@ export function App() {
           {onBoards.map((c) => (
             <button
               key={`${c.boardId}:${c.itemId}`}
-              onClick={() => window.open(`/board/${c.boardId}?item=${c.itemId}`, "workshop")}
+              onClick={() => goBoard(c.boardId, c.itemId)}
               className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-runtime hover:text-text"
-              title={`On the workshop board "${c.board}": open it there`}
+              title={`On the board "${c.board}": open it there`}
             >
               ▣ {c.label} ↗
             </button>
           ))}
           {fromBoard && !onBoards.some((c) => c.boardId === fromBoard.boardId) && (
             <button
-              onClick={() => window.open(`/board/${fromBoard.boardId}${fromBoard.itemId ? `?item=${fromBoard.itemId}` : ""}`, "workshop")}
+              onClick={() => goBoard(fromBoard.boardId, fromBoard.itemId)}
               className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-runtime hover:text-text"
               title="Back to the board you came from"
             >
