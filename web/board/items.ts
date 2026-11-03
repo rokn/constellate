@@ -12,10 +12,13 @@ import { num, on, tuneRev } from "./tune";
 
 
 /** What's drawn, apart from where it stands: a change here rebuilds it. */
+/** How many things are on an item's own board (for its marker): the page tells it. */
+export const inside = { count: (_boardId: string): number | undefined => undefined };
+
 function shapeKey(i: Item) {
   const { pos: _p, rotY: _r, quat: _q, scale: _s, explode: _e, spin: _sp, ...rest } = i;
-  // The knobs that change how things are drawn (label sizes, …) rebuild it too.
-  return `${tuneRev}|${JSON.stringify(rest)}`;
+  // The knobs that change how things are drawn (label sizes, …) rebuild it too; so does what's inside it.
+  return `${tuneRev}|${JSON.stringify(rest)}|${i.sub ? inside.count(i.sub) ?? "?" : ""}`;
 }
 
 /** A label, sized and lit by the knobs. */
@@ -123,7 +126,10 @@ export class ItemView {
     this.sprites = [];
     this.selRing = null;
     this.beacon = null;
+    this.portal = null;
   }
+  /** An item with a board inside: layers floating over it, and a dashed ring round it. */
+  private portal: { plates: THREE.Group; ring: THREE.Group; y: number } | null = null;
   private beacon: THREE.Object3D | null = null;
   private beaconY = 0;
 
@@ -258,13 +264,46 @@ export class ItemView {
       b.add(ring);
     }
 
+    const hasInside = !!item.sub && on("insideMarker") && !["frame", "ink", "text"].includes(item.kind);
+    const insideN = item.sub ? inside.count(item.sub) : undefined;
     if (labelText) {
-      const sub = on("tags") ? [item.status && item.status !== "planned" ? item.status : "", ...(item.tags ?? [])].filter(Boolean).join(" · ") : "";
+      const tags = on("tags") ? [item.status && item.status !== "planned" ? item.status : "", ...(item.tags ?? [])].filter(Boolean).join(" · ") : "";
+      const into = hasInside ? `▣ inside${insideN !== undefined ? ` · ${insideN} item${insideN === 1 ? "" : "s"}` : ""}` : "";
+      const sub = [into, tags].filter(Boolean).join(" · ");
       const err = item.kind === "holo" && item.holo?.error ? "script error" : item.kind === "holo" && item.holo?.script && !item.holo.parts?.length ? "building…" : "";
       const s = label(labelText, err === "script error" ? LOOK.danger : color, { height: 0.042, sub: err || sub || undefined });
       s.position.y = labelY;
       b.add(s);
       this.sprites.push(s);
+    }
+
+    // A board inside it: three plates stacked over it (a board within), and a dashed ring on the table round it.
+    if (hasInside) {
+      const plates = new THREE.Group();
+      for (let i = 0; i < 3; i++) {
+        const w = 0.05 - i * 0.008;
+        // Outlines only: filled, the bloom turns three plates into one white blob.
+        const p = holoMesh(new THREE.BoxGeometry(w, 0.001, w * 0.7), u, LOOK.accent, { wire: true });
+        p.position.y = i * 0.011;
+        p.rotation.y = i * 0.12;
+        plates.add(p);
+      }
+      const y = labelY + (labelText ? 0.075 * num("labelSize") : 0.02) + 0.012;
+      plates.position.set(item.flags?.length ? 0.06 : 0, y, 0);
+      b.add(plates);
+      const ring = new THREE.Group();
+      const r = Math.max(0.08, Math.min(0.95, this.radius * 1.05)) + 0.015;
+      for (let i = 0; i < 10; i++) {
+        const arc = new THREE.Mesh(
+          new THREE.RingGeometry(r, r + 0.0035, 12, 1, (i / 10) * Math.PI * 2, (Math.PI * 2) / 10 * 0.55),
+          new THREE.MeshBasicMaterial({ color: LOOK.accent, transparent: true, opacity: 0.55, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }),
+        );
+        arc.rotation.x = -Math.PI / 2;
+        ring.add(arc);
+      }
+      ring.position.y = 0.002;
+      b.add(ring);
+      this.portal = { plates, ring, y };
     }
 
     // A design review's findings: a beacon over it, in the colour of the worst, and what was found.
@@ -350,6 +389,16 @@ export class ItemView {
         this.u.uFade.value += (f - this.u.uFade.value) * Math.min(1, dt * 8);
         for (const s of this.sprites) s.material.opacity = this.u.uFade.value;
       }
+    }
+    if (this.portal) {
+      const pt = this.portal;
+      pt.plates.rotation.y = t * 0.6;
+      pt.plates.position.y = pt.y + Math.sin(t * 1.8 + this.radius * 10) * 0.004;
+      // The plates breathe apart a little: there's more in there.
+      pt.plates.children.forEach((c, i) => (c.position.y = i * (0.011 + 0.004 * (0.5 + 0.5 * Math.sin(t * 1.8)))));
+      pt.ring.rotation.y = -t * 0.25;
+      const fade = this.dying ? this.dying : this.dim ? this.dimLevel : 1;
+      for (const m of pt.ring.children) ((m as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.55 * fade * (0.75 + 0.25 * Math.sin(t * 2));
     }
     if (this.beacon) {
       this.beacon.rotation.y = t * 1.5;

@@ -28,6 +28,7 @@ import { ScrubXR } from "./scrub";
 import { SnapsXR } from "./snaps";
 import { GesturesXR } from "./gestures";
 import { GuideXR } from "./guide";
+import { inside } from "./items";
 import { TranscriptXR } from "./transcript";
 import { TranscriptLog, useTranscriptOpen } from "../components/TranscriptLog";
 import { TypeXR } from "./typing";
@@ -216,6 +217,15 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const previewFnRef = useRef<(v: { id: string; label: string; board: Board } | null) => void>(() => {});
   const reloadRef = useRef(reloadBoards);
   reloadRef.current = reloadBoards;
+  // The markers on items with a board inside say how much is in there: counts from the board list,
+  // fetched again on every switch (coming back up, what was made inside shows).
+  inside.count = (id) => boardsRef.current.find((b) => b.id === id)?.items;
+  useEffect(() => {
+    void reloadRef.current();
+  }, [boardId]);
+  useEffect(() => {
+    sceneRef.current?.refreshInside();
+  }, [boards]);
   /** More of the headset (history scrubbing, snapshots, gestures), plugged in when the hands are made. */
   const xrPluginMakers = useRef<((x: XRInput) => XRPlugin)[]>([]);
   /** Actions the later parts of the page add (sketches, photos, snapshots, …). */

@@ -261,6 +261,8 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   over, a sound it ignored, reconnecting). Desktop: the **Log** chip (R; in the code map, the
   Log button by the voice, shift-V) — drag it anywhere, pin it to keep it open there. Headset:
   the dock's speech bubble (Alt-R) — pin it, carry it, or throw it at a wall.
+- **What has a board inside** shows at a glance: amber layers float over it, a dashed amber
+  ring circles it on the table, and its name reads "▣ inside · 5 items" (Tune → Labels).
 - **Lock the items**: the dock's padlock (or Shift-L / the Lock chip on the desktop) freezes
   everything on the board — every grab, pinch and drag moves the board itself, and the mouse
   only turns the view. Jarvis and the voice can still change things.

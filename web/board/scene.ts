@@ -145,6 +145,11 @@ export class BoardScene {
   }
 
   /** The knobs, applied: uniforms, the camera, the room, and a rebuild when how things are drawn changed. */
+  /** What's inside items changed (a board grew or was made): their markers say so. */
+  refreshInside() {
+    for (const v of this.views.values()) if (v.item.sub) v.update(v.item, true);
+  }
+
   applyTune(changed: string[]) {
     shared.uFillK.value = num("fill");
     shared.uRimK.value = num("rim");

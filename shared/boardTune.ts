@@ -45,7 +45,7 @@ export const BOARD_SECTIONS: BoardSection[] = [
   {
     id: "labels",
     title: "Labels",
-    knobs: [t("labels", "Labels"), n("labelSize", "Label size", 0.4, 2.5, 0.05), n("labelBrightness", "Label brightness", 0.2, 2, 0.05), t("tags", "Tags under labels"), t("linkLabels", "Link labels")],
+    knobs: [t("labels", "Labels"), n("labelSize", "Label size", 0.4, 2.5, 0.05), n("labelBrightness", "Label brightness", 0.2, 2, 0.05), t("tags", "Tags under labels"), t("insideMarker", "Mark what has a board inside", "Plates over it, a dashed ring round it, and '▣ inside · n items' under its name"), t("linkLabels", "Link labels")],
   },
   {
     id: "links",
@@ -316,6 +316,7 @@ export const DEFAULT_BOARD_TUNE: Record<string, TuneValue> = {
   gridSize: 0.05,
   frameCarries: true,
   lockItems: false,
+  insideMarker: true,
   magnet: true,
   magnetReach: 0.025,
   magnetGuides: true,
