@@ -15,6 +15,7 @@ type State = Pick<Board, "name" | "items" | "links">;
 const STEP_DEG = 16;
 
 export class ScrubXR implements XRPlugin {
+  readonly label = "history dial";
   private on: { p: Pointer; q0: THREE.Quaternion; back: State[]; forward: State[]; steps: number } | null = null;
   private tag = new Toast();
 

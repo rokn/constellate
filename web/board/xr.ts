@@ -91,6 +91,10 @@ export interface XRPlugin {
   handle?(action: string, p?: Pointer): boolean;
   /** A press it takes before the board does; true when it did. */
   press?(p: Pointer, kind: "select" | "squeeze"): boolean;
+  /** What it's called, in the input chips (Tune · Show where each trigger press goes). */
+  label?: string;
+  /** Its things stand behind the headset's panels: a press on a panel isn't offered to it. */
+  behindPanels?: boolean;
   release?(p: Pointer, kind: "select" | "squeeze"): boolean;
   /** An item thrown (world space): true when it caught it (stuck to a wall, say). */
   throwItem?(id: string, at: THREE.Vector3, vel: THREE.Vector3): boolean;
@@ -239,6 +243,13 @@ export class XRInput {
   }
 
   left() {
+    // Nothing half-done carries over to the next time in: no stretch, carry, press or wheel.
+    this.two = null;
+    for (const p of this.ptrs) {
+      this.cancel(p);
+      p.hushed = false;
+    }
+    this.closeWheel();
     for (const p of [...this.panels, this.captions, this.toast, this.twoTag, this.hints.left, this.hints.right]) p.mesh.visible = false;
     this.leader.visible = false;
     for (const pl of this.plugins) pl.left?.();
@@ -751,23 +762,35 @@ export class XRInput {
 
   /* -------------------------------- presses ------------------------------ */
 
+  /** Tune · Show where each press goes: a chip by the hand naming what took it (for tracking down a press that seems to do nothing). */
+  private route(p: Pointer, what: string) {
+    if (on("inputDebug")) this.say(`${p.side} trigger → ${what}`, p);
+  }
+
   private selectStart(p: Pointer) {
     if (this.scene.mode === "flat") return;
     if (this.handsQuiet(p)) {
       p.hushed = true;
-      return;
+      return this.route(p, "hushed (typing)");
     }
     sfx.resume();
+    // A press still open from before (its release never came): let it go first.
+    if (p.press?.kind === "panel") p.press.panel.pointer("up", -1, -1, `p${p.i}`);
+    p.press = null;
     // Two hands on an item: the helping hand's trigger swaps stretching for pulling apart.
     if (this.two && !p.carry && this.ptrs.some((q) => q !== p && q.carry?.id === this.two!.id)) {
       this.cycleTwo(p);
-      return;
+      return this.route(p, "two hands: next mode");
     }
     // A controller gripping an item: the trigger crumples it.
     if (p.carry && !this.isHand(p) && on("crumple") && !p.carry.locked) return this.crumple(p);
-    // The wheel, opened by a button: the trigger picks the slice the ray is on (handled as a panel press below).
-    for (const pl of this.plugins) if (pl.press?.(p, "select")) return;
     const hitPanel = this.panelHit(p);
+    // The wheel, opened by a button: the trigger picks the slice the ray is on (handled as a panel press below).
+    // The room's boards don't take a press aimed at a panel in front of them.
+    for (const pl of this.plugins) {
+      if (hitPanel && pl.behindPanels) continue;
+      if (pl.press?.(p, "select")) return this.route(p, pl.label ?? "a headset part");
+    }
     // Bare glass (no button, no title bar, nothing to scroll) doesn't eat the trigger: the press goes
     // through to what's behind, so a panel floating over the table (the guide, say) never deadens it.
     const ph = hitPanel && (this.onHeader(hitPanel) || hitPanel.panel.regionAt(hitPanel.x, hitPanel.y) || hitPanel.panel.maxScroll > 0) ? hitPanel : null;
@@ -777,16 +800,17 @@ export class XRInput {
       if (this.onHeader(ph) && ph.panel !== this.wheel) {
         p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [] };
         sfx.play("grab");
-        return;
+        return this.route(p, "panel title bar");
       }
       ph.panel.pointer("down", ph.x, ph.y, `p${p.i}`);
       p.press = { kind: "panel", panel: ph.panel };
-      return;
+      return this.route(p, `panel ${ph.panel.name}${ph.panel.regionAt(ph.x, ph.y) ? " · button" : ""}`);
     }
     const tool = this.ctl.tool();
     if (on("lockItems")) {
       // Locked, a hand can still take an item (a pinch right on it): it springs back when let go.
-      if (this.isHand(p) && this.grabNear(p)) return;
+      if (this.isHand(p) && this.grabNear(p)) return this.route(p, "locked: borrowed item");
+      this.route(p, "locked: table");
       return this.pressTable(p);
     }
     if (tool === "ink") {
@@ -836,13 +860,14 @@ export class XRInput {
         rot0: v.item.rotY ?? 0,
       };
       this.haptic(p, 0.3, 20);
-      return;
+      return this.route(p, `item ${nameOf(v.item).slice(0, 18)}`);
     }
     if (hit?.kind === "link") {
       this.ctl.selectLink?.(hit.id);
       sfx.play("pick", hit.point);
-      return;
+      return this.route(p, "link");
     }
+    this.route(p, `table (tool ${tool})`);
     this.pressTable(p);
   }
 
