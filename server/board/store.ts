@@ -312,6 +312,8 @@ export async function boardInside(id: string, itemId: string): Promise<Board | n
   const label = item.label || item.kind;
   const inner = await createBoard(`${l.board.name} › ${label}`);
   inner.parent = { boardId: id, itemId, name: l.board.name };
+  // Inside a block drawn from code, the same code: its inside can be read and linked too.
+  if (l.board.repo) inner.repo = { ...l.board.repo };
   saveSoon(inner.id);
   await change(id, [{ op: "update", id: itemId, patch: { sub: inner.id } }], undefined, { noUndo: true });
   return inner;

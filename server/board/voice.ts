@@ -38,7 +38,7 @@ const names = { type: "array", items: { type: "string" }, description: "Item ids
 const TOOLS = [
   fn(
     "build",
-    `Hand a request to ${ASSISTANT}'s builder — the part of you that designs: architectures, plans, several items at once, holograms of anything, reorganising, rewriting notes. Pass their request in their words. Returns at once; the result comes a little later.`,
+    `Hand a request to ${ASSISTANT}'s builder — the part of you that designs: architectures, plans, several items at once, holograms of anything, reorganising, rewriting notes — and that can read the board's repo, so questions about the code ("where do refunds happen?", "what calls this?") and redesigns grounded in it go here too. Pass their request in their words. Returns at once; the result comes a little later.`,
     { request: { type: "string" } },
     ["request"],
   ),

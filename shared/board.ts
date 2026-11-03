@@ -169,7 +169,15 @@ export type Item = {
   metrics?: Metric[];
   /** Its own board, inside it: what it's made of. */
   sub?: string;
+  /** Where it is in the code (the board's repo): a module of the code map, and its main paths. */
+  code?: CodeRef;
 };
+
+/** An item's place in the code: the code map's module id, and the folders or files it is. */
+export type CodeRef = { module?: string; paths?: string[] };
+
+/** The repository a board was drawn from: Jarvis can read it, and items link into its code map. */
+export type BoardRepo = { root: string; name: string; branch?: string };
 
 export type Flag = { level: "info" | "warn" | "risk"; text: string };
 export type Metric = { label: string; value: number; unit?: string; max?: number };
@@ -229,6 +237,8 @@ export type Board = {
   xlinks?: XLink[];
   /** Views kept as cards: where the head was, what it looked at (board space). */
   snaps?: Snap[];
+  /** The repo it was drawn from (or linked to): Jarvis reads it; items point into it. */
+  repo?: BoardRepo;
   /** What the assistant is doing on this board right now, for the status line. */
   activity?: { busy: boolean; line?: string; answer?: string; error?: string; at: number };
 };
@@ -257,6 +267,7 @@ export type Op =
   | { op: "xlink"; links: XLink[] }
   | { op: "unxlink"; ids: string[] }
   | { op: "snap"; snap: Snap }
+  | { op: "repo"; repo: BoardRepo | null }
   | { op: "unsnap"; ids: string[] };
 
 /** Changes to a board are coalesced under this key: a drag's many moves are one step to undo. */
@@ -304,6 +315,12 @@ export function cleanItem(i: Partial<Item> & { id: string }): Item {
       .slice(0, 5)
       .map((m) => ({ label: m.label.slice(0, 24), value: m.value, ...(m.unit ? { unit: String(m.unit).slice(0, 12) } : {}), ...(typeof m.max === "number" && m.max > 0 ? { max: m.max } : {}) }));
   if (typeof i.sub === "string") out.sub = i.sub.slice(0, 40);
+  if (i.code && typeof i.code === "object") {
+    const code: CodeRef = {};
+    if (typeof i.code.module === "string" && i.code.module) code.module = i.code.module.slice(0, 80);
+    if (Array.isArray(i.code.paths)) code.paths = i.code.paths.filter((p) => typeof p === "string" && p && !p.includes("..")).slice(0, 12).map((p) => p.replace(/^\/+/, "").slice(0, 200));
+    if (code.module || code.paths?.length) out.code = code;
+  }
   return out;
 }
 
@@ -410,6 +427,17 @@ export function applyOps(b: Board, ops: Op[]): boolean {
         const before = b.xlinks?.length ?? 0;
         b.xlinks = (b.xlinks ?? []).filter((x) => !o.ids.includes(x.id));
         changed = changed || b.xlinks.length !== before;
+        break;
+      }
+      case "repo": {
+        const r = o.repo;
+        if (!r) {
+          if (b.repo) changed = true;
+          delete b.repo;
+        } else if (typeof r.root === "string" && r.root && JSON.stringify(r) !== JSON.stringify(b.repo)) {
+          b.repo = { root: r.root.slice(0, 400), name: String(r.name ?? "").slice(0, 120), ...(r.branch ? { branch: String(r.branch).slice(0, 120) } : {}) };
+          changed = true;
+        }
         break;
       }
       case "snap": {
@@ -531,7 +559,9 @@ export function heightOf(i: Item): number {
 export function describeBoard(b: Board, opts: { max?: number; selected?: string[] } = {}): string {
   const max = opts.max ?? 200;
   const sel = new Set(opts.selected ?? []);
-  const lines = [`Board "${b.name}" (${b.items.length} items, ${b.links.length} links).${b.parent ? ` It's the inside of "${b.parent.name}" on board ${b.parent.boardId}.` : ""}`];
+  const lines = [
+    `Board "${b.name}" (${b.items.length} items, ${b.links.length} links).${b.parent ? ` It's the inside of "${b.parent.name}" on board ${b.parent.boardId}.` : ""}${b.repo ? ` Linked to the repo ${b.repo.name} (${b.repo.root}): read it with the repo tools.` : ""}`,
+  ];
   const name = new Map(b.items.map((i) => [i.id, nameOf(i)]));
   for (const i of b.items.slice(0, max)) {
     const bits = [
@@ -547,6 +577,7 @@ export function describeBoard(b: Board, opts: { max?: number; selected?: string[
       i.kind === "frame" && i.size ? `size ${i.size.join("x")}` : "",
       i.attach ? `pinned to ${i.attach}` : "",
       i.sub ? `has an inside board ${i.sub}` : "",
+      i.code ? `code: ${[i.code.module ? `module ${i.code.module}` : "", i.code.paths?.length ? i.code.paths.join(", ") : ""].filter(Boolean).join(" · ")}` : "",
       i.flags?.length ? `flags: ${i.flags.map((f) => `${f.level} "${f.text}"`).join("; ")}` : "",
       i.metrics?.length ? `metrics: ${i.metrics.map((m) => `${m.label} ${m.value}${m.unit ?? ""}`).join(", ")}` : "",
       sel.has(i.id) ? "SELECTED" : "",

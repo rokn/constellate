@@ -22,6 +22,19 @@ export async function boardApi(
     case "GET /api/boards":
       json(res, 200, await listBoards());
       return true;
+    case "GET /api/board/coderefs": {
+      // Board items that point into a repo's code: the code map links back to them.
+      const root = url.searchParams.get("root") ?? "";
+      if (!root) return json(res, 400, { error: "Which repo?" }), true;
+      const out: { boardId: string; board: string; itemId: string; label: string; module?: string; paths?: string[] }[] = [];
+      for (const s of await listBoards()) {
+        const b = (await getBoard(s.id))?.board;
+        if (!b?.repo || b.repo.root !== root) continue;
+        for (const i of b.items) if (i.code) out.push({ boardId: b.id, board: b.name, itemId: i.id, label: i.label || i.kind, module: i.code.module, paths: i.code.paths });
+      }
+      json(res, 200, out);
+      return true;
+    }
     case "POST /api/boards": {
       const b = await body<{ name?: string }>(req);
       json(res, 200, await createBoard(b.name ?? ""));

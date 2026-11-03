@@ -188,7 +188,7 @@ does the same from outside.
 
 `/board` (or **Workshop** next to the repo's name) is a separate place: a 3D planning
 board on a round holotable, for designing anything — a system's architecture, a
-roadmap, a device. It has nothing to do with the open repo.
+roadmap, a device. A board can stand on its own, or be drawn from a repo and stay linked to its code map.
 
 - **Components**: architecture blocks (service, database, queue, API, client, user,
   cache, storage, lambda, external, cloud), notes, floating text, frames that group
@@ -222,7 +222,8 @@ roadmap, a device. It has nothing to do with the open repo.
 
 - **Bring things in**: **Repo → board** (Jarvis reads the repo open in the code map — its
   charted modules, the import graph, compose files, manifests, Dockerfiles — and builds the
-  real architecture), **Photo → board** (a whiteboard photo: a file, pasted into the ask bar,
+  real architecture; the board then stays linked to that repo, so later questions — "where do
+  refunds happen?" — and redesigns read the actual code, by voice too), **Photo → board** (a whiteboard photo: a file, pasted into the ask bar,
   dropped on the table, or the Quest's camera), **Sketch → structure** (your ink, read from
   above and rebuilt as blocks, links, notes and frames where you drew them).
 - **Links that talk their protocol**: REST packets out with replies back, gRPC streams both
@@ -261,6 +262,12 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   over, a sound it ignored, reconnecting). Desktop: the **Log** chip (R; in the code map, the
   Log button by the voice, shift-V) — drag it anywhere, pin it to keep it open there. Headset:
   the dock's speech bubble (Alt-R) — pin it, carry it, or throw it at a wall.
+- **Boards ↔ the code map**: blocks drawn from a repo carry a code link (the code map's module
+  and their main paths — editable in the inspector). **Code map ↗** opens Constellate right
+  there, in its own tab, switching to the board's repo first if another is open; the toolbar's
+  ⌥ chip opens the repo's map. Back the other way, the code map's focus bar shows the board
+  items that point at what's in focus (▣ Payments ↗), and ◂ Board returns where you came from.
+  Boards inside a linked block are linked too.
 - **What has a board inside** shows at a glance: amber layers float over it, a dashed amber
   ring circles it on the table, and its name reads "▣ inside · 5 items" (Tune → Labels).
 - **Lock the items**: the dock's padlock (or Shift-L / the Lock chip on the desktop) freezes

@@ -217,6 +217,17 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   const previewFnRef = useRef<(v: { id: string; label: string; board: Board } | null) => void>(() => {});
   const reloadRef = useRef(reloadBoards);
   reloadRef.current = reloadBoards;
+  // Arrived from the code map (/board/<id>?item=<item>): that item, selected and in view.
+  const wantItem = useRef(new URLSearchParams(location.search).get("item"));
+  useEffect(() => {
+    const id = wantItem.current;
+    if (!id || !board || board.id !== boardId || !board.items.some((i) => i.id === id)) return;
+    wantItem.current = null;
+    setSelected([id]);
+    setTimeout(() => sceneRef.current?.focus([id]), 300);
+    history.replaceState(history.state, "", location.pathname);
+  }, [board, boardId, setSelected]);
+
   // The markers on items with a board inside say how much is in there: counts from the board list,
   // fetched again on every switch (coming back up, what was made inside shows).
   inside.count = (id) => boardsRef.current.find((b) => b.id === id)?.items;
@@ -621,7 +632,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
   };
   const repoToBoard = () => {
     notify("Reading the repo");
-    sendAsk("Read the repo open in Constellate (use the repo tool) and build its real architecture on this board: its services, apps, datastores, queues and external APIs as blocks; links named for what flows, with their protocols; frames for deployment boundaries. Lay it out with flow.");
+    sendAsk("Read the repo open in Constellate (use the repo tool) and build its real architecture on this board: its services, apps, datastores, queues and external APIs as blocks; links named for what flows, with their protocols; frames for deployment boundaries. Give every block drawn from code its code link (the module id from the brief, and its main folders), so it opens in the code map. Lay it out with flow.");
   };
   const exportDoc = () => {
     const b = client.board;
@@ -899,6 +910,11 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
                 </button>
               )}
               {board && <Breadcrumbs board={board} open={open} />}
+              {board?.repo && (
+                <button className="ws-chip" onClick={() => openCodeMap(board)} title={`Drawn from ${board.repo.root}: Jarvis can read it. Open its code map.`}>
+                  ⌥ {board.repo.name} ↗
+                </button>
+              )}
               {!client.connected && board === null && <span className="text-xs text-[#7fa6bd]">connecting…</span>}
             </div>
             <div className="pointer-events-auto flex items-center gap-2">
@@ -1252,6 +1268,23 @@ function PaletteItem({ kind, onAdd }: { kind: ItemKind; onAdd: () => void }) {
   );
 }
 
+/**
+ * The code map, opened where an item is in the code: its module, or its paths.
+ * A tab of its own (the board stays open here); if the code map has another
+ * repo open, it switches to the board's first.
+ */
+export function codeMapUrl(board: Board, item?: Item | null) {
+  const q = new URLSearchParams();
+  if (board.repo) q.set("root", board.repo.root);
+  if (item?.code?.module) q.set("module", item.code.module);
+  if (item?.code?.paths?.length) q.set("paths", item.code.paths.join(","));
+  q.set("from", `${board.id}${item ? `:${item.id}` : ""}`);
+  return `/?${q}`;
+}
+export function openCodeMap(board: Board, item?: Item | null) {
+  window.open(codeMapUrl(board, item), "constellate");
+}
+
 function Inspector({ item, board, client, onEdit, onDelete, onFocus, onInside }: { item: Item; board: Board; client: BoardClient; onEdit: () => void; onDelete: () => void; onFocus: () => void; onInside: () => void }) {
   const patch = (p: Partial<Item>, merge?: string) => client.apply([{ op: "update", id: item.id, patch: p }], merge);
   const [label, setLabel] = useState(item.label ?? "");
@@ -1402,6 +1435,31 @@ function Inspector({ item, board, client, onEdit, onDelete, onFocus, onInside }:
           <button className="hover:text-white" onClick={() => patch({ attach: null as never })}>
             unpin
           </button>
+        </div>
+      )}
+      {(item.code || board.repo) && item.kind !== "ink" && (
+        <div className="mt-3 rounded border border-cyan-300/15 bg-cyan-300/5 px-2 py-1.5 text-[12px]">
+          <div className="flex items-center gap-2">
+            <span className="font-cond text-[11px] uppercase tracking-[0.16em] text-[#7fa6bd]">Code</span>
+            <span className="min-w-0 flex-1 truncate text-[#dff6ff]" title={item.code?.paths?.join("\n")}>
+              {item.code ? [item.code.module, item.code.paths?.slice(0, 2).join(", ")].filter(Boolean).join(" · ") : "not linked"}
+            </span>
+            {item.code && board.repo && (
+              <button className="ws-btn !px-2 !py-0.5 text-[12px]" onClick={() => openCodeMap(board, item)} title="Open the code map right where this is">
+                Code map ↗
+              </button>
+            )}
+          </div>
+          <input
+            className="mt-1.5 w-full rounded border border-cyan-300/15 bg-transparent px-1.5 py-1 text-[12px] text-[#dff6ff] outline-none placeholder:text-[#4f7286]"
+            placeholder="Paths in the repo, comma-separated"
+            defaultValue={item.code?.paths?.join(", ") ?? ""}
+            key={`${item.id}:${item.code?.paths?.join()}`}
+            onBlur={(e) => {
+              const paths = e.currentTarget.value.split(",").map((p) => p.trim()).filter(Boolean);
+              if (paths.join() !== (item.code?.paths ?? []).join()) patch({ code: paths.length || item.code?.module ? { ...item.code, paths } : (null as never) });
+            }}
+          />
         </div>
       )}
       <div className="mt-3 flex gap-1.5">

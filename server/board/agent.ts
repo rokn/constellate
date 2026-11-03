@@ -23,13 +23,16 @@ import {
   type Vec3,
 } from "../../shared/board";
 import { ARRANGEMENTS, arrange } from "../../shared/boardLayout";
-import { CACHE_DIR } from "../session";
+
 import { awaitBuild } from "./holo";
 import { agentSessionOf, boardInside, change, command, getBoard, saveVersion, setActivity, setAgentSession } from "./store";
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
 import { TEMPLATE_NAMES, layTemplate } from "../../shared/templates";
 import { TUNE_TOOLS, runBoardTune } from "./tune";
 import { repoBrief } from "./repo";
+import { grepCode, listFiles, readCode } from "./code";
+import path from "node:path";
+import { CACHE_DIR, session } from "../session";
 import { BOARD_ACTIONS } from "../../shared/boardActions";
 
 /**
@@ -92,6 +95,10 @@ const itemFields = {
     .array(z.object({ label: z.string(), value: z.number(), unit: z.string().optional(), max: z.number().optional() }))
     .optional()
     .describe("Numbers shown as gauges beside it: RPS, p99 latency, monthly cost, uptime… max sets a full gauge."),
+  code: z
+    .object({ module: z.string().optional(), paths: z.array(z.string()).max(12).optional() })
+    .optional()
+    .describe("Where it is in the board's repo: the code map's module id (from the repo brief's Modules list) and its main folders or files, repo-relative. Set it on every block drawn from code: it links the block to the code map."),
 };
 
 const linkFields = {
@@ -133,6 +140,10 @@ A hologram is a list of parts, each {shape, pos, rot (degrees), scale, size/radi
 Shapes: box (size [w,h,d]), sphere (radius), cylinder (radius, radiusTop, height), cone (radius, height), torus (radius, tube), ring (radius, tube = inner radius; flat, lies in xz), capsule (radius, height), plane (size [w,h]), icosahedron/octahedron/tetrahedron/dodecahedron (radius), gear (radius, teeth, depth), tube (points: [[x,y,z],…], radius), lathe (points: [[r,y],…] profile spun about y), extrude (points: [[x,y],…] outline, depth), text (text, size [height]).
 Design about 0.4 m tall (the item's scale enlarges it), centred on the origin with its base near y = 0. Use 6–40 parts for a rich model. Give each meaningful part an explode vector away from the centre so pulling it apart is satisfying.
 For what's tedious to list (many teeth, a helix, a lattice, a city of towers), give a script instead of parts: the body of a JavaScript function that receives \`api\` and returns the parts array. api has: range(n) → [0..n-1], lerp(a,b,t), rand() (seeded), TAU, deg(radians→degrees). Plain Math works. No DOM, no network; it runs in a sandbox with a 2 s limit. The tool tells you if it threw; fix it and try again.
+
+## Code
+A board drawn from a repo (or linked to one) remembers it, and you can read that repo whenever they ask: repo_files (list, by folder or glob), repo_grep (search), repo_read (a file, or a stretch of it). Use them for questions about how it works ("where do refunds happen?", "what calls the ledger?") and for redesigns — read what's really there before proposing a change, and say what you based it on. Answer from the code, briefly, not from the board alone.
+Blocks drawn from code carry a code link (code: the code map's module id and its main paths), so they open the code map right where they are. Keep those links when you change or split blocks; give new ones a link when they map to real code.
 
 ## More you can do
 - simulate: play a request moving hop by hop through the architecture, with captions — the best answer to "what happens when…".
@@ -180,6 +191,8 @@ function resolver(b: Board, refs: Map<string, string>) {
 
 function boardServer(boardId: string, screen: BoardScreen, report: (line: string) => void, run: string) {
   const current = async () => (await getBoard(boardId))?.board ?? null;
+  /** The repo this board reads: its own link, or (for an older board) the one open in the code map. */
+  const repoRoot = async () => (await current())?.repo?.root ?? session.state.repo?.root ?? null;
   const focus = (): Vec3 => screen.focus ?? [0, 0, 0];
 
   const tools = [
@@ -485,13 +498,54 @@ function boardServer(boardId: string, screen: BoardScreen, report: (line: string
       },
     ),
     tool(
+      "repo_files",
+      "List files in the board's repo: everything, a folder (dir), or a glob (\"*.go\", \"src/**/*.ts\").",
+      { dir: z.string().optional(), glob: z.string().optional() },
+      async ({ dir, glob }) => {
+        const root = await repoRoot();
+        if (!root) return fail("This board isn't linked to a repo. Use the repo tool first (it links it).");
+        report("Looking through the code");
+        return ok(await listFiles(root, { dir, glob }));
+      },
+    ),
+    tool(
+      "repo_read",
+      "Read a file of the board's repo (repo-relative path), or a stretch of it: from (line, 1-based) and lines.",
+      { file: z.string(), from: z.number().int().optional(), lines: z.number().int().optional() },
+      async ({ file, from, lines }) => {
+        const root = await repoRoot();
+        if (!root) return fail("This board isn't linked to a repo. Use the repo tool first (it links it).");
+        report(`Reading ${file.split("/").pop()}`);
+        return ok(await readCode(root, file, from, lines));
+      },
+    ),
+    tool(
+      "repo_grep",
+      "Search the board's repo: a regex (case-insensitive), over files matching a glob or under a folder. Returns file:line: text.",
+      { pattern: z.string(), glob: z.string().optional(), dir: z.string().optional() },
+      async ({ pattern, glob, dir }) => {
+        const root = await repoRoot();
+        if (!root) return fail("This board isn't linked to a repo. Use the repo tool first (it links it).");
+        report(`Searching the code for ${pattern.slice(0, 30)}`);
+        return ok(await grepCode(root, pattern, { glob, dir }));
+      },
+    ),
+    tool(
       "repo",
       "Read a code repository so you can draw its architecture: the repo open in Constellate's code map (its charted modules and how they talk, its stack, entry points, import graph) and its compose files, Kubernetes manifests, Dockerfiles and package manifests. Give `path` for another folder on this machine.",
       { path: z.string().optional() },
       async ({ path: dir }) => {
         report("Reading the repo");
         try {
-          return ok(await repoBrief(dir));
+          const brief = await repoBrief(dir);
+          // The board remembers it: later questions and redesigns can read the code.
+          const open = session.state.repo;
+          const root = dir ? path.resolve(dir) : open?.root;
+          if (root && !brief.startsWith("No repo is open")) {
+            const same = open && path.resolve(open.root) === root;
+            await change(boardId, [{ op: "repo", repo: { root, name: same ? open.name : path.basename(root), ...(same && open.branch ? { branch: open.branch } : {}) } }], run);
+          }
+          return ok(brief);
         } catch (e) {
           return fail(`Couldn't read it: ${e instanceof Error ? e.message : String(e)}`);
         }

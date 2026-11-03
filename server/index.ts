@@ -715,6 +715,24 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise
       json(res, 202, { ok: true });
       return true;
     }
+    case "POST /api/open-root": {
+      // The workshop's link into the code map: open the board's repo, unless it's the one open now.
+      const b = await body<{ root?: string }>(req);
+      const want = b.root ? resolveRepo(b.root) : "";
+      if (!want) return json(res, 400, { error: "Which repo?" }), true;
+      if (session.state.repo && path.resolve(session.state.repo.root) === want) return json(res, 200, { ok: true, open: true }), true;
+      if (REPOS_DIR) {
+        const rel = path.relative(REPOS_DIR, want).split(path.sep);
+        const id = rel.length === 2 && !rel[0].startsWith("..") ? parseGitHub(rel.join("/")) : null;
+        if (!id) return json(res, 400, { error: "That repo isn't one this server keeps." }), true;
+        void openGitHub(id);
+        return json(res, 202, { ok: true }), true;
+      }
+      if (LOCKED) return json(res, 409, { error: "This server is pinned to another repository." }), true;
+      void open(want);
+      json(res, 202, { ok: true });
+      return true;
+    }
     case "GET /api/repos":
       if (!REPOS_DIR) return json(res, 404, { error: "This server opens local paths." }), true;
       json(res, 200, await listRepos(session.state.repo?.root, savedHeadline));

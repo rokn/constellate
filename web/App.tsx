@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, TunePreset, UiCommand, ViewSettings } from "../shared/types";
+import type { Commit, Frame, Isolated, Layer, LogicalModule, MapFilter, Note, NoteTarget, Overview, RepoGraph, SavedFilter, ScreenContext, TimeRange, Topic, TunePreset, UiCommand, ViewSettings } from "../shared/types";
 import { changed, presetValues } from "../shared/knobs";
 import { commitsIn, couplingsOf, describeRange, heatOf, mapAcross, relevantPaths, resolveSpan, useGraphsAt, useHistory, type HeatEntry, type Span } from "./lib/history";
 import { CommitList } from "./components/CommitList";
@@ -966,6 +966,49 @@ export function App() {
     [overview, legend, visible, focus],
   );
 
+  /* ------------------------- the workshop's boards ------------------------- */
+
+  /**
+   * Opened from a board item (/?root=…&module=…&paths=…&from=<board>:<item>):
+   * switch to the board's repo if another is open, then fly to the module (or
+   * the paths). The way back is kept for the focus bar.
+   */
+  const boardLink = useRef(
+    (() => {
+      const q = new URLSearchParams(location.search);
+      const root = q.get("root");
+      const module = q.get("module");
+      const paths = (q.get("paths") ?? "").split(",").filter(Boolean);
+      return root || module || paths.length ? { root, module, paths, asked: false } : null;
+    })(),
+  );
+  const [fromBoard] = useState(() => {
+    const [boardId, itemId] = (new URLSearchParams(location.search).get("from") ?? "").split(":");
+    return boardId ? { boardId, itemId } : null;
+  });
+  /** Board items that point into this repo: the focus bar links to the ones in focus. */
+  const [coderefs, setCoderefs] = useState<{ boardId: string; board: string; itemId: string; label: string; module?: string; paths?: string[] }[]>([]);
+  useEffect(() => {
+    const root = state?.repo?.root;
+    if (!root) return setCoderefs([]);
+    const load = () =>
+      void fetch(`/api/board/coderefs?root=${encodeURIComponent(root)}`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then(setCoderefs)
+        .catch(() => {});
+    load();
+    // Back from the workshop: what was linked there since.
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
+  }, [state?.repo?.root]);
+  const onBoards = useMemo(
+    () =>
+      emphasis.length
+        ? coderefs.filter((c) => c.paths?.some((p) => emphasis.some((f) => f === p || f.startsWith(`${p.replace(/\/$/, "")}/`))) || (!!c.module && c.module === focusLabelModule(focusLabel, overview))).slice(0, 3)
+        : [],
+    [coderefs, emphasis, focusLabel, overview],
+  );
+
   useEffect(() => {
     // The story's stage docks where answers do.
     panels.current = { file: !!file, frame: !!frameId || !!story };
@@ -1443,6 +1486,33 @@ export function App() {
     const t = setTimeout(() => space.current?.warp(), 120);
     return () => clearTimeout(t);
   }, [graph]);
+
+  // A link from a workshop board: after the warp above, so it isn't undone by it.
+  useEffect(() => {
+    const l = boardLink.current;
+    if (!l) return;
+    if (l.root && state?.repo?.root !== l.root) {
+      if (!l.asked) {
+        l.asked = true;
+        void fetch("/api/open-root", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: l.root }) });
+      }
+      return;
+    }
+    if (!graph) return;
+    const m = l.module ? legend?.groups.find((x) => x.id === l.module) ?? overview?.modules.find((x) => x.id === l.module) : null;
+    const files = graph.files.map((f) => f.path).filter((p) => l.paths.some((q) => p === q || p.startsWith(`${q.replace(/\/$/, "")}/`)));
+    // The module needs the overview; wait for it unless the paths will do.
+    if (!m && !files.length && !overview) return;
+    // After the new repo's own arrival (it resets the view as it falls in from deep space).
+    if (warped.current !== graph.root) return;
+    boardLink.current = null;
+    window.history.replaceState(window.history.state, "", location.pathname);
+    setTimeout(() => {
+      if (m && l.module) focusModule(l.module);
+      else if (files.length) focus(files, l.paths.join(", "));
+    }, 900);
+  }, [state?.repo?.root, graph, overview, legend, focusModule, focus]);
+
 
   /* --------------------------------- play --------------------------------- */
 
@@ -2553,6 +2623,25 @@ export function App() {
           >
             Save as marker
           </button>
+          {onBoards.map((c) => (
+            <button
+              key={`${c.boardId}:${c.itemId}`}
+              onClick={() => window.open(`/board/${c.boardId}?item=${c.itemId}`, "workshop")}
+              className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-runtime hover:text-text"
+              title={`On the workshop board "${c.board}": open it there`}
+            >
+              ▣ {c.label} ↗
+            </button>
+          ))}
+          {fromBoard && !onBoards.some((c) => c.boardId === fromBoard.boardId) && (
+            <button
+              onClick={() => window.open(`/board/${fromBoard.boardId}${fromBoard.itemId ? `?item=${fromBoard.itemId}` : ""}`, "workshop")}
+              className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-runtime hover:text-text"
+              title="Back to the board you came from"
+            >
+              ◂ Board
+            </button>
+          )}
           <button
             onClick={() => hide(emphasis, `${emphasis.length} file${emphasis.length === 1 ? "" : "s"}`)}
             className="glass pointer-events-auto ml-1.5 rounded-full px-3 py-1 text-[13px] text-muted hover:text-text"
@@ -2941,4 +3030,9 @@ function useMedia(query: string) {
     return () => m.removeEventListener("change", change);
   }, [query]);
   return on;
+}
+
+/** The module a focus label names (focusing a module labels the focus with its name). */
+function focusLabelModule(label: string | undefined, overview: Overview | undefined | null): string | undefined {
+  return label ? overview?.modules.find((m) => m.label === label)?.id : undefined;
 }
