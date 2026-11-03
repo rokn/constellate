@@ -296,7 +296,7 @@ export class XRInput {
         const lock = !on("lockItems");
         setTune({ lockItems: lock });
         if (lock) this.ctl.select([]);
-        this.say(lock ? "Items locked · grab one, it springs back" : "Items unlocked", p);
+        this.say(lock ? "Items locked · move one, it springs back" : "Items unlocked", p);
         sfx.play(lock ? "snap" : "pick");
         this.dock.invalidate();
         return true;
@@ -818,8 +818,15 @@ export class XRInput {
     }
     const tool = this.ctl.tool();
     if (on("lockItems")) {
-      // Locked, a hand can still take an item (a pinch right on it): it springs back when let go.
+      // Locked, items are only lent: a pinch right on one takes it in hand, the ray on one drags it,
+      // and either way it springs back when let go. Anywhere else moves the table.
       if (this.isHand(p) && this.grabNear(p)) return this.route(p, "locked: borrowed item");
+      const hit = this.scene.pick(p.origin, p.dir);
+      if (hit?.kind === "item") {
+        this.ctl.client.ghost(hit.id);
+        this.rayPress(p, hit);
+        return this.route(p, "locked: borrowed item");
+      }
       this.route(p, "locked: table");
       return this.pressTable(p);
     }
@@ -856,21 +863,8 @@ export class XRInput {
         sfx.play("pick", hit.point);
         return;
       }
-      const v = this.scene.views.get(hit.id)!;
-      p.press = {
-        kind: "ray",
-        id: hit.id,
-        dist: hit.dist,
-        offset: new THREE.Vector3(...v.item.pos).sub(this.scene.toBoard(hit.point)),
-        moved: false,
-        at0: hit.point.clone(),
-        t0: performance.now(),
-        talked: false,
-        yaw: 0,
-        rot0: v.item.rotY ?? 0,
-      };
-      this.haptic(p, 0.3, 20);
-      return this.route(p, `item ${nameOf(v.item).slice(0, 18)}`);
+      this.rayPress(p, hit);
+      return this.route(p, `item ${nameOf(this.scene.views.get(hit.id)!.item).slice(0, 18)}`);
     }
     if (hit?.kind === "link") {
       this.ctl.selectLink?.(hit.id);
@@ -879,6 +873,35 @@ export class XRInput {
     }
     this.route(p, `table (tool ${tool})`);
     this.pressTable(p);
+  }
+
+  /** The ray on an item: selected, and dragged along the ray while held. */
+  private rayPress(p: Pointer, hit: { id: string; dist: number; point: THREE.Vector3 }) {
+    const v = this.scene.views.get(hit.id)!;
+    p.press = {
+      kind: "ray",
+      id: hit.id,
+      dist: hit.dist,
+      offset: new THREE.Vector3(...v.item.pos).sub(this.scene.toBoard(hit.point)),
+      moved: false,
+      at0: hit.point.clone(),
+      t0: performance.now(),
+      talked: false,
+      yaw: 0,
+      rot0: v.item.rotY ?? 0,
+    };
+    this.haptic(p, 0.3, 20);
+  }
+
+  /** Let go of an item dragged on the ray: it stays where it is, or (borrowed, items locked) back it goes. */
+  private dropRay(id: string) {
+    if (this.ctl.client.isGhost(id)) {
+      this.ctl.client.drop(id);
+      sfx.play("back");
+    } else {
+      this.ctl.client.release(id);
+      sfx.play("drop");
+    }
   }
 
   /** Open table or air (or anything, items locked): hold to move the table (both hands to turn and scale it); a tap clears the selection. */
@@ -954,11 +977,13 @@ export class XRInput {
       }
       case "ray": {
         this.scene.showGuides(null);
-        if (press.talked) return;
-        if (press.moved) {
-          this.ctl.client.release(press.id);
-          sfx.play("drop");
-        } else {
+        if (press.talked) {
+          if (this.ctl.client.isGhost(press.id)) this.ctl.client.drop(press.id);
+          return;
+        }
+        if (press.moved) this.dropRay(press.id);
+        else {
+          if (this.ctl.client.isGhost(press.id)) this.ctl.client.drop(press.id);
           this.ctl.select([press.id]);
           sfx.play("pick");
         }
@@ -989,13 +1014,7 @@ export class XRInput {
       sfx.play("grab");
       return;
     }
-    if (on("lockItems")) {
-      // Locked: a grip right on an item borrows it (it springs back); anywhere else moves the table.
-      if (this.grabNear(p)) return;
-      p.grabbing = true;
-      this.beginBoardGrab();
-      return;
-    }
+    // Locked, a grip on an item (at the hand or down the ray) only borrows it: startCarry sees to that.
     // Already carrying with the other hand: this one joins in on the same item.
     const other = this.ptrs.find((q) => q !== p && q.carry);
     const near = this.nearItem(p);
@@ -1257,7 +1276,9 @@ export class XRInput {
 
   private cancel(p: Pointer) {
     if (p.carry) this.letGo(p.carry);
-    if (p.press?.kind === "ray" && p.press.moved) this.ctl.client.release(p.press.id);
+    if (p.press?.kind === "ray") {
+      if (p.press.moved || this.ctl.client.isGhost(p.press.id)) this.dropRay(p.press.id);
+    }
     if (p.poke?.down) p.poke.panel.pointer("up", -1, -1, `k${p.i}`);
     p.poke = null;
     p.carry = null;
@@ -1400,7 +1421,7 @@ export class XRInput {
         } else {
           const hit = this.scene.pick(p.origin, p.dir);
           // Locked: items don't light up under the ray; it's all board.
-          const id = hit && hit.kind !== "table" && !on("lockItems") ? hit.id : null;
+          const id = hit && hit.kind !== "table" ? hit.id : null;
           if (id && id !== p.hoverItem) {
             this.haptic(p, 0.15, 12);
             sfx.play("hover", hit!.point, id);

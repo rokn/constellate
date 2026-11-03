@@ -98,7 +98,7 @@ export const BOARD_SECTIONS: BoardSection[] = [
       t("snap", "Snap to grid"),
       n("gridSize", "Grid size", 0.01, 0.3, 0.01),
       t("frameCarries", "Frames carry their contents", "Moving a frame moves what's in it"),
-      t("lockItems", "Lock items", "Nothing on the board stays moved: rays, pinches and grips on open air move the board itself, and an item grabbed right at the hand (a pinch or grip on it) can be carried, stretched open or thrown at a wall, then springs back when let go (the voice and Jarvis can still change things)"),
+      t("lockItems", "Lock items", "Nothing on the board stays moved: drag an item on the ray, carry it (grip or pinch), stretch it open or throw it at a wall, and it springs back when let go. Open air moves the board itself (the voice and Jarvis can still change things)"),
       t("magnet", "Magnetic snapping", "Items line up with their neighbours and stack on each other as you place them"),
       n("magnetReach", "Magnet reach (m)", 0.005, 0.08, 0.005),
       t("magnetGuides", "Alignment guides"),

@@ -279,8 +279,8 @@ can stand on its own, or be drawn from one of the project's repos and stay linke
   wheel's **Expand into code** (or the voice: "show me the code of this") takes the session over to
   the Code view, and its menu's **◆ Boards** brings it back, in VR or passthrough.
 - **Lock items** keeps the board's layout: rays and grips on open air move the board itself, but
-  an item grabbed right at the hand can still be carried, stretched open or thrown at a wall, and
-  springs back to where it was when you let go.
+  an item can still be dragged on the ray, carried (grip or pinch), stretched open or thrown at a
+  wall, and springs back to where it was when you let go.
 
 In a headset it's at its best in **Passthrough**: the table sits on your desk.
 
