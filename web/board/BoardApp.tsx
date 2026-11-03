@@ -27,6 +27,8 @@ import { RoomXR } from "./room";
 import { ScrubXR } from "./scrub";
 import { SnapsXR } from "./snaps";
 import { GesturesXR } from "./gestures";
+import { GuideXR } from "./guide";
+import { TypeXR } from "./typing";
 import { ShelfXR } from "./shelf";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
@@ -672,6 +674,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         select: (ids) => setSelected(ids),
       }),
     (x) => new GesturesXR(x),
+    (x) => new TypeXR(x),
+    (x) => new GuideXR(x),
   ];
 
   const rename = (name: string) => client.apply([{ op: "rename", name }]);
@@ -780,6 +784,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         return setLayers({ hide: [], isolate: null });
       case "tune":
         return setTuneOpen((o) => !o);
+      case "guide":
+      case "keymap":
+        return setHelp(true);
       case "recenter":
         return s?.overview();
       case "tiers":

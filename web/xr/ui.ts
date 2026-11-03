@@ -388,6 +388,28 @@ export function fitPath(ctx: CanvasRenderingContext2D, path: string, maxW: numbe
 }
 
 /** Greedy word wrap in the current font. */
+export type RayLine = THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+
+/**
+ * A pointing ray and the dot where it lands, drawn over everything — panels
+ * included — so you can always see where you're aiming. The ray is a thin
+ * tapered tube (a GL line is one pixel, lost against a lit panel), one metre
+ * long down -Z: scale z to its length. The dot has a dark rim, to read on
+ * bright glass.
+ */
+export function makeRay(color: THREE.ColorRepresentation, dotColor: THREE.ColorRepresentation = color, opacity = 0.8): { line: RayLine; dot: THREE.Mesh } {
+  const geo = new THREE.CylinderGeometry(0.0007, 0.0016, 1, 8, 1, true).rotateX(-Math.PI / 2).translate(0, 0, -0.5);
+  const line: RayLine = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false, toneMapped: false }));
+  line.renderOrder = 50;
+  line.frustumCulled = false;
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.0055, 14, 10), new THREE.MeshBasicMaterial({ color: dotColor, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }));
+  dot.renderOrder = 52;
+  const rim = new THREE.Mesh(new THREE.SphereGeometry(0.0085, 14, 10), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55, depthTest: false, depthWrite: false }));
+  rim.renderOrder = 51;
+  dot.add(rim);
+  return { line, dot };
+}
+
 export function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
   const out: string[] = [];
   for (const para of text.split("\n")) {

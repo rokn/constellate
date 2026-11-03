@@ -7,7 +7,7 @@ import { type Ell, HandGestures, inside } from "./hands";
 import { MapView, type MapHit } from "./map";
 import { sfx } from "./sound";
 import { type Plane, type SavedTable, type Table, Surface, disc, facing, loadSurfaces, loadTable, mainAxis, overTable, planeThrough, saveSurfaces, saveTable, tableFrom, tableIn, tableInto, v3, vec } from "./surface";
-import { C, Panel, Tag, roundRect } from "./ui";
+import { C, Panel, Tag, makeRay, roundRect, type RayLine } from "./ui";
 
 /**
  * The room you stand in. One renderer serves three ways of looking:
@@ -105,7 +105,7 @@ type Pointer = {
   kind: "controller" | "hand" | "mouse";
   handedness: "left" | "right" | "none";
   ray: THREE.Object3D;
-  line: THREE.Line;
+  line: RayLine;
   dot: THREE.Mesh;
   source?: XRInputSource;
   origin: THREE.Vector3;
@@ -730,13 +730,8 @@ export class Engine {
   /* --------------------------------- input --------------------------------- */
 
   private makeRayVisual() {
-    const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]),
-      new THREE.LineBasicMaterial({ color: C.static, transparent: true, opacity: 0.55, toneMapped: false }),
-    );
+    const { line, dot } = makeRay(C.static, "#ffffff");
     line.scale.z = 3;
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 10, 8), new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, depthTest: false }));
-    dot.renderOrder = 30;
     dot.visible = false;
     this.overlay.add(dot);
     return { line, dot };
@@ -2411,7 +2406,7 @@ export class Engine {
     const len = p.hoverHandle ? handleHit!.distance : panelHit ? hit!.distance : p.press?.kind === "body" ? p.press.dist : mapHit ? this.hitDistanceM(p, mapHit) : 3;
     p.line.scale.z = len;
     const aimed = !!(mapHit || panelHit || p.hoverHandle || p.press?.kind === "body");
-    (p.line.material as THREE.LineBasicMaterial).color.set(p.press?.kind === "body" ? (p.press.pin ? C.runtime : C.course) : aimed ? "#ffffff" : C.static);
+    p.line.material.color.set(p.press?.kind === "body" ? (p.press.pin ? C.runtime : C.course) : aimed ? "#ffffff" : C.static);
     p.dot.visible = aimed && (p.kind !== "mouse" || this.renderer.xr.isPresenting);
     p.dot.position.copy(p.origin).addScaledVector(p.dir, len);
     p.dot.scale.setScalar(Math.max(0.6, len * 0.8));

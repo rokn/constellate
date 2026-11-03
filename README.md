@@ -246,6 +246,16 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   stick in for the **command wheel**: tilt to a slice, let go. Look at a controller to see
   what its buttons do; a chip says what each press did. Every one of them is a Tune knob
   (Headset · Controller buttons, Headset · Wheel and palm menu).
+- **Guide**: the dock's **?** opens a tour you play through — controllers, hands, two hands and
+  nested boards, the room, the keyboard — each step drawn (the controller with its button lit,
+  the hand in the pose) and waiting for you to do it. Its **Map** tab lists every button, wheel
+  slice, gesture and key as they're set now (F1 on a keyboard). It opens by itself the first
+  time you enter (Tune: Guide when you enter).
+- **A keyboard**: pair a Bluetooth keyboard with the Quest and just type — a text bar opens in
+  front of you; Enter sends it to Jarvis, or (Tab) makes it the selected item's label or a new
+  note. Alt + a letter runs a shortcut (Alt-I inside, Alt-U up, Alt-1…8 the wheel's slices; or
+  letters alone, in Tune), Space talks, Del deletes, Ctrl-Z undoes. Your hands rest while you
+  type: hand pinches, pokes and menus pause, and come back a moment after the last key.
 - **Hands**: turn your right palm up and the wheel blooms from it; turn your left palm toward
   you for the **wrist dock** (its eye turns passthrough off and on without leaving; the red
   door leaves the headset). Poke any panel with a fingertip. Middle-finger pinches: voice

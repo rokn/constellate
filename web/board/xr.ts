@@ -6,6 +6,7 @@ import { actionById } from "../../shared/boardActions";
 import type { BoardPreset } from "../../shared/boardTune";
 import { HandGestures } from "../xr/hands";
 import { sfx } from "../xr/sound";
+import { makeRay, type RayLine } from "../xr/ui";
 import type { Ctl } from "./ctl";
 import { Callout, Captions, Dock, HoloPanel, Palette, TunePanel, faceHead, headFrame, type PaletteExtras } from "./hud";
 import { LOOK } from "./look";
@@ -53,7 +54,7 @@ export type Pointer = {
   ray: THREE.Group;
   grip: THREE.Group;
   hand: THREE.XRHandSpace;
-  line: THREE.Line;
+  line: RayLine;
   dot: THREE.Mesh;
   source: XRInputSource | null;
   side: "left" | "right" | "none";
@@ -74,6 +75,8 @@ export type Pointer = {
   poke: { panel: HoloPanel; down: boolean } | null;
   snapLatch: boolean;
   lastSnap: string;
+  /** A pinch or grab that began while typing: its end is ignored too. */
+  hushed?: boolean;
 };
 
 /** What other parts of the headset (the room, the shelf, history, snapshots, gestures) plug in. */
@@ -93,6 +96,9 @@ export interface XRPlugin {
   linkAcross?(from: string, origin: THREE.Vector3, dir: THREE.Vector3): boolean;
   entered?(): void;
   left?(): void;
+  dispose?(): void;
+  /** Any action run (a button, the wheel, a key, a gesture): for the guide to notice. */
+  acted?(id: string): void;
 }
 
 /** A panel that floats in front of you: where it sits beside your gaze, and whether it's drifting after you now. */
@@ -199,6 +205,7 @@ export class XRInput {
   dispose() {
     this.off();
     this.offTune();
+    for (const pl of this.plugins) pl.dispose?.();
   }
 
   setPresets(p: BoardPreset[]) {
@@ -231,6 +238,7 @@ export class XRInput {
   /** Run an action from a button, the wheel, a gesture: said by the hand that did it. */
   act(id: string, p?: Pointer | null) {
     if (!id || id === "none") return;
+    for (const pl of this.plugins) pl.acted?.(id);
     const label = actionById(id)?.label ?? id;
     if (on("actionToasts") && id !== "wheel") this.say(label, p ?? undefined);
     this.ctl.run?.(id, "button");
@@ -432,7 +440,7 @@ export class XRInput {
     // The dock: on the left wrist, when the palm's turned toward you (a hand), or above the left controller.
     const left = this.ptrs.find((p) => p.side === "left" && p.source);
     let dockAt: THREE.Vector3 | null = null;
-    if (left && on("wristMenu") && !(this.wheelBy?.via === "palm" && this.wheelBy.p === left)) {
+    if (left && on("wristMenu") && !this.handsQuiet(left) && !(this.wheelBy?.via === "palm" && this.wheelBy.p === left)) {
       if (this.isHand(left)) {
         const pose = left.gest.pose;
         if (pose && !left.gest.palmUp) {
@@ -460,7 +468,7 @@ export class XRInput {
     const palmSide = pick("palmMenu");
     if (palmSide !== "off") {
       const hand = this.ptrs.find((p) => p.side === palmSide && p.source && this.isHand(p));
-      const up = !!hand?.gest.palmUp && !hand.carry && !hand.press;
+      const up = !!hand?.gest.palmUp && !hand.carry && !hand.press && !this.handsQuiet(hand);
       const using = this.ptrs.some((q) => q.hoverPanel?.panel === this.wheel || q.poke?.panel === this.wheel || (q.press?.kind === "panel" && q.press.panel === this.wheel));
       if (up && hand && !this.wheelBy) this.openWheel(hand, "palm", -1);
       else if (this.wheelBy?.via === "palm" && !up && !using) this.closeWheel();
@@ -554,14 +562,8 @@ export class XRInput {
       const hand = r.xr.getHand(i);
       grip.add(ctrlModels.createControllerModel(grip));
       hand.add(handModels.createHandModel(hand, "mesh"));
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]),
-        new THREE.LineBasicMaterial({ color: LOOK.cyan, transparent: true, opacity: 0.55, depthTest: false, toneMapped: false }),
-      );
-      line.renderOrder = 30;
+      const { line, dot } = makeRay(LOOK.cyan, "#ffffff");
       ray.add(line);
-      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.005, 12, 8), new THREE.MeshBasicMaterial({ color: LOOK.cyan, depthTest: false, toneMapped: false }));
-      dot.renderOrder = 31;
       dot.visible = false;
       this.scene.overlay.add(ray, grip, hand, dot);
       const p: Pointer = {
@@ -610,6 +612,41 @@ export class XRInput {
 
   isHand(p: Pointer) {
     return !!p.source?.hand;
+  }
+
+  /** What two hands on one item are doing now (scale, explode, open), if they are. */
+  get twoHandsMode() {
+    return this.two?.mode ?? null;
+  }
+
+  get wheelOpen() {
+    return this.wheel.mesh.visible;
+  }
+
+  get dockOpen() {
+    return this.dock.mesh.visible;
+  }
+
+  /** Until when tracked hands are ignored: they rest on a keyboard while you type. */
+  private handsQuietUntil = 0;
+
+  /** Typing: the hands rest a moment (pinches, pokes, palm menus and gestures don't fire). */
+  hushHands() {
+    if (!on("typingHushesHands")) return;
+    this.handsQuietUntil = performance.now() + num("typingHandsBackMs");
+    for (const p of this.ptrs) {
+      if (!this.isHand(p) || p.carry) continue;
+      if (p.press?.kind === "panel") p.press.panel.pointer("up", -1, -1, `p${p.i}`);
+      if (p.press) p.hushed = true;
+      p.press = null;
+      if (p.poke?.down) p.poke.panel.pointer("up", -1, -1, `k${p.i}`);
+      p.poke = null;
+    }
+  }
+
+  /** Whether this hand is resting (typing just now). Controllers never are. */
+  handsQuiet(p?: Pointer) {
+    return performance.now() < this.handsQuietUntil && (!p || this.isHand(p));
   }
 
   /** How big an item is in the room (m): for its pitch. */
@@ -685,6 +722,10 @@ export class XRInput {
 
   private selectStart(p: Pointer) {
     if (this.scene.mode === "flat") return;
+    if (this.handsQuiet(p)) {
+      p.hushed = true;
+      return;
+    }
     sfx.resume();
     // Two hands on an item: the helping hand's trigger swaps stretching for pulling apart.
     if (this.two && !p.carry && this.ptrs.some((q) => q !== p && q.carry?.id === this.two!.id)) {
@@ -770,6 +811,10 @@ export class XRInput {
   }
 
   private selectEnd(p: Pointer) {
+    if (p.hushed) {
+      p.hushed = false;
+      return;
+    }
     const press = p.press;
     p.press = null;
     for (const pl of this.plugins) if (pl.release?.(p, "select")) return;
@@ -852,6 +897,10 @@ export class XRInput {
 
   private squeezeStart(p: Pointer) {
     if (this.scene.mode === "flat") return;
+    if (this.handsQuiet(p)) {
+      p.hushed = true;
+      return;
+    }
     for (const pl of this.plugins) if (pl.press?.(p, "squeeze")) return;
     // A panel under the ray: carry it.
     const ph = this.panelHit(p);
@@ -872,6 +921,10 @@ export class XRInput {
   }
 
   private squeezeEnd(p: Pointer) {
+    if (p.hushed) {
+      p.hushed = false;
+      return;
+    }
     for (const pl of this.plugins) if (pl.release?.(p, "squeeze")) return;
     if (p.press?.kind === "move") {
       const press = p.press;
@@ -1120,7 +1173,7 @@ export class XRInput {
       p.dir.set(0, 0, -1).transformDirection(p.ray.matrixWorld);
       const connected = !!p.source;
       p.line.visible = connected && on("rays");
-      (p.line.material as THREE.LineBasicMaterial).opacity = num("rayBrightness");
+      p.line.material.opacity = num("rayBrightness");
       p.grip.visible = on("controllerModels");
       p.hand.visible = on("handModels");
       if (!connected) {
@@ -1131,6 +1184,14 @@ export class XRInput {
       // Hand gestures: the middle pinches, and a fingertip on a panel.
       if (this.isHand(p)) {
         const g = p.gest.update(p.hand, now);
+        // Resting on a keyboard: no ray, no pinches, no pokes (one carrying something keeps it).
+        if (this.handsQuiet(p) && !p.carry) {
+          p.line.visible = false;
+          p.dot.visible = false;
+          p.hoverPanel = null;
+          p.hoverItem = null;
+          continue;
+        }
         if (g.middlePinch) {
           if (this.two && !p.carry) this.cycleTwo(p);
           else this.act(pick(p.side === "left" ? "leftMiddlePinch" : "rightMiddlePinch"), p);
@@ -1247,7 +1308,8 @@ export class XRInput {
       }
       p.line.scale.z = rayLen;
       const tool = this.ctl.tool();
-      (p.line.material as THREE.LineBasicMaterial).color.set(tool === "ink" ? this.ctl.inkColor() : tool === "connect" ? LOOK.accent : tool === "erase" ? LOOK.danger : tool === "lasso" ? LOOK.select : LOOK.cyan);
+      // On a panel: white, so it reads against the cyan glass.
+      p.line.material.color.set(p.hoverPanel || p.press?.kind === "panel" ? "#ffffff" : tool === "ink" ? this.ctl.inkColor() : tool === "connect" ? LOOK.accent : tool === "erase" ? LOOK.danger : tool === "lasso" ? LOOK.select : LOOK.cyan);
     }
 
     // Two hands on one item: stretch, pull apart, or spread wide to go inside.

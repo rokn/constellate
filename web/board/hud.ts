@@ -144,6 +144,18 @@ export function icon(ctx: CanvasRenderingContext2D, name: string, cx: number, cy
       ctx.lineTo(cx + h * 0.15, cy - h * 0.15);
       ctx.stroke();
       break;
+    case "help":
+      // A question mark in a ring.
+      ctx.arc(cx, cy, h * 0.85, 0, Math.PI * 2);
+      ctx.moveTo(cx - h * 0.32, cy - h * 0.22);
+      ctx.arc(cx, cy - h * 0.22, h * 0.32, Math.PI, Math.PI * 0.35, false);
+      ctx.quadraticCurveTo(cx, cy - h * 0.02, cx, cy + h * 0.2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy + h * 0.5, h * 0.06, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      break;
     case "exit":
       // A door, and an arrow out of it.
       ctx.moveTo(cx + h * 0.1, cy - h * 0.75);
@@ -620,6 +632,7 @@ export class Dock extends HoloPanel {
         ["voice", "voice", () => this.ctl.toggleVoice(), voiceOn, v === "speaking" ? AMBER : voiceOn ? "#7dff9a" : undefined],
         ["undo", "undo", () => this.ctl.client.undo(), false],
         ["redo", "redo", () => this.ctl.client.redo(), false],
+        ["guide", "help", () => this.on.run("guide"), false],
       ],
       [
         ["palette", "build", this.on.palette, this.on.isOpen("palette")],

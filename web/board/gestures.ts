@@ -148,7 +148,7 @@ export class GesturesXR implements XRPlugin {
     for (const p of this.xr.ptrs) {
       if (!p.source || !this.xr.isHand(p) || (p.side !== "left" && p.side !== "right")) continue;
       // Busy hands make no gestures.
-      if (p.press || p.carry || p.grabbing || p.poke) {
+      if (p.press || p.carry || p.grabbing || p.poke || this.xr.handsQuiet(p)) {
         this.held.delete(p.side);
         continue;
       }
