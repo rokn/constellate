@@ -114,6 +114,9 @@ const BUTTONS: Record<"left" | "right", Record<number, [string, string | null]>>
   left: { 4: ["btnX", "btnXHold"], 5: ["btnY", "btnYHold"], 3: ["btnLStick", null] },
 };
 
+/** Input slots (see setup). */
+const XR_SLOTS = 4;
+
 export class XRInput {
   readonly ptrs: Pointer[] = [];
   private dock: Dock;
@@ -580,7 +583,11 @@ export class XRInput {
     const r = this.scene.renderer;
     const ctrlModels = new XRControllerModelFactory();
     const handModels = new XRHandModelFactory();
-    for (let i = 0; i < 2; i++) {
+    // Four slots, not two: three.js hands each input source the next free slot in the order they
+    // arrive, and the Quest can list more than two at once (hands and controllers together, a
+    // system pointer). With only two, a controller that came third got no slot at all: its trigger,
+    // grip and stick did nothing, and nothing said why.
+    for (let i = 0; i < XR_SLOTS; i++) {
       const ray = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
       const hand = r.xr.getHand(i);

@@ -144,6 +144,9 @@ const Y = new THREE.Vector3(0, 1, 0);
 /** Keys that fly in the headset: the preview's, and the desktop's WASD and Q / E. */
 const FLY_KEYS = new Set(["arrowup", "arrowdown", "arrowleft", "arrowright", "pageup", "pagedown", "w", "a", "s", "d", "q", "e", "shift"]);
 
+/** Input slots (see setup). */
+const XR_SLOTS = 4;
+
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -758,7 +761,11 @@ export class Engine {
   private setupXRInput() {
     const controllerModels = new XRControllerModelFactory();
     const handModels = new XRHandModelFactory();
-    for (let i = 0; i < 2; i++) {
+    // Four slots, not two: three.js hands each input source the next free slot in the order they
+    // arrive, and the Quest can list more than two at once (hands and controllers together, a
+    // system pointer). With only two, a controller that came third got no slot at all: its trigger,
+    // grip and stick did nothing, and nothing said why.
+    for (let i = 0; i < XR_SLOTS; i++) {
       const ray = this.renderer.xr.getController(i);
       const grip = this.renderer.xr.getControllerGrip(i);
       const hand = this.renderer.xr.getHand(i);
