@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { announceInputs, handOff } from "../shell/xrHandoff";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { Board } from "../../shared/board";
 import { Bloom } from "../xr/bloom";
@@ -185,6 +186,12 @@ export class BoardScene {
   }
 
   dispose() {
+    // Leaving for the Code view in the headset: the session goes on, for it to take.
+    if (this.session && this.mode !== "flat") {
+      const s = this.session;
+      this.session = null;
+      handOff(s, this.mode);
+    }
     this.renderer.setAnimationLoop(null);
     window.removeEventListener("resize", this.onResize);
     this.offTune();
@@ -493,14 +500,18 @@ export class BoardScene {
 
   /* --------------------------------- XR ---------------------------------- */
 
-  async enter(mode: "vr" | "ar") {
+  /** Into the headset; with `adopt`, into the session the Code view handed over (you never left it). */
+  async enter(mode: "vr" | "ar", adopt?: XRSession) {
     if (!navigator.xr) throw new Error("This browser has no WebXR.");
     if (this.session) await this.session.end().catch(() => {});
-    const session = await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
-      requiredFeatures: ["local-floor"],
-      // Walls and desks from Space Setup, anchors that keep boards in place across sessions, and hit tests.
-      optionalFeatures: ["hand-tracking", ...(on("planes") ? ["plane-detection"] : []), "anchors", "hit-test"],
-    });
+    const session =
+      adopt ??
+      (await navigator.xr.requestSession(mode === "vr" ? "immersive-vr" : "immersive-ar", {
+        requiredFeatures: ["local-floor"],
+        // Walls and desks from Space Setup, anchors that keep boards in place across sessions, and hit tests.
+        // (Tracked sources too: the Code view uses them when the session moves over to it.)
+        optionalFeatures: ["hand-tracking", ...(on("planes") ? ["plane-detection"] : []), "anchors", "hit-test", "tracked-sources"],
+      }));
     this.session = session;
     session.addEventListener("end", () => {
       if (this.session !== session) return;
@@ -510,6 +521,7 @@ export class BoardScene {
     this.renderer.xr.setFramebufferScaleFactor(num("renderScale"));
     this.renderer.xr.setFoveation(num("foveation"));
     await this.renderer.xr.setSession(session);
+    if (adopt) announceInputs(session);
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     this.setMode(mode);
   }

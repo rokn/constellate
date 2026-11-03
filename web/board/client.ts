@@ -27,6 +27,8 @@ export class BoardClient {
   private shown: Board | null = null;
   private building = new Set<string>();
   /** Where held items (and what's pinned to them) were when they were taken: pinned things move by the same amount. */
+  /** Held with items locked: shown in the hand, never sent; let go, it springs back. */
+  private ghosts = new Set<string>();
   private holdBase = new Map<string, { pos: Vec3; children: { id: string; pos: Vec3 }[] }>();
   private presenceListeners = new Set<(p: Presence) => void>();
   /** This screen, among the others on the board. */
@@ -140,6 +142,7 @@ export class BoardClient {
     }
     this.held.set(id, { ...this.held.get(id), ...patch });
     this.emit();
+    if (this.ghosts.has(id)) return;
     if (!this.holdTimers.has(id)) {
       this.holdTimers.set(
         id,
@@ -168,6 +171,26 @@ export class BoardClient {
     }
     if (ops.length) this.apply(ops, `hold:${id}`);
     else this.emit();
+  }
+
+  /** From now until it's dropped, this item's holds stay on this screen (items are locked). */
+  ghost(id: string) {
+    this.ghosts.add(id);
+  }
+
+  /** Let go of a locked item: nothing kept, it's back where (and as big, and as turned as) it was. */
+  drop(id: string) {
+    clearTimeout(this.holdTimers.get(id));
+    this.holdTimers.delete(id);
+    for (const c of this.holdBase.get(id)?.children ?? []) this.held.delete(c.id);
+    this.holdBase.delete(id);
+    this.held.delete(id);
+    this.ghosts.delete(id);
+    this.emit();
+  }
+
+  isGhost(id: string) {
+    return this.ghosts.has(id);
   }
 
   isHeld(id: string) {

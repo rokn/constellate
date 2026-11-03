@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryRepo } from "../../shared/types";
 import { fetchFile, post, type FileData } from "../lib/api";
 import type { Mode } from "./engine";
+import { goBoard } from "../shell/nav";
+import { takeSession } from "../shell/xrHandoff";
 import type { MapHit, MapInput, MapStyle } from "./map";
 import { splitList } from "../../shared/filter";
 import type { Actions, AppActions, AppModel, BranchRow, FocusDir, Model } from "./model";
@@ -161,6 +163,7 @@ export function useXR(feed: XRFeed) {
     },
     enter: (m) => void enter(m),
     exitXR: () => roomRef.current?.engine.exit(),
+    toBoards: () => goBoard(undefined, undefined, { transition: "Boards" }),
     reload: () => {
       const m = roomRef.current?.engine.mode;
       try {
@@ -306,7 +309,7 @@ export function useXR(feed: XRFeed) {
   /* ------------------------------- sessions ------------------------------- */
 
   const enter = useCallback(
-    async (m: "vr" | "ar") => {
+    async (m: "vr" | "ar", adopt?: XRSession) => {
       setError(null);
       setEntering(true);
       try {
@@ -371,7 +374,7 @@ export function useXR(feed: XRFeed) {
         r.engine.setSettings(f.model.settings);
         r.setStyle(styled(f.style, focusRef.current));
         if (f.map) r.setMap(f.map);
-        await r.engine.enter(m);
+        await r.engine.enter(m, adopt);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -379,6 +382,20 @@ export function useXR(feed: XRFeed) {
       }
     },
     [actions],
+  );
+
+  // Come over from a board in the headset: carry on in the same session.
+  useEffect(() => {
+    const h = takeSession();
+    if (h) void enter(h.mode, h.session);
+  }, [enter]);
+  // Leaving the Code view (for a board) while in the headset: the session goes on, for the board to take.
+  useEffect(
+    () => () => {
+      roomRef.current?.dispose();
+      roomRef.current = null;
+    },
+    [],
   );
 
   // Back in after a reload from the headset, once the browser grants it.

@@ -400,6 +400,7 @@ export class MenuPanel extends Panel {
     if (m.mode !== "flat") {
       const armed = !!this.reloadArmed;
       add("reload", armed ? "Sure? Reload" : "↻ Reload", () => this.pressReload(), { active: armed, accent: C.bad });
+      add("boards", "◆ Boards", a.toBoards, { accent: C.course });
       add("exit", "Exit", a.exitXR);
     }
   }

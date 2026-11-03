@@ -15,6 +15,7 @@ export const BOARD_ACTIONS: BoardAction[] = [
   a("palette", "Palette", "build", "panels", "Components, holograms and templates"),
   a("tune", "Tune", "tune", "panels", "Every knob"),
   a("wheel", "Command wheel", "wheel", "panels", "The ring of quick actions"),
+  a("dock", "Left-hand menu on / off", "hand", "panels", "Show or hide the menu over the left controller (or on the left wrist)"),
   a("shelf", "Board shelf", "shelf", "boards", "Every board, on a shelf beside you"),
   a("code", "Expand into code", "shelf", "boards", "The selected item's code in the Code view, filtered to it (the board's repo with nothing selected)"),
   a("snapshots", "Snapshot cards", "camera", "view", "The views you kept"),

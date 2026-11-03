@@ -275,13 +275,18 @@ can stand on its own, or be drawn from one of the project's repos and stay linke
   select or delete them all. Items snap magnetically to their neighbours, with guides.
 - **Voice macros** ("when I say *ship it*, review the design, save a version and export"),
   **dictation** (your next words, exactly, as a name or a note), switching boards and any
-  action by voice. Switching boards keeps you in the headset.
+  action by voice. Switching boards keeps you in the headset, and so does switching views: the
+  wheel's **Expand into code** (or the voice: "show me the code of this") takes the session over to
+  the Code view, and its menu's **◆ Boards** brings it back, in VR or passthrough.
+- **Lock items** keeps the board's layout: rays and grips on open air move the board itself, but
+  an item grabbed right at the hand can still be carried, stretched open or thrown at a wall, and
+  springs back to where it was when you let go.
 
 In a headset it's at its best in **Passthrough**: the table sits on your desk.
 
 - **Buttons**: A, B, X, Y each do one thing tapped and another held, and so do the stick
   presses — by default A the palette / held the **board shelf**, B undo / redo, X voice /
-  **dictate**, Y tune / **snapshot**, the left stick press resets the table. Hold the right
+  **dictate**, Y tune / **snapshot**, the left stick press shows or hides the left-hand menu (its table button resets the table). Hold the right
   stick in for the **command wheel**: tilt to a slice, let go. Look at a controller to see
   what its buttons do; a chip says what each press did. Every one of them is a Tune knob
   (Headset · Controller buttons, Headset · Wheel and palm menu).
