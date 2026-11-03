@@ -475,6 +475,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (e.key === "k") runRef.current("snapshot");
       else if (e.key === "t") (runRef.current("tiers"), setTiersOn(!!sceneRef.current?.tiersOn));
       else if (e.key === "h") setHistoryOpen((o) => !o);
+      else if (e.key === "L") setTune({ lockItems: !on("lockItems") });
       else if (e.key === "l") setLayersOpen((o) => !o);
       else if (e.key === "i" && selRef.current.length === 1) insideRef.current(selRef.current[0]);
       else if (e.key === "u" && clientRef.current.board?.parent) ctl.up?.();
@@ -784,6 +785,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         return setLayers({ hide: [], isolate: null });
       case "tune":
         return setTuneOpen((o) => !o);
+      case "lock":
+        return setTune({ lockItems: !on("lockItems") });
       case "guide":
       case "keymap":
         return setHelp(true);
@@ -886,6 +889,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               </button>
               <button className={`ws-chip ${viewsOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setViewsOpen((o) => !o)} title="Views: snapshot cards of where you looked (K keeps this one)">
                 Views{board?.snaps?.length ? ` · ${board.snaps.length}` : ""}
+              </button>
+              <button className={`ws-chip ${on("lockItems") ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setTune({ lockItems: !on("lockItems") })} title="Lock items: nothing moves, you only turn the view (Shift-L)">
+                {on("lockItems") ? "Locked" : "Lock"}
               </button>
               <button className={`ws-chip ${tiersOn ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => (runAction("tiers"), setTiersOn(!!sceneRef.current?.tiersOn))} title="Depth tiers: frames float as layers (T)">
                 Tiers

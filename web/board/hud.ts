@@ -144,6 +144,18 @@ export function icon(ctx: CanvasRenderingContext2D, name: string, cx: number, cy
       ctx.lineTo(cx + h * 0.15, cy - h * 0.15);
       ctx.stroke();
       break;
+    case "lock": {
+      // A padlock: a shackle over its body.
+      ctx.moveTo(cx - h * 0.4, cy - h * 0.05);
+      ctx.lineTo(cx - h * 0.4, cy - h * 0.4);
+      ctx.arc(cx, cy - h * 0.4, h * 0.4, Math.PI, 0);
+      ctx.lineTo(cx + h * 0.4, cy - h * 0.05);
+      ctx.stroke();
+      ctx.beginPath();
+      chamfer(ctx, cx - h * 0.62, cy - h * 0.05, h * 1.24, h * 0.85, h * 0.12);
+      ctx.stroke();
+      break;
+    }
     case "help":
       // A question mark in a ring.
       ctx.arc(cx, cy, h * 0.85, 0, Math.PI * 2);
@@ -632,6 +644,7 @@ export class Dock extends HoloPanel {
         ["voice", "voice", () => this.ctl.toggleVoice(), voiceOn, v === "speaking" ? AMBER : voiceOn ? "#7dff9a" : undefined],
         ["undo", "undo", () => this.ctl.client.undo(), false],
         ["redo", "redo", () => this.ctl.client.redo(), false],
+        ["lock", "lock", () => this.on.run("lock"), on("lockItems")],
         ["guide", "help", () => this.on.run("guide"), false],
       ],
       [
@@ -658,7 +671,7 @@ export class Dock extends HoloPanel {
     ctx.textAlign = "center";
     const depth = (this.ctl.client.board?.name.match(/ › /g) ?? []).length;
     const level = ["CONTEXT", "CONTAINERS", "COMPONENTS", "CODE", "DETAIL"][Math.min(4, this.ctl.client.board?.parent ? Math.max(1, depth) : 0)];
-    ctx.fillText(`${this.ctl.tool().toUpperCase()} · VOICE ${voiceOn ? "ON" : "OFF"} · ${(this.ctl.client.board?.name.split(" › ").pop() ?? "").toUpperCase().slice(0, 22)} · ${level}`, W / 2, H - 14);
+    ctx.fillText(`${on("lockItems") ? "LOCKED · " : ""}${this.ctl.tool().toUpperCase()} · VOICE ${voiceOn ? "ON" : "OFF"} · ${(this.ctl.client.board?.name.split(" › ").pop() ?? "").toUpperCase().slice(0, 22)} · ${level}`, W / 2, H - 14);
     ctx.textAlign = "left";
     ctx.letterSpacing = "0px";
   }

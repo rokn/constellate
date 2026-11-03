@@ -251,6 +251,9 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   the hand in the pose) and waiting for you to do it. Its **Map** tab lists every button, wheel
   slice, gesture and key as they're set now (F1 on a keyboard). It opens by itself the first
   time you enter (Tune: Guide when you enter).
+- **Lock the items**: the dock's padlock (or Shift-L / the Lock chip on the desktop) freezes
+  everything on the board — every grab, pinch and drag moves the board itself, and the mouse
+  only turns the view. Jarvis and the voice can still change things.
 - **A keyboard**: pair a Bluetooth keyboard with the Quest and just type — a text bar opens in
   front of you; Enter sends it to Jarvis, or (Tab) makes it the selected item's label or a new
   note. Alt + a letter runs a shortcut (Alt-I inside, Alt-U up, Alt-1…8 the wheel's slices; or

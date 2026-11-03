@@ -263,6 +263,15 @@ export class XRInput {
       case "recenter":
         this.scene.resetRig();
         return true;
+      case "lock": {
+        const lock = !on("lockItems");
+        setTune({ lockItems: lock });
+        if (lock) this.ctl.select([]);
+        this.say(lock ? "Items locked · you move the board" : "Items unlocked", p);
+        sfx.play(lock ? "snap" : "pick");
+        this.dock.invalidate();
+        return true;
+      }
       case "passthrough":
         if (this.scene.mode !== "ar") {
           this.say("Passthrough: leave and enter with Passthrough", p);
@@ -533,7 +542,7 @@ export class XRInput {
       mat.opacity += (want - mat.opacity) * Math.min(1, dt * 10);
     }
 
-    const key = `${this.ctl.tool()}|${this.ctl.voiceState()}|${this.palette.mesh.visible}|${this.tune.mesh.visible}|${this.ctl.client.board?.id}|${this.scene.covered}`;
+    const key = `${this.ctl.tool()}|${this.ctl.voiceState()}|${this.palette.mesh.visible}|${this.tune.mesh.visible}|${this.ctl.client.board?.id}|${this.scene.covered}|${on("lockItems")}`;
     if (key !== this.beltKey) {
       this.beltKey = key;
       this.dock.invalidate();
@@ -748,6 +757,7 @@ export class XRInput {
       return;
     }
     const tool = this.ctl.tool();
+    if (on("lockItems")) return this.pressTable(p);
     if (tool === "ink") {
       p.press = { kind: "ink", pts: [this.scene.toBoard(this.tip(p))] };
       return;
@@ -802,9 +812,13 @@ export class XRInput {
       sfx.play("pick", hit.point);
       return;
     }
-    // Open table or air: hold to move the table (both hands to turn and scale it); a tap clears the selection.
+    this.pressTable(p);
+  }
+
+  /** Open table or air (or anything, items locked): hold to move the table (both hands to turn and scale it); a tap clears the selection. */
+  private pressTable(p: Pointer) {
     p.press = { kind: "empty", at0: p.origin.clone() };
-    if (on("pinchMovesTable")) {
+    if (on("pinchMovesTable") || on("lockItems")) {
       p.grabbing = true;
       this.beginBoardGrab();
     }
@@ -907,6 +921,11 @@ export class XRInput {
     if (ph && ph.panel !== this.wheel) {
       p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [] };
       sfx.play("grab");
+      return;
+    }
+    if (on("lockItems")) {
+      p.grabbing = true;
+      this.beginBoardGrab();
       return;
     }
     // Already carrying with the other hand: this one joins in on the same item.
@@ -1287,7 +1306,8 @@ export class XRInput {
           p.dot.visible = true;
         } else {
           const hit = this.scene.pick(p.origin, p.dir);
-          const id = hit && hit.kind !== "table" ? hit.id : null;
+          // Locked: items don't light up under the ray; it's all board.
+          const id = hit && hit.kind !== "table" && !on("lockItems") ? hit.id : null;
           if (id && id !== p.hoverItem) {
             this.haptic(p, 0.15, 12);
             sfx.play("hover", hit!.point, id);

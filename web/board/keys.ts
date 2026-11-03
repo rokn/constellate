@@ -15,6 +15,7 @@ export const KEYMAP: Shortcut[] = [
   { key: "x", action: "tool-erase", group: "tools" },
   { key: "e", action: "explode-toggle", group: "board" },
   { key: "j", action: "duplicate", group: "board" },
+  { key: "y", action: "lock", group: "board" },
   { key: ".", action: "mark-done", group: "board" },
   { key: "i", action: "inside", group: "board" },
   { key: "u", action: "up", group: "board" },

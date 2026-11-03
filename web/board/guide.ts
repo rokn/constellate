@@ -210,6 +210,13 @@ const CHAPTERS: Chapter[] = [
         tryIt: "desk-mode",
       },
       {
+        title: "Lock the items",
+        text: () => "The dock's padlock freezes every item: grabs, pinches and drags all move the board itself, so you can handle it without knocking anything. Press it again to unlock.",
+        art: { kind: "icon", name: "lock" },
+        acts: () => ["lock"],
+        tryIt: "lock",
+      },
+      {
         title: "Scrub history",
         text: () => "Run Scrub (the wheel, a key, or a button you set), then twist your wrist like a dial: left goes back, right forward. Pinch to go there; grip to leave it.",
         art: { kind: "icon", name: "clock" },

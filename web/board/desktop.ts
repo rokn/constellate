@@ -47,6 +47,8 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
     const { origin, dir } = ray(e);
     const hit = scene.pick(origin, dir);
     const tool = ctl.tool();
+    // Items locked: the mouse only turns the view.
+    if (on("lockItems")) return;
 
     if (tool === "lasso" || tool === "erase") {
       // Sweep across items: each one the pointer passes over is collected.
@@ -248,7 +250,7 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
   };
 
   const dbl = (e: MouseEvent) => {
-    if (scene.mode !== "flat") return;
+    if (scene.mode !== "flat" || on("lockItems")) return;
     const { origin, dir } = ray(e);
     const hit = scene.pick(origin, dir);
     if (hit?.kind === "item") ctl.edit(hit.id);

@@ -40,6 +40,7 @@ export const BOARD_ACTIONS: BoardAction[] = [
   a("two-hand-mode", "Stretch: scale / pull apart", "scale", "tools", "What two hands on one item do"),
   // Selection.
   a("delete-selection", "Delete selected", "trash", "selection", "Delete what's selected"),
+  a("lock", "Lock / unlock items", "lock", "selection", "Freeze every item, so you only move the board"),
   a("deselect", "Deselect", "close", "selection", "Clear the selection"),
   a("duplicate", "Duplicate", "copy", "selection", "A copy of the selection beside it"),
   a("explode-toggle", "Pull apart / together", "explode", "selection", "The selected hologram, apart or back together"),
