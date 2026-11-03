@@ -20,7 +20,9 @@ import type { Pointer, XRInput, XRPlugin } from "./xr";
  *  - Anchors: the table, and every board you stood in the room, stay where
  *    you left them, across sessions.
  *  - A room of boards: other boards stand around you, live. Walk up to one
- *    (or pinch its table) to use it; links can run from one board to another.
+ *    (or pinch its table) to use it; grip one to carry it somewhere else, fling
+ *    it away to close it (or at a wall to hang it there); links can run from
+ *    one board to another.
  *  - Levels: scale the table up past twice its size over an item and you
  *    dive inside it; down past half and you come back out.
  */
@@ -49,6 +51,8 @@ export class RoomXR implements XRPlugin {
   private mainAnchor: { space: XRSpace; uuid?: string } | null = null;
   private restoring = false;
   private lastAuto = 0;
+  /** A board standing in the room, in a hand: it moves with the hand. */
+  private carried: { s: Sat; p: Pointer; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[] } | null = null;
   private zoom: { scale0: number; fired: boolean; dy0: number; gap0: number } | null = null;
   private off: () => void;
 
@@ -391,16 +395,74 @@ export class RoomXR implements XRPlugin {
 
   /** Pinch a board standing in the room: use it. With the connect tool, the far end of a link. */
   press(p: Pointer, kind: "select" | "squeeze"): boolean {
-    if (kind !== "select" || !this.sats.length) return false;
+    if (!this.sats.length) return false;
     const main = this.xr.scene.pick(p.origin, p.dir);
     for (const s of this.sats) {
       const hit = s.stage.pick(p.origin, p.dir);
       if (!hit || (main && main.dist < hit.dist)) continue;
+      if (kind === "squeeze") {
+        // Grip: carry it (fling it away to close it).
+        if (this.carried) return false;
+        s.stage.group.updateMatrixWorld();
+        this.carried = { s, p, offset: this.xr.holdPose(p).invert().multiply(s.stage.group.matrixWorld), trail: [] };
+        this.xr.haptic(p, 0.5, 30);
+        sfx.play("grab", s.stage.group.position);
+        return true;
+      }
       if (this.xr.ctl.tool() === "connect") return false;
       this.activate(s);
       return true;
     }
     return false;
+  }
+
+  release(p: Pointer, kind: "select" | "squeeze"): boolean {
+    const c = this.carried;
+    if (!c || c.p !== p || kind !== "squeeze") return false;
+    this.carried = null;
+    const { s, trail } = c;
+    const v = velocity(trail);
+    if (v && v.speed > num("flingSpeed")) {
+      // At a wall: it hangs there. Anywhere else: away it goes (closed; the shelf still has it).
+      const hit = on("throwToWall") ? this.hitPlane(v.at, v.vel.clone().normalize(), (q) => q.vertical, 6) : null;
+      if (hit) {
+        const n = hit.plane.normal.clone();
+        if (n.dot(v.at.clone().sub(hit.point)) < 0) n.negate();
+        n.y = 0;
+        n.normalize();
+        s.stage.group.position.copy(hit.point).addScaledVector(n, 0.015);
+        s.stage.group.quaternion.copy(wallQuat(n));
+        s.wall = true;
+        sfx.play("snap", hit.point);
+        this.saveRoom();
+        return true;
+      }
+      this.removeSat(s);
+      sfx.play("fling", v.at);
+      this.xr.haptic(p, 0.8, 60);
+      this.xr.say("Board closed · the shelf still has it", p);
+      return true;
+    }
+    sfx.play("drop", s.stage.group.position);
+    this.saveRoom();
+    return true;
+  }
+
+  /** The carried board follows the hand: upright, only turning about the vertical. */
+  private moveCarried(now: number) {
+    const c = this.carried;
+    if (!c) return;
+    if (!c.p.source || !this.sats.includes(c.s)) return void (this.carried = null);
+    const m = this.xr.holdPose(c.p).multiply(c.offset);
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    m.decompose(pos, quat, new THREE.Vector3());
+    const g = c.s.stage.group;
+    g.position.copy(pos);
+    if (!c.s.wall) g.quaternion.setFromEuler(new THREE.Euler(0, new THREE.Euler().setFromQuaternion(quat, "YXZ").y, 0, "YXZ"));
+    else g.quaternion.copy(quat);
+    c.trail.push({ t: now, at: pos.clone() });
+    while (c.trail.length > 2 && now - c.trail[0].t > 120) c.trail.shift();
   }
 
   /** The connect tool let go over an item on another board: a link across. */
@@ -452,6 +514,7 @@ export class RoomXR implements XRPlugin {
       if (on("planes")) this.readPlanes(frame);
       void this.anchors(frame);
     }
+    this.moveCarried(now);
     if (this.tween) {
       const k = Math.min(1, (now - this.tween.t0) / this.tween.ms);
       const e = 1 - Math.pow(1 - k, 3);
@@ -469,7 +532,7 @@ export class RoomXR implements XRPlugin {
     else if (this.xlines.children.length) (this.xlines.clear(), (this.xkey = ""));
 
     // Walk up to another board: it's the one you use.
-    if (this.sats.length && on("autoActivate") && now - this.lastAuto > 2500 && !this.xr.ptrs.some((p) => p.press || p.carry || p.grabbing)) {
+    if (this.sats.length && !this.carried && on("autoActivate") && now - this.lastAuto > 2500 && !this.xr.ptrs.some((p) => p.press || p.carry || p.grabbing)) {
       const head = new THREE.Vector3().setFromMatrixPosition(scene.renderer.xr.getCamera().matrixWorld).setY(0);
       const dMain = head.distanceTo(scene.rig.position.clone().setY(0));
       for (const s of this.sats) {
@@ -631,4 +694,14 @@ function safeRemove(k: string) {
   } catch {
     /* nothing kept anyway */
   }
+}
+
+/** How fast a trail was moving at its end (world space): a throw. */
+function velocity(trail: { t: number; at: THREE.Vector3 }[]) {
+  if (trail.length < 2) return null;
+  const a = trail[0];
+  const b = trail[trail.length - 1];
+  const sec = Math.max(0.001, (b.t - a.t) / 1000);
+  const vel = b.at.clone().sub(a.at).divideScalar(sec);
+  return { speed: vel.length(), vel, at: b.at.clone() };
 }

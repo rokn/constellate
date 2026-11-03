@@ -339,7 +339,9 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   wall; **room scale** blows it up so you walk inside it. It stays anchored where you left it.
 - **Boards around you**: the **shelf** shows every board as a small live hologram; pinch one
   to switch, carry one to the table, into the room (it stands there, live) or throw it at a
-  wall. Walk up to a board standing in the room to use it, and link items across boards.
+  wall. Walk up to a board standing in the room (or pull the trigger on it) to use it; grip it
+  to carry it somewhere else, and fling it away to close it or at a wall to hang it there. Link
+  items across boards.
   Throw a panel at a wall and it sticks there.
 - **History**: twist your wrist like a dial to **scrub through undo history**, the board
   showing each step; pinch to go there.

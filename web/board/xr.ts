@@ -114,6 +114,9 @@ const BUTTONS: Record<"left" | "right", Record<number, [string, string | null]>>
   left: { 4: ["btnX", "btnXHold"], 5: ["btnY", "btnYHold"], 3: ["btnLStick", null] },
 };
 
+/** Input slots (see setup). */
+const XR_SLOTS = 4;
+
 export class XRInput {
   readonly ptrs: Pointer[] = [];
   private dock: Dock;
@@ -580,7 +583,11 @@ export class XRInput {
     const r = this.scene.renderer;
     const ctrlModels = new XRControllerModelFactory();
     const handModels = new XRHandModelFactory();
-    for (let i = 0; i < 2; i++) {
+    // Four slots, not two: three.js hands each input source the next free slot in the order they
+    // arrive, and the Quest can list more than two at once (hands and controllers together, a
+    // system pointer). With only two, a controller that came third got no slot at all: its trigger,
+    // grip and stick did nothing, and nothing said why.
+    for (let i = 0; i < XR_SLOTS; i++) {
       const ray = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
       const hand = r.xr.getHand(i);
@@ -689,7 +696,7 @@ export class XRInput {
   }
 
   /** The pose an item carried in this hand follows: the grip for a controller, the pinch for a hand. */
-  private holdPose(p: Pointer): THREE.Matrix4 {
+  holdPose(p: Pointer): THREE.Matrix4 {
     if (this.isHand(p)) {
       const pos = p.gest.pinchPoint() ?? p.origin;
       return new THREE.Matrix4().compose(pos, p.ray.getWorldQuaternion(new THREE.Quaternion()), new THREE.Vector3(1, 1, 1));
@@ -760,7 +767,10 @@ export class XRInput {
     if (p.carry && !this.isHand(p) && on("crumple") && !p.carry.locked) return this.crumple(p);
     // The wheel, opened by a button: the trigger picks the slice the ray is on (handled as a panel press below).
     for (const pl of this.plugins) if (pl.press?.(p, "select")) return;
-    const ph = this.panelHit(p);
+    const hitPanel = this.panelHit(p);
+    // Bare glass (no button, no title bar, nothing to scroll) doesn't eat the trigger: the press goes
+    // through to what's behind, so a panel floating over the table (the guide, say) never deadens it.
+    const ph = hitPanel && (this.onHeader(hitPanel) || hitPanel.panel.regionAt(hitPanel.x, hitPanel.y) || hitPanel.panel.maxScroll > 0) ? hitPanel : null;
     // The wheel left open, and the trigger pulled elsewhere: it goes, and the press does what it would.
     if (this.wheelBy && this.wheelBy.via !== "palm" && ph?.panel !== this.wheel) this.closeWheel();
     if (ph) {
