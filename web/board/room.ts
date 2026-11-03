@@ -423,7 +423,7 @@ export class RoomXR implements XRPlugin {
     if (!this.sats.length) return false;
     const main = this.xr.scene.pick(p.origin, p.dir);
     for (const s of this.sats) {
-      const hit = s.stage.pick(p.origin, p.dir);
+      const hit = s.stage.pick(p.origin, p.dir, this.xr.scene.renderer.xr.getCamera());
       // Only a board clearly in front of the one on the table takes the press (one standing in the
       // same spot never does).
       if (!hit || (main && main.dist <= hit.dist + 0.05)) continue;
@@ -495,7 +495,7 @@ export class RoomXR implements XRPlugin {
   /** The connect tool let go over an item on another board: a link across. */
   linkAcross(from: string, origin: THREE.Vector3, dir: THREE.Vector3): boolean {
     for (const s of this.sats) {
-      const hit = s.stage.pick(origin, dir);
+      const hit = s.stage.pick(origin, dir, this.xr.scene.renderer.xr.getCamera());
       if (hit?.kind !== "item" || !hit.id) continue;
       this.xr.ctl.client.apply([{ op: "xlink", links: [{ id: newId("x"), from, board: s.boardId, to: hit.id }] }]);
       sfx.play("snap", hit.point);
