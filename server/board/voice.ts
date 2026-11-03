@@ -225,7 +225,9 @@ function bridge(client: WebSocket, req?: IncomingMessage) {
       audio: {
         input: {
           transcription: { model: "assemblyai/u3-rt-pro", language: "en" },
-          turn_detection: { type: "semantic_vad", eagerness: voiceSettings.eagerness, create_response: true, interrupt_response: voiceSettings.interrupt },
+          // The page decides when they've talked over it (web/lib/useVoice.ts, with the
+          // interrupt setting): left to the server, its own echo cancelled it mid-sentence.
+          turn_detection: { type: "semantic_vad", eagerness: voiceSettings.eagerness, create_response: true, interrupt_response: false },
         },
         output: { model: TTS_MODEL, voice: VOICE, ...(voiceSettings.speed !== 1 ? { speed: voiceSettings.speed } : {}) },
       },

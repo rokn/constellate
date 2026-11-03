@@ -23,6 +23,7 @@ export const BOARD_ACTIONS: BoardAction[] = [
   a("ask-selection", "Talk about this", "voice", "voice", "Voice on, with what you point at selected"),
   a("guide", "Guide", "help", "panels", "A tour of the controls you play through: controllers, hands, nesting, the room, the keyboard"),
   a("keymap", "Control map", "help", "panels", "Every button, slice, gesture and key, as they're set now"),
+  a("transcript", "Transcript", "log", "voice", "Everything said, and what happened, on a panel you can pin"),
   a("keyboard", "Type", "label", "voice", "The text bar, for a keyboard: ask, label or note"),
   a("dictate", "Dictate", "mic", "voice", "Say the selected item's name or text"),
   // History.

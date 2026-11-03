@@ -296,7 +296,11 @@ export function VoiceDock({
   turns,
   onStart,
   onStop,
+  onLog,
+  logOpen,
 }: {
+  onLog?: () => void;
+  logOpen?: boolean;
   available: boolean;
   state: VoiceState;
   error: string | null;
@@ -316,6 +320,12 @@ export function VoiceDock({
         </p>
       )}
       {error && <p className="text-right text-[12.5px] text-bad">{error}</p>}
+      <div className="flex items-center gap-2">
+      {onLog && (
+        <button onClick={onLog} title="Transcript: everything said, and what happened (shift-V)" aria-pressed={logOpen} className={`glass rounded-full px-3 py-1.5 font-cond text-[13px] ${logOpen ? "text-course" : "text-muted"}`}>
+          Log
+        </button>
+      )}
       <button
         onClick={live ? onStop : onStart}
         disabled={!available}
@@ -336,6 +346,7 @@ export function VoiceDock({
         </span>
         <span className="font-cond text-[15px] font-medium">{available ? VOICE_COPY[state] : "Voice off"}</span>
       </button>
+      </div>
     </div>
   );
 }

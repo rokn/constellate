@@ -13,6 +13,7 @@ import { checkedKeys, countChecked, fullyChecked, linkKey, linksOf, type LinkDir
 import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useVoice } from "./lib/useVoice";
+import { TranscriptLog, useTranscriptOpen } from "./components/TranscriptLog";
 import { territoryColors } from "./lib/colors";
 import { Space, type Grouping, type Overlay, type SpaceHandle, type TouchHit, type TouchGesture } from "./components/Space";
 import { FilterPanel, GroupsPanel, Legend, OTHER, OrganizeBar } from "./components/MapControls";
@@ -1363,6 +1364,7 @@ export function App() {
   }, [state?.activity]);
 
   const voice = useVoice({ screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume, idleMinutes: xrSettings.voiceIdleMinutes });
+  const [logOpen, setLogOpen] = useTranscriptOpen("codemap.log");
 
   // Talking over a story pauses it, so you and the voice can hear each other.
   useEffect(() => {
@@ -1578,6 +1580,7 @@ export function App() {
         if (historyOpen) showRange(null);
         setHistoryOpen(!historyOpen);
       }
+      else if (e.key === "V") setLogOpen((o) => !o);
       else if (e.key === "v" && voiceAvailable) {
         if (voice.state === "idle" || voice.state === "error") startVoice();
         else voice.stop();
@@ -2864,7 +2867,10 @@ export function App() {
               turns={voice.turns}
               onStart={startVoice}
               onStop={voice.stop}
+              onLog={() => setLogOpen((o) => !o)}
+              logOpen={logOpen}
             />
+            {logOpen && <TranscriptLog log={voice.log} heard={voice.heard} caption={voice.caption} onClear={voice.clearLog} onClose={() => setLogOpen(false)} storageKey="codemap.log" />}
           </div>
         </div>
       </div>

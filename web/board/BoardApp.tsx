@@ -28,6 +28,8 @@ import { ScrubXR } from "./scrub";
 import { SnapsXR } from "./snaps";
 import { GesturesXR } from "./gestures";
 import { GuideXR } from "./guide";
+import { TranscriptXR } from "./transcript";
+import { TranscriptLog, useTranscriptOpen } from "../components/TranscriptLog";
 import { TypeXR } from "./typing";
 import { ShelfXR } from "./shelf";
 import "./board.css";
@@ -184,12 +186,15 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     onCommand: () => {},
     onDictated: (text) => dictatedRef.current(text),
     path: "/api/board/voice",
+    interrupt: on("interrupt"),
+    audioOptions: { loopback: on("echoLoopback"), echoGuard: on("echoGuard"), talkOverDb: num("talkOverDb"), confirmMs: num("bargeConfirmMs"), prebufferMs: num("voicePrebufferMs") },
     volume: num("voiceVolume") * (mode === "flat" ? 1 : 1.6),
     idleMinutes: num("idleMinutes"),
     settings: voiceSettings,
   });
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
+  const [logOpen, setLogOpen] = useTranscriptOpen("workshop.log");
 
   const sendAsk = useCallback(
     (text: string, images?: Picture[]) => {
@@ -476,6 +481,7 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
       else if (e.key === "t") (runRef.current("tiers"), setTiersOn(!!sceneRef.current?.tiersOn));
       else if (e.key === "h") setHistoryOpen((o) => !o);
       else if (e.key === "L") setTune({ lockItems: !on("lockItems") });
+      else if (e.key === "r" && on("transcriptLog")) setLogOpen((o) => !o);
       else if (e.key === "l") setLayersOpen((o) => !o);
       else if (e.key === "i" && selRef.current.length === 1) insideRef.current(selRef.current[0]);
       else if (e.key === "u" && clientRef.current.board?.parent) ctl.up?.();
@@ -677,6 +683,12 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
     (x) => new GesturesXR(x),
     (x) => new TypeXR(x),
     (x) => new GuideXR(x),
+    (x) =>
+      new TranscriptXR(
+        x,
+        () => ({ log: voiceRef.current.log, heard: voiceRef.current.heard, caption: voiceRef.current.caption }),
+        () => voiceRef.current.clearLog(),
+      ),
   ];
 
   const rename = (name: string) => client.apply([{ op: "rename", name }]);
@@ -787,6 +799,8 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
         return setTuneOpen((o) => !o);
       case "lock":
         return setTune({ lockItems: !on("lockItems") });
+      case "transcript":
+        return setLogOpen((o) => !o);
       case "guide":
       case "keymap":
         return setHelp(true);
@@ -890,6 +904,11 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
               <button className={`ws-chip ${viewsOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setViewsOpen((o) => !o)} title="Views: snapshot cards of where you looked (K keeps this one)">
                 Views{board?.snaps?.length ? ` · ${board.snaps.length}` : ""}
               </button>
+              {on("transcriptLog") && (
+                <button className={`ws-chip ${logOpen ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setLogOpen((o) => !o)} title="Transcript: everything said, and what happened (R)">
+                  Log
+                </button>
+              )}
               <button className={`ws-chip ${on("lockItems") ? "!border-[#ffb547] !text-[#ffb547]" : ""}`} onClick={() => setTune({ lockItems: !on("lockItems") })} title="Lock items: nothing moves, you only turn the view (Shift-L)">
                 {on("lockItems") ? "Locked" : "Lock"}
               </button>
@@ -1171,6 +1190,9 @@ function Workshop({ boardId, boards, open, reloadBoards }: { boardId: string; bo
           </div>
 
           {help && <Help onClose={() => setHelp(false)} />}
+          {logOpen && on("transcriptLog") && (
+            <TranscriptLog log={voice.log} heard={voice.heard} caption={voice.caption} onClear={voice.clearLog} onClose={() => setLogOpen(false)} storageKey="workshop.log" />
+          )}
           {tuneOpen && <TunePanel presets={presets} onPresets={setPresets} onClose={() => setTuneOpen(false)} />}
         </>
       )}

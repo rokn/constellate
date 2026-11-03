@@ -287,7 +287,9 @@ function sessionUpdate(text: string, v: VoiceSettings) {
           // English by default rather than auto-detected, so a stray accent or
           // a word in another language doesn't flip the conversation.
           transcription: { model: "assemblyai/u3-rt-pro", language: "en" },
-          turn_detection: { type: "semantic_vad", eagerness: v.eagerness, create_response: true, interrupt_response: v.interrupt },
+          // The page decides when they've talked over it (web/lib/useVoice.ts): left to the
+          // server, the voice's own echo or a cough cancelled it mid-sentence.
+          turn_detection: { type: "semantic_vad", eagerness: v.eagerness, create_response: true, interrupt_response: false },
         },
         output: { model: v.ttsModel, voice: v.voiceId, ...(v.speed !== 1 ? { speed: v.speed } : {}) },
       },

@@ -144,6 +144,20 @@ export function icon(ctx: CanvasRenderingContext2D, name: string, cx: number, cy
       ctx.lineTo(cx + h * 0.15, cy - h * 0.15);
       ctx.stroke();
       break;
+    case "log":
+      // Lines of text in a bubble.
+      chamfer(ctx, cx - h * 0.8, cy - h * 0.7, h * 1.6, h * 1.25, h * 0.2);
+      ctx.moveTo(cx - h * 0.3, cy + h * 0.55);
+      ctx.lineTo(cx - h * 0.45, cy + h * 0.9);
+      ctx.lineTo(cx + h * 0.05, cy + h * 0.55);
+      ctx.moveTo(cx - h * 0.5, cy - h * 0.35);
+      ctx.lineTo(cx + h * 0.5, cy - h * 0.35);
+      ctx.moveTo(cx - h * 0.5, cy - h * 0.05);
+      ctx.lineTo(cx + h * 0.5, cy - h * 0.05);
+      ctx.moveTo(cx - h * 0.5, cy + h * 0.25);
+      ctx.lineTo(cx + h * 0.15, cy + h * 0.25);
+      ctx.stroke();
+      break;
     case "lock": {
       // A padlock: a shackle over its body.
       ctx.moveTo(cx - h * 0.4, cy - h * 0.05);
@@ -621,7 +635,7 @@ export class Dock extends HoloPanel {
     private ctl: Ctl,
     private on: { palette: () => void; tune: () => void; recenter: () => void; exit: () => void; isOpen: (name: string) => boolean; run: (action: string) => void; passthrough: () => "on" | "off" | null },
   ) {
-    super("dock", 0.34, 0.095, "");
+    super("dock", 0.38, 0.095, "");
     this.header = 0;
   }
 
@@ -653,6 +667,7 @@ export class Dock extends HoloPanel {
         ["shelf", "shelf", () => this.on.run("shelf"), false],
         ["snapshots", "camera", () => this.on.run("snapshots"), false],
         ["tune", "tune", this.on.tune, this.on.isOpen("tune")],
+        ...(on("transcriptLog") ? ([["transcript", "log", () => this.on.run("transcript"), false]] as B[]) : []),
         ["table", "table", this.on.recenter, false],
         ...(this.ctl.client.board?.parent && this.ctl.up ? ([["up", "up", () => this.ctl.up!(), false, AMBER]] as B[]) : []),
         ...(this.on.passthrough() ? ([["passthrough", "eye", () => this.on.run("passthrough"), this.on.passthrough() === "on"]] as B[]) : []),

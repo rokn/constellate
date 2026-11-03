@@ -21,6 +21,7 @@ export const KEYMAP: Shortcut[] = [
   { key: "u", action: "up", group: "board" },
   { key: "a", action: "ask-selection", group: "board" },
   { key: "m", action: "dictate", group: "board" },
+  { key: "r", action: "transcript", group: "panels" },
   { key: "h", action: "scrub", group: "board" },
   { key: "t", action: "tiers", group: "board" },
   { key: "l", action: "labels-toggle", group: "board" },

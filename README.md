@@ -251,6 +251,16 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   the hand in the pose) and waiting for you to do it. Its **Map** tab lists every button, wheel
   slice, gesture and key as they're set now (F1 on a keyboard). It opens by itself the first
   time you enter (Tune: Guide when you enter).
+- **The voice doesn't cut itself off**: it plays through a WebRTC loopback so the browser's
+  echo canceller hears it (a Quest's speakers sit right by its mic), the mic sends silence
+  while it speaks unless you're clearly louder than its echo, and talking over it ducks it
+  first — it stops only if you keep talking or words come through, so a cough doesn't. Tune →
+  Voice has each of these, and a playback buffer for patchy Wi-Fi. (The code map's voice gets
+  the same.)
+- **Transcript log**: everything said, yours and its, with what happened along the way (talked
+  over, a sound it ignored, reconnecting). Desktop: the **Log** chip (R; in the code map, the
+  Log button by the voice, shift-V) — drag it anywhere, pin it to keep it open there. Headset:
+  the dock's speech bubble (Alt-R) — pin it, carry it, or throw it at a wall.
 - **Lock the items**: the dock's padlock (or Shift-L / the Lock chip on the desktop) freezes
   everything on the board — every grab, pinch and drag moves the board itself, and the mouse
   only turns the view. Jarvis and the voice can still change things.
