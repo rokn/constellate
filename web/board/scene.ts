@@ -513,12 +513,26 @@ export class BoardScene {
     void this.session?.end();
   }
 
+  /** In passthrough, the virtual room drawn over the real one: VR without leaving the session. */
+  covered = false;
+
+  /** Passthrough on or off, in the same session (the board stays where it is). */
+  setCovered(c: boolean) {
+    this.covered = c && this.mode === "ar";
+    this.backdrop();
+  }
+
+  private backdrop() {
+    const see = this.mode === "ar" && !this.covered;
+    this.room.background = see ? null : new THREE.Color(LOOK.bg);
+    this.roomStuff.visible = !see;
+    this.renderer.setClearColor(0x000000, see ? 0 : 1);
+  }
+
   private setMode(m: Mode) {
     this.mode = m;
-    const ar = m === "ar";
-    this.room.background = ar ? null : new THREE.Color(LOOK.bg);
-    this.roomStuff.visible = !ar;
-    this.renderer.setClearColor(0x000000, ar ? 0 : 1);
+    this.covered = false;
+    this.backdrop();
     if (m === "flat") {
       this.rig.position.set(0, 0, 0);
       this.rig.rotation.set(0, 0, 0);
@@ -669,7 +683,7 @@ export class BoardScene {
 
   /** Shadows on the real desk under each item: dark, soft, drawn into the room so they darken the passthrough. */
   private updateShadows() {
-    const show = this.shadowsOn && on("deskShadows") && this.mode !== "flat";
+    const show = this.shadowsOn && on("deskShadows") && this.mode === "ar" && !this.covered;
     this.shadows.visible = show;
     if (!show) return;
     this.rig.updateMatrixWorld();

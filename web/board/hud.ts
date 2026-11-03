@@ -144,6 +144,19 @@ export function icon(ctx: CanvasRenderingContext2D, name: string, cx: number, cy
       ctx.lineTo(cx + h * 0.15, cy - h * 0.15);
       ctx.stroke();
       break;
+    case "exit":
+      // A door, and an arrow out of it.
+      ctx.moveTo(cx + h * 0.1, cy - h * 0.75);
+      ctx.lineTo(cx - h * 0.7, cy - h * 0.75);
+      ctx.lineTo(cx - h * 0.7, cy + h * 0.75);
+      ctx.lineTo(cx + h * 0.1, cy + h * 0.75);
+      ctx.moveTo(cx - h * 0.25, cy);
+      ctx.lineTo(cx + h * 0.8, cy);
+      ctx.moveTo(cx + h * 0.45, cy - h * 0.35);
+      ctx.lineTo(cx + h * 0.8, cy);
+      ctx.lineTo(cx + h * 0.45, cy + h * 0.35);
+      ctx.stroke();
+      break;
     case "close":
       ctx.moveTo(cx - h * 0.5, cy - h * 0.5);
       ctx.lineTo(cx + h * 0.5, cy + h * 0.5);
@@ -582,9 +595,9 @@ const kindName = (k: ItemKind) => KIND_NAME[k] ?? k[0].toUpperCase() + k.slice(1
 export class Dock extends HoloPanel {
   constructor(
     private ctl: Ctl,
-    private on: { palette: () => void; tune: () => void; recenter: () => void; exit: () => void; isOpen: (name: string) => boolean; run: (action: string) => void },
+    private on: { palette: () => void; tune: () => void; recenter: () => void; exit: () => void; isOpen: (name: string) => boolean; run: (action: string) => void; passthrough: () => "on" | "off" | null },
   ) {
-    super("dock", 0.3, 0.095, "");
+    super("dock", 0.34, 0.095, "");
     this.header = 0;
   }
 
@@ -616,6 +629,8 @@ export class Dock extends HoloPanel {
         ["tune", "tune", this.on.tune, this.on.isOpen("tune")],
         ["table", "table", this.on.recenter, false],
         ...(this.ctl.client.board?.parent && this.ctl.up ? ([["up", "up", () => this.ctl.up!(), false, AMBER]] as B[]) : []),
+        ...(this.on.passthrough() ? ([["passthrough", "eye", () => this.on.run("passthrough"), this.on.passthrough() === "on"]] as B[]) : []),
+        ["exit", "exit", this.on.exit, false, LOOK.danger],
       ],
     ];
     const s = 46;

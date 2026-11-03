@@ -247,7 +247,8 @@ In a headset it's at its best in **Passthrough**: the table sits on your desk.
   what its buttons do; a chip says what each press did. Every one of them is a Tune knob
   (Headset · Controller buttons, Headset · Wheel and palm menu).
 - **Hands**: turn your right palm up and the wheel blooms from it; turn your left palm toward
-  you for the **wrist dock**. Poke any panel with a fingertip. Middle-finger pinches: voice
+  you for the **wrist dock** (its eye turns passthrough off and on without leaving; the red
+  door leaves the headset). Poke any panel with a fingertip. Middle-finger pinches: voice
   (left) and undo (right). **Record your own gestures** (a thumbs-up, a fist, a peace sign)
   and bind each to any action.
 - **Items**: point and pinch (or trigger) to select and drag along the ray — the stick pushes,

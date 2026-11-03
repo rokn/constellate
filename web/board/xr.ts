@@ -147,6 +147,7 @@ export class XRInput {
       tune: () => this.toggle(this.tune),
       recenter: () => scene.resetRig(),
       exit: () => scene.exit(),
+      passthrough: () => (scene.mode !== "ar" ? null : scene.covered ? "off" : "on"),
       isOpen: (n) => (n === "palette" ? this.palette.mesh.visible : this.tune.mesh.visible),
       run: (a) => this.act(a),
     });
@@ -253,6 +254,17 @@ export class XRInput {
       }
       case "recenter":
         this.scene.resetRig();
+        return true;
+      case "passthrough":
+        if (this.scene.mode !== "ar") {
+          this.say("Passthrough: leave and enter with Passthrough", p);
+          return true;
+        }
+        this.scene.setCovered(!this.scene.covered);
+        this.say(this.scene.covered ? "Passthrough off" : "Passthrough on", p);
+        return true;
+      case "exit":
+        this.scene.exit();
         return true;
       case "two-hand-mode": {
         const order = ["auto", "scale", "explode"];
@@ -513,7 +525,7 @@ export class XRInput {
       mat.opacity += (want - mat.opacity) * Math.min(1, dt * 10);
     }
 
-    const key = `${this.ctl.tool()}|${this.ctl.voiceState()}|${this.palette.mesh.visible}|${this.tune.mesh.visible}|${this.ctl.client.board?.id}`;
+    const key = `${this.ctl.tool()}|${this.ctl.voiceState()}|${this.palette.mesh.visible}|${this.tune.mesh.visible}|${this.ctl.client.board?.id}|${this.scene.covered}`;
     if (key !== this.beltKey) {
       this.beltKey = key;
       this.dock.invalidate();
