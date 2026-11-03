@@ -2263,6 +2263,8 @@ export class Engine {
       if (back) this.behind.add(p);
       else this.behind.delete(p);
       (back ? this.under : this.hud).add(p.mesh);
+      // Under the map, the room's depth is still there: don't let it hide the panel.
+      p.mesh.material.depthTest = !back;
     }
   }
 
