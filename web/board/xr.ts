@@ -767,6 +767,16 @@ export class XRInput {
     if (on("inputDebug")) this.say(`${p.side} trigger → ${what}`, p);
   }
 
+  /** A part's press or release, run so that its failing can never take the trigger or grip down with it. */
+  private tryPlugin(f: () => boolean | undefined): boolean {
+    try {
+      return !!f();
+    } catch (e) {
+      console.error("headset part failed on a press", e);
+      return false;
+    }
+  }
+
   private selectStart(p: Pointer) {
     if (this.scene.mode === "flat") return;
     if (this.handsQuiet(p)) {
@@ -789,7 +799,7 @@ export class XRInput {
     // The room's boards don't take a press aimed at a panel in front of them.
     for (const pl of this.plugins) {
       if (hitPanel && pl.behindPanels) continue;
-      if (pl.press?.(p, "select")) return this.route(p, pl.label ?? "a headset part");
+      if (this.tryPlugin(() => pl.press?.(p, "select"))) return this.route(p, pl.label ?? "a headset part");
     }
     // Bare glass (no button, no title bar, nothing to scroll) doesn't eat the trigger: the press goes
     // through to what's behind, so a panel floating over the table (the guide, say) never deadens it.
@@ -887,7 +897,7 @@ export class XRInput {
     }
     const press = p.press;
     p.press = null;
-    for (const pl of this.plugins) if (pl.release?.(p, "select")) return;
+    for (const pl of this.plugins) if (this.tryPlugin(() => pl.release?.(p, "select"))) return;
     if (this.endTwo(p)) return;
     if (p.carry && this.isHand(p)) return this.endCarry(p);
     if (!press) return;
@@ -971,7 +981,7 @@ export class XRInput {
       p.hushed = true;
       return;
     }
-    for (const pl of this.plugins) if (pl.press?.(p, "squeeze")) return;
+    for (const pl of this.plugins) if (this.tryPlugin(() => pl.press?.(p, "squeeze"))) return;
     // A panel under the ray: carry it.
     const ph = this.panelHit(p);
     if (ph && ph.panel !== this.wheel) {
@@ -1002,7 +1012,7 @@ export class XRInput {
       p.hushed = false;
       return;
     }
-    for (const pl of this.plugins) if (pl.release?.(p, "squeeze")) return;
+    for (const pl of this.plugins) if (this.tryPlugin(() => pl.release?.(p, "squeeze"))) return;
     if (p.press?.kind === "move") {
       const press = p.press;
       p.press = null;

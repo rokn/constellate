@@ -83,8 +83,10 @@ export class Stage {
   }
 
   /** What a ray (world) hits: one of its items, or its table. */
-  pick(origin: THREE.Vector3, dir: THREE.Vector3): { kind: "item" | "table"; id?: string; point: THREE.Vector3; dist: number } | null {
+  /** `camera`: the viewer's (labels and text are sprites, and picking a sprite without one throws). */
+  pick(origin: THREE.Vector3, dir: THREE.Vector3, camera: THREE.Camera): { kind: "item" | "table"; id?: string; point: THREE.Vector3; dist: number } | null {
     const rc = new THREE.Raycaster(origin, dir, 0, 30);
+    rc.camera = camera;
     this.group.updateMatrixWorld(true);
     const hits = rc.intersectObjects([...this.views.values()].map((v) => v.root), true);
     for (const h of hits) {
