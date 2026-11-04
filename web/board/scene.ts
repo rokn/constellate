@@ -5,7 +5,7 @@ import type { Board } from "../../shared/board";
 import { Bloom } from "../xr/bloom";
 import { ItemView } from "./items";
 import { LinkView } from "./links";
-import { LOOK, makeDust, makeTable, shared } from "./look";
+import { LOOK, faceWall, makeDust, makeTable, shared, standsUp } from "./look";
 import { Fx } from "./fx";
 import { num, on, onTune } from "./tune";
 
@@ -39,6 +39,8 @@ export class BoardScene {
   /** Over everything, crisp: panels, hands, rays. */
   readonly overlay = new THREE.Scene();
   readonly rig = new THREE.Group();
+  /** The labels lie flat on the board (it stands on a wall), as of the last frame. */
+  private labelsFlat = false;
   /** What's on the board (items, links, effects), inside the rig: moved only while diving in or out of an item. */
   readonly content = new THREE.Group();
   /** Other boards standing in the room. */
@@ -642,7 +644,10 @@ export class BoardScene {
     this.updateTiers();
     this.updateShadows();
 
+    // Up on a wall: items stand up on it, and their labels lie flat on it.
+    const up = this.mode !== "flat" && standsUp(this.rig);
     for (const [id, v] of this.views) {
+      v.wall = up;
       v.tick(t, dt);
       if (v.dying === 0 && !this.board?.items.some((i) => i.id === id)) {
         v.dispose();
@@ -664,6 +669,8 @@ export class BoardScene {
     }
     this.fx.tick(t);
     for (const lv of this.linkViews.values()) lv.tick(dt);
+    if (up || this.labelsFlat) faceWall(this.rig, up);
+    this.labelsFlat = up;
 
     this.draw();
   };

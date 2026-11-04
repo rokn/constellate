@@ -20,11 +20,15 @@ import type { Pointer, XRInput, XRPlugin } from "./xr";
  *    an item with an inside at a wall and its board stands there.
  *  - Anchors: the table, and every board you stood in the room, stay where
  *    you left them, across sessions.
- *  - A room of boards: other boards stand around you, live. Walk up to one
- *    (or pinch its table) to use it; grip one to carry it somewhere else, fling
+ *  - A room of boards: other boards stand around you, live. Walk up to one,
+ *    pull the trigger on it (by hand, pinch it twice), or point at it and push
+ *    the right stick up, to use it; grip one to carry it somewhere else, fling
  *    it away to close it (or at a wall, or let go near one, to hang it there);
  *    one put where another stands takes its place. Links can run from one
  *    board to another.
+ *  - Wall ↔ table (Y by default): the board you point at in the room, or
+ *    the one you're on, comes off its wall as a table, or goes up on one.
+ *    Up on a wall, its items stand upright on it and its labels lie flat on it.
  *  - Levels: scale the table up past twice its size over an item and you
  *    dive inside it; down past half and you come back out.
  */
@@ -115,6 +119,9 @@ export class RoomXR implements XRPlugin {
         return true;
       case "table-mode":
         this.toTable();
+        return true;
+      case "wall-toggle":
+        this.flip(p);
         return true;
       case "recenter":
         if (this.mode !== "table") this.toTable();
@@ -260,6 +267,42 @@ export class RoomXR implements XRPlugin {
     this.enterMode("wall");
     this.moveRig({ pos: at.addScaledVector(n, 0.015), quat: wallQuat(n), scale: num("wallScale") });
     if (!hit) this.xr.say("No wall found: standing it before you", p);
+  }
+
+  /**
+   * Wall ↔ table. Pointed at a board in the room: that one comes off its wall
+   * and stands as a table before it, or goes up on the wall nearest it.
+   * Otherwise the board you're on: up on the wall you point at, or back on
+   * its table.
+   */
+  private flip(p?: Pointer) {
+    const s = p?.source ? this.satAt(p) : null;
+    if (s) {
+      const g = s.stage.group;
+      if (s.wall) {
+        // Off the wall: a table standing out from it, its front toward the room.
+        const n = new THREE.Vector3(0, 1, 0).applyQuaternion(g.quaternion).setY(0);
+        if (n.lengthSq() < 1e-6) n.set(0, 0, 1);
+        n.normalize();
+        g.position.addScaledVector(n, 1.45 * g.scale.x + 0.2).setY(0.85);
+        g.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(n.x, n.z));
+        s.wall = false;
+        this.replaceAt(g.position, s);
+        sfx.play("place", g.position);
+        this.saveRoom();
+        this.xr.say("Board off the wall", p);
+        return;
+      }
+      const w = this.wallNear(g.position, 3);
+      if (!w) return void this.xr.say("No wall near that board", p);
+      this.hang(s, w.point.setY(THREE.MathUtils.clamp(g.position.y + 0.5, 1, 1.8)), w.normal);
+      this.xr.say("Board on the wall", p);
+      return;
+    }
+    if (this.mode === "wall") {
+      this.toTable();
+      this.xr.say("Back on the table", p);
+    } else this.toWall(p);
   }
 
   /** Blown up to the room: on the floor, under where it stood, so you walk inside it. */
@@ -445,15 +488,33 @@ export class RoomXR implements XRPlugin {
     }
   }
 
-  /** Pinch a board standing in the room: use it. With the connect tool, the far end of a link. */
-  press(p: Pointer, kind: "select" | "squeeze"): boolean {
-    if (!this.sats.length) return false;
+  /** The board in the room this ray is on: one clearly in front of the one on the table (one standing in the same spot never is). */
+  private satAt(p: Pointer): Sat | null {
+    if (!this.sats.length) return null;
     const main = this.xr.scene.pick(p.origin, p.dir);
+    let best: { s: Sat; dist: number } | null = null;
     for (const s of this.sats) {
       const hit = s.stage.pick(p.origin, p.dir, this.xr.scene.renderer.xr.getCamera());
-      // Only a board clearly in front of the one on the table takes the press (one standing in the
-      // same spot never does).
       if (!hit || (main && main.dist <= hit.dist + 0.05)) continue;
+      if (!best || hit.dist < best.dist) best = { s, dist: hit.dist };
+    }
+    return best?.s ?? null;
+  }
+
+  /** The stick pushed up while pointing at a board in the room: use it (`go`), or only whether there's one. */
+  enter(p: Pointer, go: boolean): boolean {
+    const s = this.satAt(p);
+    if (s && go) this.activate(s);
+    return !!s;
+  }
+
+  /** A hand's last pinch on a board in the room: a second one soon after on the same board uses it. */
+  private tapped: { s: Sat; at: number } | null = null;
+
+  /** Pinch a board standing in the room: use it (by hand, pinch it twice). With the connect tool, the far end of a link. */
+  press(p: Pointer, kind: "select" | "squeeze"): boolean {
+    const s = this.satAt(p);
+    if (s) {
       if (kind === "squeeze") {
         // Grip: carry it (fling it away to close it).
         if (this.carried) return false;
@@ -464,6 +525,22 @@ export class RoomXR implements XRPlugin {
         return true;
       }
       if (this.xr.ctl.tool() === "connect") return false;
+      // By hand, one pinch doesn't switch: a pinch flickers as the hand sweeps past boards, and
+      // each flicker used to swap the table for whatever the ray was on. Pinch twice to switch.
+      if (this.xr.isHand(p)) {
+        const now = performance.now();
+        // Just switched: the hand's still settling (its pinches don't count yet).
+        if (now - this.lastAuto < 1200) return true;
+        const t = this.tapped;
+        // Twice: apart enough to be two pinches (not one flickering), close enough to be a double.
+        if (!t || t.s !== s || now - t.at > num("doubleTapMs") || now - t.at < 90) {
+          this.tapped = { s, at: now };
+          this.xr.haptic(p, 0.2, 15);
+          sfx.play("tick", s.stage.group.position);
+          return true;
+        }
+        this.tapped = null;
+      }
       this.activate(s);
       return true;
     }

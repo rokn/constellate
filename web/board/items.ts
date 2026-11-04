@@ -62,6 +62,15 @@ export class ItemView {
   /** Floated up off the table (depth tiers): added to where it stands, not kept. */
   lift = 0;
   private liftNow = 0;
+  /**
+   * Its board stands on a wall: it stands upright on the wall (its top up the
+   * wall, its front out of it) in place of sticking straight out, its middle
+   * where it stood. Frames and ink lie on the board as they are.
+   */
+  wall = false;
+  private wallNow = false;
+  /** How far it reaches back from its middle (m, at scale 1): how far off the wall it stands. */
+  private depth = 0.08;
 
   constructor(item: Item, fresh: boolean) {
     this.item = item;
@@ -101,14 +110,32 @@ export class ItemView {
   }
 
   private snap() {
-    this.root.position.copy(this.goal.pos).setY(this.goal.pos.y + this.liftNow);
-    this.root.quaternion.copy(this.goal.quat);
+    const a = this.aim();
+    this.root.position.copy(a.pos);
+    this.root.quaternion.copy(a.quat);
     this.root.scale.setScalar(this.goal.scale);
+  }
+
+  /** Stood up on the wall: everything but what lies flat on the board anyway. */
+  private get tilted() {
+    return this.wallNow && this.item.kind !== "frame" && this.item.kind !== "ink";
+  }
+
+  /** Where it's going, as drawn: lifted with its tier, and stood up on a wall (turned about its middle, clear of the wall). */
+  private aim() {
+    const pos = new THREE.Vector3(this.goal.pos.x, this.goal.pos.y + this.liftNow, this.goal.pos.z);
+    const quat = this.goal.quat.clone();
+    if (this.tilted) {
+      quat.premultiply(TO_WALL);
+      pos.y += (this.depth + 0.01) * this.goal.scale;
+      pos.z += this.midY * this.goal.scale;
+    }
+    return { pos, quat };
   }
 
   /** Still on its way somewhere. */
   get moving() {
-    return this.root.position.distanceToSquared(new THREE.Vector3(this.goal.pos.x, this.goal.pos.y + this.liftNow, this.goal.pos.z)) > 1e-8 || Math.abs(this.root.scale.x - this.goal.scale) > 1e-4;
+    return this.root.position.distanceToSquared(this.aim().pos) > 1e-8 || Math.abs(this.root.scale.x - this.goal.scale) > 1e-4;
   }
 
   private clear() {
@@ -339,6 +366,23 @@ export class ItemView {
         this.sprites.push(t);
       });
     }
+    this.depth = this.measureDepth();
+  }
+
+  /** How far back it reaches from its middle, whichever way it's turned (for standing it clear of a wall). */
+  private measureDepth() {
+    this.root.updateMatrixWorld(true);
+    const inv = this.body.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    const part = new THREE.Box3();
+    this.body.traverse((o) => {
+      const g = (o as THREE.Mesh).geometry;
+      if (!g || (o as THREE.Sprite).isSprite) return;
+      if (!g.boundingBox) g.computeBoundingBox();
+      if (g.boundingBox) box.union(part.copy(g.boundingBox).applyMatrix4(inv.clone().multiply(o.matrixWorld)));
+    });
+    if (box.isEmpty()) return 0.08;
+    return Math.max(0.01, Math.abs(box.min.x), Math.abs(box.max.x), Math.abs(box.min.z), Math.abs(box.max.z));
   }
 
   /** Light it up (hovered, selected), print it in, and run its animations. */
@@ -346,11 +390,18 @@ export class ItemView {
     const want = this.selected ? 1 : Math.max(this.lit, this.spot);
     this.u.uLit.value += (want - this.u.uLit.value) * Math.min(1, dt * 10);
 
+    // Its board went up on a wall, or came down off one: it stands up on it, or back on the table.
+    if (this.wall !== this.wallNow) {
+      this.wallNow = this.wall;
+      if (!on("glide")) this.snap();
+    }
+
     // Gliding to where it's going.
     if (this.placed && on("glide")) {
       const k = 1 - Math.exp(-dt * 12);
-      this.root.position.lerp(new THREE.Vector3(this.goal.pos.x, this.goal.pos.y + this.liftNow, this.goal.pos.z), k);
-      this.root.quaternion.slerp(this.goal.quat, k);
+      const a = this.aim();
+      this.root.position.lerp(a.pos, k);
+      this.root.quaternion.slerp(a.quat, k);
       this.root.scale.setScalar(THREE.MathUtils.lerp(this.root.scale.x, this.goal.scale, k));
     }
 
@@ -421,7 +472,11 @@ export class ItemView {
       this.root.remove(this.selRing);
       this.selRing = null;
     }
-    if (this.selRing) this.selRing.rotation.y = t * 0.6;
+    if (this.selRing) {
+      this.selRing.rotation.set(0, t * 0.6, 0);
+      // Stood up on a wall: the ring still lies flat on the board, round its middle.
+      if (this.tilted) this.selRing.quaternion.premultiply(this.goal.quat.clone().invert().multiply(TO_WALL.clone().invert()).multiply(this.goal.quat));
+    }
   }
 
   /** Where its middle is, in world space. */
@@ -436,6 +491,9 @@ export class ItemView {
 }
 
 /* ------------------------------- shapes -------------------------------- */
+
+/** Stood up on a wall: the board's up (out of the wall) becomes the item's front, its back (-z, up the wall) its top. */
+const TO_WALL = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
 function pad(u: HoloUniforms, color: string, r: number) {
   const g = new THREE.Group();

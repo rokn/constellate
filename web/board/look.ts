@@ -417,13 +417,63 @@ export function labelSprite(text: string, color: string, o: { height?: number; s
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const mat = flatCapable(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
   const s = new THREE.Sprite(mat);
   const h = o.height ?? 0.032;
   s.scale.set((h * W) / 110, (h * H) / 110, 1);
   s.center.set(0.5, 0);
   s.renderOrder = 6;
   return s;
+}
+
+/**
+ * A sprite's material that can also lie flat: with its `uFlat` on, the sprite
+ * is drawn as a plain quad turned by its own rotation (and its parents'), not
+ * turned to face the camera. What lets a label stay put on a board hung on a
+ * wall instead of following your head (see `faceWall`).
+ */
+export function flatCapable(mat: THREE.SpriteMaterial) {
+  const uFlat = { value: 0 };
+  mat.userData.uFlat = uFlat;
+  mat.side = THREE.DoubleSide;
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uFlat = uFlat;
+    sh.vertexShader = sh.vertexShader
+      .replace("uniform float rotation;", "uniform float rotation;\nuniform float uFlat;")
+      .replace("mvPosition.xy += rotatedPosition;", "if (uFlat > 0.5) mvPosition = modelViewMatrix * vec4(position.xy - (center - vec2(0.5)), 0.0, 1.0);\n\telse mvPosition.xy += rotatedPosition;");
+  };
+  mat.customProgramCacheKey = () => "flat-sprite";
+  return mat;
+}
+
+const TO_WALL = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+const _q = new THREE.Quaternion();
+const _wq = new THREE.Quaternion();
+const _up = new THREE.Vector3();
+
+/** Whether a board (its rig or stage group) stands up, as on a wall: its up isn't the room's. */
+export function standsUp(board: THREE.Object3D) {
+  board.getWorldQuaternion(_wq);
+  return Math.abs(_up.set(0, 1, 0).applyQuaternion(_wq).y) < 0.5;
+}
+
+/**
+ * The labels on a board, lying flat on it when it stands on a wall (upright,
+ * reading level, facing out of the wall), or facing you as sprites do when
+ * it lies as a table. Run each frame, after the items have moved.
+ */
+export function faceWall(board: THREE.Object3D, flat: boolean) {
+  board.traverse((o) => {
+    if (!(o as THREE.Sprite).isSprite) return;
+    const u = ((o as THREE.Sprite).material.userData as { uFlat?: { value: number } }).uFlat;
+    if (!u) return;
+    u.value = flat ? 1 : 0;
+    if (!flat) return;
+    // Its parents' turn, from the board down: the label undoes it, then lies on the board, facing out.
+    _q.identity();
+    for (let n = o.parent; n && n !== board; n = n.parent) _q.premultiply(n.quaternion);
+    o.quaternion.copy(_q.invert()).multiply(TO_WALL);
+  });
 }
 
 /** A canvas texture of wrapped text on glass: notes. */

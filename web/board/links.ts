@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { PROTOCOLS, colorOf, protocolOf, type Link, type Protocol } from "../../shared/board";
 import type { ItemView } from "./items";
-import { LOOK, labelSprite, linkMaterial } from "./look";
+import { LOOK, flatCapable, labelSprite, linkMaterial } from "./look";
 import { num, on, tuneRev } from "./tune";
 
 /**
@@ -60,7 +60,7 @@ function sampleSprite(text: string, color: string) {
   lines.forEach((l, i) => ctx.fillText(l, 18, 18 + px * 0.85 + i * (px + 8)));
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false }));
+  const s = new THREE.Sprite(flatCapable(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false })));
   const height = 0.018 * (lines.length + 0.8);
   s.scale.set((height * w) / h, height, 1);
   s.userData.noPick = true;

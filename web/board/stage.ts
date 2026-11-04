@@ -3,7 +3,7 @@ import type { Board } from "../../shared/board";
 import { BoardClient } from "./client";
 import { ItemView } from "./items";
 import { LinkView } from "./links";
-import { LOOK, labelSprite, makeTable } from "./look";
+import { LOOK, faceWall, labelSprite, makeTable, standsUp } from "./look";
 
 /**
  * A board drawn on its own: another board standing in the room beside the
@@ -19,6 +19,8 @@ export class Stage {
   private table = makeTable(1.4);
   private label: THREE.Sprite | null = null;
   private labelKey = "";
+  /** Its labels lie flat on it (it's on a wall), as of the last frame. */
+  private labelsFlat = false;
   private offClient: () => void;
   private offBoard: () => void;
   readonly client: BoardClient;
@@ -67,7 +69,10 @@ export class Stage {
   tick(t: number, dt: number) {
     this.table.tick(t, 0.5);
     this.table.u.uFade.value = this.dimLevel;
+    // Hung on a wall: its items stand up on it, and its labels (its name too) lie flat on it.
+    const up = standsUp(this.group);
     for (const v of this.views.values()) {
+      v.wall = up;
       v.dim = this.dimLevel < 0.999;
       v.dimLevel = this.dimLevel;
       v.tick(t, dt);
@@ -80,6 +85,10 @@ export class Stage {
       if (lv && a && b) lv.update(l, a, b);
     }
     for (const lv of this.links.values()) lv.tick(dt);
+    // Its name: over the table's far edge, or on the wall just above the disc.
+    if (this.label) this.label.position.set(0, up ? 0.02 : 0.55, up ? -1.5 : -1.2);
+    if (up || this.labelsFlat) faceWall(this.group, up);
+    this.labelsFlat = up;
   }
 
   /** What a ray (world) hits: one of its items, or its table. */

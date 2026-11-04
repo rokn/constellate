@@ -60,6 +60,7 @@ export const BOARD_ACTIONS: BoardAction[] = [
   a("wall-mode", "Wall mode", "wall", "room", "Stand the board up on a wall"),
   a("room-scale", "Room scale", "room", "room", "Blow the board up to the room and walk inside it"),
   a("table-mode", "Table mode", "table", "room", "Back to the holotable"),
+  a("wall-toggle", "Wall ↔ table", "wall", "room", "Point at a board in the room to flip it between its wall and a table; otherwise the board you're on goes up on the wall you point at, or back to its table"),
   a("passthrough", "Passthrough on/off", "eye", "room", "See your room, or cover it with the virtual one (same session)"),
   a("exit", "Leave the headset", "exit", "room", "End the headset session, back to the page"),
   a("tiers", "Depth tiers", "tiers", "view", "Stack frames as floating tiers"),
