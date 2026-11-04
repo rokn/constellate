@@ -1139,7 +1139,10 @@ export class XRInput {
     if (!v) return;
     this.scene.rig.updateMatrixWorld();
     v.root.updateMatrixWorld();
-    const offset = this.holdPose(p).invert().multiply(v.root.matrixWorld);
+    // Its own pose, not as drawn: on a wall board it's drawn stood up, and taking that turn along
+    // made it flip 90° in the hand.
+    const at = (v.root.parent?.matrixWorld.clone() ?? new THREE.Matrix4()).multiply(v.heldPose());
+    const offset = this.holdPose(p).invert().multiply(at);
     const locked = on("lockItems");
     if (locked) this.ctl.client.ghost(id);
     p.carry = { id, offset, trail: [], yaw: 0, fistSince: 0, locked };
