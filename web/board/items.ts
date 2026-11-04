@@ -133,6 +133,22 @@ export class ItemView {
     return { pos, quat };
   }
 
+  /**
+   * Where it is now, as the item itself has it (on the board, not stood up on
+   * a wall): in its parent's space. What a hand takes hold of, so a grab on a
+   * wall board doesn't take the stand-up turn into the item's own turn.
+   */
+  heldPose() {
+    const pos = this.root.position.clone();
+    const quat = this.root.quaternion.clone();
+    if (this.tilted) {
+      quat.premultiply(TO_WALL.clone().invert());
+      pos.y -= (this.depth + 0.01) * this.goal.scale;
+      pos.z -= this.midY * this.goal.scale;
+    }
+    return new THREE.Matrix4().compose(pos, quat, this.root.scale);
+  }
+
   /** Still on its way somewhere. */
   get moving() {
     return this.root.position.distanceToSquared(this.aim().pos) > 1e-8 || Math.abs(this.root.scale.x - this.goal.scale) > 1e-4;
