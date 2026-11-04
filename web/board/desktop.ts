@@ -4,6 +4,7 @@ import type { Ctl } from "./ctl";
 import { magnet } from "./magnet";
 import type { BoardScene } from "./scene";
 import { num, on } from "./tune";
+import { inkStroke } from "./inkStroke";
 import { fromClip, fromMermaid, toClip } from "../../shared/exchange";
 
 /** What was copied, when the system clipboard can't be read. */
@@ -225,12 +226,9 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
     if (d.kind === "ink") {
       scene.showInk(null);
       if (d.pts.length < 2) return;
-      const base = d.pts[0].clone();
-      ctl.add("ink", [round(base.x), round(base.y), round(base.z)], {
-        points: d.pts.map((p) => [round(p.x - base.x), round(p.y - base.y), round(p.z - base.z)] as Vec3),
-        color: ctl.inkColor(),
-        width: 0.005,
-      });
+      // Shift keeps it as drawn; otherwise a box, circle, line or arrow comes out clean.
+      const ink = inkStroke(d.pts.map((p) => [p.x, p.y, p.z] as Vec3), on("inkShapes") && !e.shiftKey);
+      ctl.add("ink", ink.pos, { ...ink.extra, color: ctl.inkColor(), width: 0.005 });
       return;
     }
     if (d.kind === "pull") {

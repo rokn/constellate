@@ -12,6 +12,7 @@ import { Callout, Captions, Dock, HoloPanel, Palette, TunePanel, faceHead, headF
 import { LOOK } from "./look";
 import { magnet } from "./magnet";
 import type { BoardScene } from "./scene";
+import { inkStroke } from "./inkStroke";
 import { num, on, onTune, pick, setTune } from "./tune";
 import { Hints, Toast, Wheel } from "./wheel";
 
@@ -946,13 +947,10 @@ export class XRInput {
       case "ink": {
         this.scene.showInk(null);
         if (press.pts.length < 2) return;
-        const base = press.pts[0];
         const s = this.scene.rig.scale.x;
-        this.ctl.add("ink", [round(base.x), round(base.y), round(base.z)], {
-          points: press.pts.map((q) => [round(q.x - base.x), round(q.y - base.y), round(q.z - base.z)] as Vec3),
-          color: this.ctl.inkColor(),
-          width: round(0.004 / s),
-        });
+        const ink = inkStroke(press.pts.map((q) => [q.x, q.y, q.z] as Vec3), on("inkShapes"));
+        this.ctl.add("ink", ink.pos, { ...ink.extra, color: this.ctl.inkColor(), width: round(0.004 / s) });
+        if (ink.extra.shape) this.haptic(p, 0.35, 30);
         sfx.play("place");
         return;
       }

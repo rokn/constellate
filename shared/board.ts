@@ -7,7 +7,9 @@
  * The server owns every board. Clients and the agent change one only through
  * ops (see applyOps), and every change is pushed to every open client, so the
  * desktop and the headset show the same board, live.
- */
+*/
+
+import { INK_SHAPES, type InkShape } from "./inkShapes";
 
 export type Vec3 = [number, number, number];
 
@@ -154,6 +156,8 @@ export type Item = {
   points?: Vec3[];
   /** Ink: line width, metres. */
   width?: number;
+  /** Ink that was tidied into a shape (a box, a circle, an arrow…): its points are straight runs between corners. */
+  shape?: InkShape;
   holo?: Holo;
   /** A hologram pulled apart: 0 together, 1 fully apart. */
   explode?: number;
@@ -311,6 +315,7 @@ export function cleanItem(i: Partial<Item> & { id: string }): Item {
   if (Array.isArray(i.size) && i.size.length === 2) out.size = [r3(clampN(i.size[0], 0.02, 10, 0.3)), r3(clampN(i.size[1], 0.02, 10, 0.2))];
   if (Array.isArray(i.points)) out.points = i.points.slice(0, 4000).map((p) => v3(p));
   if (i.width !== undefined) out.width = r3(clampN(i.width, 0.001, 0.1, 0.006));
+  if (i.shape && INK_SHAPES.includes(i.shape)) out.shape = i.shape;
   if (i.holo && typeof i.holo === "object") {
     const h: Holo = {};
     if (Array.isArray(i.holo.parts)) h.parts = i.holo.parts.slice(0, 2000);
