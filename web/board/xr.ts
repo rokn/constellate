@@ -1264,7 +1264,9 @@ export class XRInput {
       scale0: v.item.scale ?? 1,
       explode0: v.item.explode ?? 0,
       holo,
-      mode: want === "explode" && holo ? "explode" : want === "scale" ? "scale" : holo ? "explode" : v.item.sub && on("spreadOpens") ? "open" : "scale",
+      // Auto: holograms pull apart; anything else that can have an inside stretches, and stretched past
+      // 2.2× goes inside it (made the first time), not only items that already have one.
+      mode: want === "explode" && holo ? "explode" : want === "scale" ? "scale" : holo ? "explode" : on("spreadOpens") && this.ctl.inside && !["frame", "ink", "text"].includes(v.item.kind) ? "open" : "scale",
       k: 1,
     };
     p.grabbing = false;
@@ -1546,7 +1548,7 @@ export class XRInput {
         } else if (two.mode === "open") {
           const s = THREE.MathUtils.clamp(two.scale0 * Math.min(k, 2.6), 0.1, 10);
           this.ctl.client.hold(two.id, { scale: round(s) });
-          label = k > 2.2 ? "Let go: inside" : `Spread to go inside`;
+          label = k > 2.2 ? "Let go: inside" : `Scale ${Math.round(s * 100)}% · wider to go inside`;
           if (k > 2.2) this.haptic(other, 0.2, 10);
         } else {
           const s = round(THREE.MathUtils.clamp(two.scale0 * k, 0.1, 10));
