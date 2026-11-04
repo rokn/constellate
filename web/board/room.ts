@@ -15,14 +15,16 @@ import type { Pointer, XRInput, XRPlugin } from "./xr";
  *  - Where the board stands: on the holotable (table), shrunk onto your real
  *    desk with shadows (desk), standing on a wall (wall), or blown up to the
  *    room so you walk inside it (room).
- *  - Throw a panel at a wall and it sticks there; throw an item with an inside
- *    at a wall and its board stands there.
+ *  - Throw a panel at a wall, or let it go near one, and it sticks there;
+ *    grab it there and it slides along the wall until you yank it off. Throw
+ *    an item with an inside at a wall and its board stands there.
  *  - Anchors: the table, and every board you stood in the room, stay where
  *    you left them, across sessions.
  *  - A room of boards: other boards stand around you, live. Walk up to one
  *    (or pinch its table) to use it; grip one to carry it somewhere else, fling
- *    it away to close it (or at a wall to hang it there); links can run from
- *    one board to another.
+ *    it away to close it (or at a wall, or let go near one, to hang it there);
+ *    one put where another stands takes its place. Links can run from one
+ *    board to another.
  *  - Levels: scale the table up past twice its size over an item and you
  *    dive inside it; down past half and you come back out.
  */
@@ -33,6 +35,8 @@ type Sat = Placed & { stage: Stage };
 type Mode = "table" | "desk" | "wall" | "room";
 
 const ROOM_KEY = "workshop.room";
+/** How near (m) a board put in the room has to land to another for it to take that one's place. */
+const SAME_SPOT = 0.45;
 const MAIN_ANCHOR_KEY = "workshop.anchor.main";
 
 export class RoomXR implements XRPlugin {
@@ -276,6 +280,21 @@ export class RoomXR implements XRPlugin {
 
   /* -------------------------------- throws ------------------------------- */
 
+  wallNear(at: THREE.Vector3, reach: number): { point: THREE.Vector3; normal: THREE.Vector3 } | null {
+    let best: { point: THREE.Vector3; normal: THREE.Vector3; d: number } | null = null;
+    for (const p of this.planes) {
+      if (!p.vertical) continue;
+      const d = at.clone().sub(p.center).dot(p.normal);
+      if (Math.abs(d) > reach || (best && Math.abs(d) >= best.d)) continue;
+      const point = at.clone().addScaledVector(p.normal, -d);
+      const local = point.clone().applyMatrix4(p.matrix.clone().invert());
+      if (!inside(local.x, local.z, p.polygon)) continue;
+      // Out of the wall, on the side the panel is on.
+      best = { point, normal: d < 0 ? p.normal.clone().negate() : p.normal.clone(), d: Math.abs(d) };
+    }
+    return best && { point: best.point, normal: best.normal };
+  }
+
   throwPanel(panel: HoloPanel, at: THREE.Vector3, vel: THREE.Vector3): boolean {
     const hit = this.hitPlane(at, vel.clone().normalize(), (q) => q.vertical, 5);
     if (!hit) return false;
@@ -337,12 +356,20 @@ export class RoomXR implements XRPlugin {
     const list = this.o.boards().filter((x) => x.id !== b.id && !this.sats.some((s) => s.boardId === x.id));
     const r = this.rigNow();
     const { right } = headFrame(this.xr.scene.renderer.xr.getCamera());
-    this.addSat({ boardId: b.id, pos: r.pos.clone().addScaledVector(right, -1.6 * Math.max(0.5, r.scale)), quat: r.quat, scale: r.scale });
+    this.addSat({ boardId: b.id, pos: r.pos.clone().addScaledVector(right, -1.6 * Math.max(0.5, r.scale)), quat: r.quat, scale: r.scale }, false);
     if (list[0]) this.o.open(list[0].id);
     this.xr.say(`${b.name} stands aside`);
   }
 
-  private addSat(p: Placed) {
+  /** A board put where another already stands: that one goes (closed; the shelf still has it). */
+  private replaceAt(pos: THREE.Vector3, keep?: Sat) {
+    const gone = this.sats.filter((x) => x !== keep && x.stage.group.position.distanceTo(pos) < SAME_SPOT);
+    for (const x of gone) this.removeSat(x);
+    if (gone.length) this.xr.say(gone.length === 1 ? "Replaced the board that was there" : `Replaced ${gone.length} boards that were there`);
+  }
+
+  private addSat(p: Placed, replace = true) {
+    if (replace) this.replaceAt(p.pos);
     const stage = new Stage(p.boardId);
     stage.group.position.copy(p.pos);
     stage.group.quaternion.copy(p.quat);
@@ -388,7 +415,7 @@ export class RoomXR implements XRPlugin {
     rig.quaternion.copy(s.stage.group.quaternion);
     rig.scale.setScalar(s.stage.group.scale.x);
     this.removeSat(s);
-    if (b) this.addSat({ boardId: b.id, pos: was.pos, quat: was.quat, scale: was.scale, wall: this.mode === "wall" });
+    if (b) this.addSat({ boardId: b.id, pos: was.pos, quat: was.quat, scale: was.scale, wall: this.mode === "wall" }, false);
     this.enterMode(s.wall ? "wall" : "table");
     this.swapping = { to: s.boardId, at: performance.now() };
     this.o.open(s.boardId);
@@ -411,7 +438,7 @@ export class RoomXR implements XRPlugin {
       const known = new Set(this.o.boards().map((b) => b.id));
       for (const s of list) {
         if (!known.has(s.boardId) || s.boardId === this.o.boardOf()?.id) continue;
-        this.addSat({ boardId: s.boardId, pos: new THREE.Vector3().fromArray(s.pos), quat: new THREE.Quaternion().fromArray(s.quat), scale: s.scale, wall: s.wall });
+        this.addSat({ boardId: s.boardId, pos: new THREE.Vector3().fromArray(s.pos), quat: new THREE.Quaternion().fromArray(s.quat), scale: s.scale, wall: s.wall }, false);
       }
     } catch {
       /* a fresh room */
@@ -455,13 +482,7 @@ export class RoomXR implements XRPlugin {
       if (hit) {
         const n = hit.plane.normal.clone();
         if (n.dot(v.at.clone().sub(hit.point)) < 0) n.negate();
-        n.y = 0;
-        n.normalize();
-        s.stage.group.position.copy(hit.point).addScaledVector(n, 0.015);
-        s.stage.group.quaternion.copy(wallQuat(n));
-        s.wall = true;
-        sfx.play("snap", hit.point);
-        this.saveRoom();
+        this.hang(s, hit.point, n);
         return true;
       }
       this.removeSat(s);
@@ -470,9 +491,27 @@ export class RoomXR implements XRPlugin {
       this.xr.say("Board closed · the shelf still has it", p);
       return true;
     }
+    // Let go near a wall: it hangs there.
+    const w = this.wallNear(s.stage.group.position, num("wallSnap"));
+    if (w) {
+      this.hang(s, w.point, w.normal);
+      return true;
+    }
+    this.replaceAt(s.stage.group.position, s);
     sfx.play("drop", s.stage.group.position);
     this.saveRoom();
     return true;
+  }
+
+  /** A board from the room hung on a wall (`n` out of it, toward you), in place of any already there. */
+  private hang(s: Sat, point: THREE.Vector3, n: THREE.Vector3) {
+    n = n.clone().setY(0).normalize();
+    s.stage.group.position.copy(point).addScaledVector(n, 0.015);
+    s.stage.group.quaternion.copy(wallQuat(n));
+    s.wall = true;
+    this.replaceAt(s.stage.group.position, s);
+    sfx.play("snap", point);
+    this.saveRoom();
   }
 
   /** The carried board follows the hand: upright, only turning about the vertical. */

@@ -38,9 +38,18 @@ import { Hints, Toast, Wheel } from "./wheel";
  * command wheel around the controller. An upturned palm opens it too.
  */
 
+/**
+ * A panel taken off a wall, still on it: it slides along the wall (through
+ * `point`, `normal` out of it) until the hand is pulled back from where it took
+ * hold (`hand0`, the ray `dist0` long then) far enough, or fast enough.
+ */
+type WallSlide = { point: THREE.Vector3; normal: THREE.Vector3; hand0: THREE.Vector3; dist0: number; trail: { t: number; at: THREE.Vector3 }[] };
+/** How fast (m/s) a hand drawn back from a wall pulls a panel off it, however short the pull. */
+const YANK_SPEED = 1.2;
+
 type Press =
   | { kind: "panel"; panel: HoloPanel }
-  | { kind: "move"; panel: HoloPanel; dist: number; trail: { t: number; at: THREE.Vector3 }[] }
+  | { kind: "move"; panel: HoloPanel; dist: number; trail: { t: number; at: THREE.Vector3 }[]; wall?: WallSlide }
   | { kind: "ray"; id: string; dist: number; offset: THREE.Vector3; moved: boolean; at0: THREE.Vector3; t0: number; talked: boolean; yaw: number; rot0: number }
   | { kind: "empty"; at0: THREE.Vector3 }
   | { kind: "pull"; from: string; path: THREE.Vector3[] }
@@ -99,6 +108,8 @@ export interface XRPlugin {
   /** An item thrown (world space): true when it caught it (stuck to a wall, say). */
   throwItem?(id: string, at: THREE.Vector3, vel: THREE.Vector3): boolean;
   throwPanel?(panel: HoloPanel, at: THREE.Vector3, vel: THREE.Vector3): boolean;
+  /** The wall nearest a point, if one is within `reach` (m): the point on it, and its normal out toward the point. */
+  wallNear?(at: THREE.Vector3, reach: number): { point: THREE.Vector3; normal: THREE.Vector3 } | null;
   /** The connect tool let go somewhere off this board: true when it made a link there. */
   linkAcross?(from: string, origin: THREE.Vector3, dir: THREE.Vector3): boolean;
   entered?(): void;
@@ -808,7 +819,7 @@ export class XRInput {
     if (this.wheelBy && this.wheelBy.via !== "palm" && ph?.panel !== this.wheel) this.closeWheel();
     if (ph) {
       if (this.onHeader(ph) && ph.panel !== this.wheel) {
-        p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [] };
+        p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [], wall: this.wallSlide(p, ph.panel, ph.dist) };
         sfx.play("grab");
         return this.route(p, "panel title bar");
       }
@@ -1010,7 +1021,7 @@ export class XRInput {
     // A panel under the ray: carry it.
     const ph = this.panelHit(p);
     if (ph && ph.panel !== this.wheel) {
-      p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [] };
+      p.press = { kind: "move", panel: ph.panel, dist: ph.dist, trail: [], wall: this.wallSlide(p, ph.panel, ph.dist) };
       sfx.play("grab");
       return;
     }
@@ -1046,13 +1057,56 @@ export class XRInput {
     }
   }
 
-  /** A panel let go: where it is, or (thrown) wherever a plugin catches it — a wall. */
+  /** A panel let go: still on its wall, it stays; thrown, wherever a plugin catches it (a wall); near a wall, onto it; else where it is. */
   private dropPanel(press: Extract<Press, { kind: "move" }>) {
+    if (press.wall) return void sfx.play("drop", press.panel.mesh.position);
     const v = velocity(press.trail);
     if (v && v.speed > num("flingSpeed") * 0.7 && on("throwToWall")) {
       for (const pl of this.plugins) if (pl.throwPanel?.(press.panel, v.at, v.vel)) return;
     }
+    const wall = this.wallNear(press.panel.mesh.position, num("wallSnap"));
+    if (wall) {
+      this.stickToWall(press.panel, wall.point, wall.normal);
+      return void sfx.play("snap", wall.point);
+    }
     sfx.play("drop");
+  }
+
+  private wallNear(at: THREE.Vector3, reach: number) {
+    if (!(reach > 0)) return null;
+    for (const pl of this.plugins) {
+      const w = pl.wallNear?.(at, reach);
+      if (w) return w;
+    }
+    return null;
+  }
+
+  /** A panel flat on a wall, just off it, facing out. */
+  private stickToWall(panel: HoloPanel, point: THREE.Vector3, normal: THREE.Vector3) {
+    panel.mesh.position.copy(point).addScaledVector(normal, 0.01);
+    panel.mesh.lookAt(point.clone().addScaledVector(normal, 1));
+    panel.pinned = true;
+    panel.invalidate();
+  }
+
+  /** A panel taken from where it sits on a wall: it'll slide along it. Null when it isn't on one. */
+  private wallSlide(p: Pointer, panel: HoloPanel, dist: number): WallSlide | undefined {
+    if (!(num("wallYank") > 0) || !panel.pinned) return undefined;
+    const w = this.wallNear(panel.mesh.position, 0.04);
+    if (!w) return undefined;
+    return { point: w.point, normal: w.normal, hand0: p.origin.clone(), dist0: dist, trail: [] };
+  }
+
+  /** Whether a panel sliding on a wall has been pulled off it: the hand (or the stick) drawn back far enough, or fast enough. */
+  private yanked(p: Pointer, press: Extract<Press, { kind: "move" }>, w: WallSlide, now: number) {
+    w.trail.push({ t: now, at: p.origin.clone() });
+    while (w.trail.length > 2 && now - w.trail[0].t > 120) w.trail.shift();
+    const pull = p.origin.clone().sub(w.hand0).dot(w.normal) + (w.dist0 - press.dist);
+    if (pull > num("wallYank")) return true;
+    const a = w.trail[0];
+    const b = w.trail[w.trail.length - 1];
+    const speed = b.t > a.t ? b.at.clone().sub(a.at).dot(w.normal) / ((b.t - a.t) / 1000) : 0;
+    return pull > 0.04 && speed > YANK_SPEED;
   }
 
   /* -------------------------------- carrying ----------------------------- */
@@ -1340,7 +1394,20 @@ export class XRInput {
         // Carrying a panel on the end of the ray: it faces you, and stays where it's let go.
         const m = press.panel.mesh;
         m.position.copy(p.origin).addScaledVector(p.dir, press.dist);
-        faceHead(m, new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld));
+        if (press.wall && this.yanked(p, press, press.wall, now)) {
+          press.wall = undefined;
+          this.haptic(p, 0.8, 40);
+          sfx.play("grab", m.position);
+        }
+        const w = press.wall;
+        if (w) {
+          // Off a wall, it slides along it first: where the ray meets the wall (or, aimed along it, the nearest point on it).
+          const along = w.normal.dot(p.dir);
+          const t = along < -0.15 ? w.point.clone().sub(p.origin).dot(w.normal) / along : -1;
+          const on = t > 0 ? p.origin.clone().addScaledVector(p.dir, t) : m.position.clone();
+          on.addScaledVector(w.normal, -on.clone().sub(w.point).dot(w.normal));
+          this.stickToWall(press.panel, on, w.normal);
+        } else faceHead(m, new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld));
         press.panel.pinned = true;
         const f = this.floats.find((x) => x.panel === press.panel);
         if (f) f.following = false;
