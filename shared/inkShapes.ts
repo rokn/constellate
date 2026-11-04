@@ -218,7 +218,7 @@ function asRectangle(q: P[]): ShapeFit2 | null {
   for (let i = 0; i < 4; i++) {
     const a = unit2(subP(q[(i + 3) % 4], q[i]));
     const b = unit2(subP(q[(i + 1) % 4], q[i]));
-    if (Math.abs(dot2(a, b)) > 0.4) return null; // > ~24° off square
+    if (Math.abs(dot2(a, b)) > 0.7) return null; // > ~45° off square (a box drawn in perspective on the desktop leans a lot)
   }
   // Its turn: the mean edge direction, folded into a quarter turn.
   let sx = 0;
