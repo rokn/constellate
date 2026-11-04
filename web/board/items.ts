@@ -240,8 +240,10 @@ export class ItemView {
       case "ink": {
         const pts = (item.points ?? []).map((p) => new THREE.Vector3(...p));
         if (pts.length >= 2) {
-          const curve = new THREE.CatmullRomCurve3(pts);
-          const geo = new THREE.TubeGeometry(curve, Math.min(600, pts.length * 3), (item.width ?? 0.005) / 2, 6);
+          // A tidied shape keeps its corners sharp: straight runs, not a smoothed curve through them.
+          const curve = item.shape ? straightPath(pts) : new THREE.CatmullRomCurve3(pts);
+          const segs = item.shape ? Math.min(600, Math.max(160, pts.length * 4)) : Math.min(600, pts.length * 3);
+          const geo = new THREE.TubeGeometry(curve, segs, (item.width ?? 0.005) / 2, 6);
           b.add(holoMesh(geo, u, color, { opacity: 0.65, edgeAngle: 89 }));
           const box = new THREE.Box3().setFromPoints(pts);
           this.radius = Math.max(0.03, box.getSize(new THREE.Vector3()).length() / 2);
@@ -618,4 +620,11 @@ function fmt(n: number) {
   if (a >= 1e4) return `${+(n / 1e3).toFixed(0)}k`;
   if (a >= 1e3) return `${+(n / 1e3).toFixed(1)}k`;
   return `${+n.toPrecision(3)}`;
+}
+
+/** Straight runs through the points, corner to corner. */
+function straightPath(pts: THREE.Vector3[]): THREE.CurvePath<THREE.Vector3> {
+  const path = new THREE.CurvePath<THREE.Vector3>();
+  for (let i = 1; i < pts.length; i++) if (pts[i].distanceToSquared(pts[i - 1]) > 1e-10) path.add(new THREE.LineCurve3(pts[i - 1], pts[i]));
+  return path;
 }
