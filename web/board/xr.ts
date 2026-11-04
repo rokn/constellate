@@ -21,7 +21,8 @@ import { Hints, Toast, Wheel } from "./wheel";
  *  - Point and pinch (or pull the trigger): on an item, select it, and keep
  *    holding to drag it along the ray (the stick pushes it away or pulls it
  *    in, and turns it); a pinch held still on it talks about it. On open table,
- *    hold to move the table, tap to clear the selection.
+ *    hold to move the table, tap to clear the selection. Pointing at one
+ *    (nothing held), push the right stick up to go inside it.
  *  - Grab (grip, or a pinch right on it): carry an item in your hand. Throw
  *    it away to delete it; close your fist on it (or pull the trigger while
  *    gripping) to crumple it.
@@ -86,6 +87,12 @@ export type Pointer = {
   snapLatch: boolean;
   /** The thumbstick is tilted (moving or turning something). */
   tilted?: boolean;
+  /**
+   * Stick up to go inside: "rest" (centred), "armed" (leaving centre upward while
+   * pointing at something to go into: the table doesn't scale meanwhile), "used"
+   * (went in: the stick does nothing more till it's centred), "off" (doing what it does).
+   */
+  enterStick?: "rest" | "armed" | "used" | "off";
   lastSnap: string;
   /** A pinch or grab that began while typing: its end is ignored too. */
   hushed?: boolean;
@@ -98,6 +105,8 @@ export interface XRPlugin {
   frame?(dt: number, now: number): void;
   /** An action it carries out; true when it did. */
   handle?(action: string, p?: Pointer): boolean;
+  /** The stick pushed up while pointing (nothing held): whether it has something of its own there to go into (a board in the room); with `go`, into it. */
+  enter?(p: Pointer, go: boolean): boolean;
   /** A press it takes before the board does; true when it did. */
   press?(p: Pointer, kind: "select" | "squeeze"): boolean;
   /** What it's called, in the input chips (Tune · Show where each trigger press goes). */
@@ -1596,6 +1605,56 @@ export class XRInput {
     } else best.panel.pointer("move", best.x, best.y, who);
   }
 
+  /**
+   * Pointing at an item (or a board in the room), nothing held: the right stick
+   * pushed up goes inside it (uses that board). True while the stick is the
+   * entering's: the table doesn't scale meanwhile.
+   */
+  private stickEnter(p: Pointer, sx: number, sy: number): boolean {
+    if (Math.hypot(sx, sy) < 0.15) {
+      p.enterStick = "rest";
+      return false;
+    }
+    if (p.side !== "right" || !on("stickEnters") || p.carry || p.press || p.grabbing) {
+      if (p.enterStick !== "used") p.enterStick = "off";
+      return p.enterStick === "used";
+    }
+    const up = -sy;
+    if (p.enterStick === "rest") p.enterStick = up > Math.abs(sx) && this.enterTarget(p) ? "armed" : "off";
+    if (p.enterStick === "armed") {
+      if (Math.abs(sx) > up) {
+        p.enterStick = "off";
+        return false;
+      }
+      if (up > 0.7) {
+        p.enterStick = "used";
+        const t = this.enterTarget(p);
+        if (t) {
+          this.haptic(p, 0.5, 40);
+          t();
+        }
+      }
+      return true;
+    }
+    return p.enterStick === "used";
+  }
+
+  /** What the stick would go into, pointed at now: a board in the room, or an item on this one (not on a panel). */
+  private enterTarget(p: Pointer): (() => void) | null {
+    if (!p.source || this.panelHit(p)) return null;
+    // A board in the room in front of the table: use it.
+    const pl = this.plugins.find((q) => q.enter?.(p, false));
+    if (pl) return () => void pl.enter!(p, true);
+    const hit = this.scene.pick(p.origin, p.dir);
+    if (hit?.kind !== "item" || !this.ctl.inside) return null;
+    const v = this.scene.views.get(hit.id);
+    if (!v || ["frame", "ink", "text"].includes(v.item.kind)) return null;
+    return () => {
+      this.say(`Inside ${nameOf(v.item).slice(0, 24)}`, p);
+      this.ctl.inside!(hit.id);
+    };
+  }
+
   /** A, B, X, Y, the stick presses and the sticks: each a Tune knob. */
   private readButtons(p: Pointer, dt: number, now: number) {
     const g = p.source?.gamepad;
@@ -1669,6 +1728,7 @@ export class XRInput {
       p.press.dist = THREE.MathUtils.clamp(p.press.dist - dead(sy) * dt * k * 0.5, 0.2, 2);
       return;
     }
+    if (this.stickEnter(p, sx, sy)) return;
     const rig = this.scene.rig;
     if (p.side === "right" && !p.carry) {
       const mode = pick("rightStick");

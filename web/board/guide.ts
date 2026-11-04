@@ -91,7 +91,7 @@ const CHAPTERS: Chapter[] = [
       },
       {
         title: "Move the table",
-        text: () => "Squeeze the grip on empty space to move the whole table. Both grips: turn it and scale it. The left stick slides it; the right stick turns it.",
+        text: () => "Squeeze the grip on empty space to move the whole table. Both grips: turn it and scale it. The left stick slides it; the right stick turns it. Point at an item and push the right stick up to go inside it.",
         art: { kind: "controller", side: "right", lit: ["grip"], both: true },
         check: (x) => x.ptrs.some((p) => p.grabbing),
       },
@@ -204,9 +204,9 @@ const CHAPTERS: Chapter[] = [
       },
       {
         title: "Desk, wall, room",
-        text: () => "Desk mode fits the board on your real desk; wall mode stands it on a wall; room scale lets you walk inside it. Table mode brings it back.",
+        text: () => "Desk mode fits the board on your real desk; wall mode stands it on a wall; room scale lets you walk inside it. Table mode brings it back. Wall ↔ table flips the board you point at (or the one you're on) between a wall and a table.",
         art: { kind: "icon", name: "desk" },
-        acts: () => ["desk-mode", "wall-mode", "room-scale", "table-mode"],
+        acts: () => ["desk-mode", "wall-mode", "room-scale", "table-mode", "wall-toggle"],
         tryIt: "desk-mode",
       },
       {
