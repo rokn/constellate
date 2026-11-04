@@ -45,8 +45,6 @@ export type XRSettings = {
   flickSpeed: number;
   /** Fling a carried panel away to close it. */
   flickPanels: boolean;
-  /** How far (cm) to pull a panel picked up off a wall back toward you before it comes off; till then it slides along the wall. 0: it comes straight off. */
-  wallYank: number;
   scaleSpeed: number;
   snapTurn: number;
   smoothTurn: boolean;
@@ -146,7 +144,6 @@ export const DEFAULT_XR: XRSettings = {
   flick: true,
   flickSpeed: 3,
   flickPanels: true,
-  wallYank: 20,
   scaleSpeed: 1,
   snapTurn: 30,
   smoothTurn: false,
@@ -248,7 +245,6 @@ export const XR_SECTIONS: XRSection[] = [
       t("flick", "Fling to hide", "Throw a held body away to hide it from the map"),
       r("flickSpeed", "Fling speed", 1, 8, 0.1, "How hard a throw has to be"),
       t("flickPanels", "Fling panels to close", "Throw a carried panel away and let go: it closes"),
-      r("wallYank", "Wall pull-off (cm)", 0, 60, 1, "A panel grabbed on a wall slides along it until you yank it this far back toward you (or jerk it off fast). 0: it comes straight off"),
       t("dockFollows", "Dock follows you", "The bar under your gaze turns with you. Off, it stays where you put it"),
       r("panelDistance", "Panel distance", 0.6, 2, 0.05, "How far panels open from you"),
     ],

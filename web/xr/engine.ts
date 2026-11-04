@@ -82,15 +82,6 @@ type Snap = { on: string; pos: THREE.Vector3; quat: THREE.Quaternion };
  * next session). Null `plane` until a restored anchor is found again.
  */
 type Custom = { id: string; plane: Plane | null; poly: [number, number][]; top: Surface; anchor: XRAnchor | null; uuid: string | null; wanted: boolean };
-/**
- * A panel picked up off a wall, still on it: it slides along the wall's plane
- * (`point`, `normal` out toward you), facing out of it, until the hand is
- * yanked back from where it took hold (`hand0`, with `z0` the carry's reach
- * then, which the stick changes) far enough or fast enough.
- */
-type Slide = { point: THREE.Vector3; normal: THREE.Vector3; quat: THREE.Quaternion; hand0: THREE.Vector3; z0: number; trail: { t: number; at: THREE.Vector3 }[] };
-/** How fast (m/s) a hand pulled straight back from a wall yanks the panel off it, however short the pull. */
-const YANK_SPEED = 1.2;
 /** How near a surface (m) a carried panel has to be let go for it to snap onto it. */
 const SNAP_REACH = 0.14;
 
@@ -126,8 +117,8 @@ type Pointer = {
   hoverMap: MapHit | null;
   press: Press | null;
   squeezing: boolean;
-  /** A panel held with the grip: it follows the hand (along the wall, while `slide` is set). */
-  carry: { panel: Panel; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[]; slide?: Slide } | null;
+  /** A panel held with the grip: it follows the hand. */
+  carry: { panel: Panel; offset: THREE.Matrix4; trail: { t: number; at: THREE.Vector3 }[] } | null;
   buttons: boolean[];
   /** Thumbstick turned past the snap threshold, waiting for it to come back. */
   snapped: boolean;
@@ -1131,21 +1122,9 @@ export class Engine {
     p.ray.updateMatrixWorld();
     panel.mesh.updateMatrixWorld();
     p.carry = { panel, offset: tmpM.copy(p.ray.matrixWorld).invert().multiply(panel.mesh.matrixWorld).clone(), trail: [] };
-    // Off a wall: it slides along the wall first, and only a yank pulls it off.
-    const onWall = this.stuck.get(panel) === "wall" && this.settings.wallYank > 0;
-    if (onWall) {
-      p.carry.slide = {
-        point: panel.mesh.position.clone(),
-        normal: new THREE.Vector3(0, 0, 1).applyQuaternion(panel.mesh.quaternion),
-        quat: panel.mesh.quaternion.clone(),
-        hand0: this.grabPoint(p),
-        z0: p.carry.offset.elements[14],
-        trail: [],
-      };
-    }
     this.placed.add(panel);
     this.stuck.delete(panel);
-    this.snapWas = onWall ? "wall" : null;
+    this.snapWas = null;
     this.haptic(p, 0.4, 25);
     sfx.play("grab", panel.mesh.position);
   }
@@ -1158,8 +1137,8 @@ export class Engine {
     if (!c) return;
     this.ghost.visible = false;
     this.snapWas = null;
-    // Thrown away, not set down: it closes (those that can). Not one still sliding on its wall.
-    const tr = c.slide ? [] : c.trail;
+    // Thrown away, not set down: it closes (those that can).
+    const tr = c.trail;
     const first = tr.find((x) => performance.now() - x.t < 120) ?? tr[0];
     const last = tr.at(-1);
     const speed = first && last && last.t > first.t ? last.at.distanceTo(first.at) / ((last.t - first.t) / 1000) : 0;
@@ -1895,21 +1874,6 @@ export class Engine {
     this.flats = flats;
   }
 
-  /** Whether a panel sliding on a wall has been pulled off it: the hand (and the stick) drawn back far enough, or fast enough. */
-  private yanked(p: Pointer, sl: Slide, now: number) {
-    if (!p.carry) return false;
-    const hand = this.grabPoint(p);
-    sl.trail.push({ t: now, at: hand });
-    while (sl.trail.length > 2 && now - sl.trail[0].t > 120) sl.trail.shift();
-    // The stick bringing it closer counts as pulling too.
-    const pull = hand.clone().sub(sl.hand0).dot(sl.normal) + (p.carry.offset.elements[14] - sl.z0);
-    if (pull > this.settings.wallYank / 100) return true;
-    const a = sl.trail[0];
-    const b = sl.trail.at(-1)!;
-    const speed = b.t > a.t ? b.at.clone().sub(a.at).dot(sl.normal) / ((b.t - a.t) / 1000) : 0;
-    return pull > 0.04 && speed > YANK_SPEED;
-  }
-
   /** While a panel is carried: its landing spot outlined, and a tick when one comes into reach. */
   private showSnap(p: Pointer) {
     const snap = p.carry ? this.snapFor(p.carry.panel) : null;
@@ -2190,19 +2154,7 @@ export class Engine {
       p.ray.updateMatrixWorld();
       const m = p.ray.matrixWorld.clone().multiply(p.carry.offset);
       p.carry.panel.mesh.position.setFromMatrixPosition(m);
-      if (p.carry.slide && this.yanked(p, p.carry.slide, now)) {
-        p.carry.slide = undefined;
-        this.snapWas = null;
-        this.haptic(p, 0.8, 40);
-        sfx.play("grab", p.carry.panel.mesh.position);
-      }
-      const sl = p.carry.slide;
-      if (sl) {
-        // Still on the wall: where the hand would have it, flattened onto the wall, facing out of it.
-        const pos = p.carry.panel.mesh.position;
-        pos.addScaledVector(sl.normal, -pos.clone().sub(sl.point).dot(sl.normal));
-        p.carry.panel.mesh.quaternion.copy(sl.quat);
-      } else p.carry.panel.mesh.lookAt(head.pos);
+      p.carry.panel.mesh.lookAt(head.pos);
       const tr = p.carry.trail;
       tr.push({ t: now, at: p.carry.panel.mesh.position.clone() });
       while (tr.length > 2 && now - tr[0].t > 200) tr.shift();
