@@ -35,25 +35,52 @@ export async function pictureOf(src: Blob | HTMLVideoElement | HTMLCanvasElement
   return { data: c.toDataURL("image/jpeg", 0.85).split(",")[1], mediaType: "image/jpeg" };
 }
 
+/** The Quest's own browser: its outward cameras are the passthrough ones (Quest 3 / 3S). */
+const onQuest = () => /OculusBrowser/i.test(navigator.userAgent);
+
+/** Why the camera can't be had, in words to say. */
+export function cameraTrouble(e: unknown): string {
+  const name = e instanceof DOMException ? e.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return onQuest() ? "Camera refused: allow Headset cameras from the lock by the address bar" : "Camera access was refused";
+  // On a Quest, without the Headset cameras permission only the avatar camera is listed.
+  if (name === "OverconstrainedError" || name === "NotFoundError") return onQuest() ? "No passthrough camera: allow Headset cameras from the lock by the address bar (Quest 3 / 3S)" : "No camera here";
+  if (name === "NotReadableError") return "The camera is busy in another app";
+  return "No camera here";
+}
+
+/** Whether asking for the camera will put a prompt up ("prompt"), or it's settled. */
+export async function cameraPermission(): Promise<PermissionState | "unknown"> {
+  try {
+    return (await navigator.permissions.query({ name: "camera" as PermissionName })).state;
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
- * A frame from the camera facing out: on a Quest, the passthrough camera
- * (Horizon OS lets the browser have it, once you allow it). `tick` hears the
- * countdown, to say it.
+ * A frame from the camera facing out: on a Quest 3 / 3S, the passthrough
+ * camera (Quest Browser hands it to getUserMedia once the site has the
+ * Headset cameras permission). On a Quest it must be that one, never the
+ * avatar camera, so the facing is exact there. `tick` hears the countdown, to
+ * say it.
  */
 export async function cameraPhoto(tick: (left: number) => void, seconds = 3): Promise<Picture> {
-  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+  const facingMode = onQuest() ? { exact: "environment" } : { ideal: "environment" };
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
   try {
     const v = document.createElement("video");
     v.muted = true;
     v.playsInline = true;
     v.srcObject = stream;
     await v.play();
+    // Let exposure settle before counting down.
     await new Promise((r) => setTimeout(r, 300));
     for (let i = seconds; i > 0; i--) {
       tick(i);
       await new Promise((r) => setTimeout(r, 1000));
     }
     tick(0);
+    if (!v.videoWidth) throw new DOMException("No frames", "NotReadableError");
     return await pictureOf(v);
   } finally {
     for (const t of stream.getTracks()) t.stop();
