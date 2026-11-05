@@ -40,7 +40,7 @@ import { ShelfXR } from "./shelf";
 import "./board.css";
 import { TunePanel } from "./TunePanel";
 import { fromClip, toClip, toMarkdown } from "../../shared/exchange";
-import { cameraPhoto, pictureOf, sketchPicture, type Picture } from "./imports";
+import { cameraPermission, cameraPhoto, cameraTrouble, pictureOf, sketchPicture, type Picture } from "./imports";
 import { Breadcrumbs, ExchangeDialog, FindPalette, HistoryPanel, LayersPopover, LibraryList, LinkInspector, PlayerBar, PreviewBar, TemplateList } from "./panels";
 import type { Layers } from "./fx";
 import { LIBRARY, findPrefab } from "../../shared/holoLibrary";
@@ -608,10 +608,12 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
   };
   const photoToBoard = async (pic?: Picture) => {
     try {
+      // The first camera prompt can drop the headset out of the session: say so, so coming back in is expected.
+      if (!pic && sceneRef.current?.mode !== "flat" && (await cameraPermission()) === "prompt") notify("Allow the camera: if it takes you out of the headset, come back in and ask again");
       const p =
         pic ??
-        (await cameraPhoto((n) => notify(n ? `Photo in ${n}…` : "Got it")).catch((e) => {
-          throw new Error(e instanceof DOMException && e.name === "NotAllowedError" ? "Camera access was refused" : "No camera here");
+        (await cameraPhoto((n) => notify(n ? `Photo in ${n}… look at the board` : "Got it")).catch((e) => {
+          throw new Error(cameraTrouble(e));
         }));
       notify("Reading the picture");
       sendAsk("This is a photo of a whiteboard (or a sketch, or a diagram). Build it on the board for real: read every box, label and arrow; blocks for components, links for arrows with their labels, notes for loose text, frames for groups, laid out as in the picture, near where I'm looking.", [p]);
