@@ -1,11 +1,13 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { App } from "../App";
-import { boardUrl, codeUrl, flatTree, parseRoute, type ProjectDetail, type ProjectSummary } from "../../shared/project";
+import { boardUrl, codeUrl, flatTree, keepViews, parseRoute, type KeptViews, type ProjectDetail, type ProjectSummary } from "../../shared/project";
 import type { Board } from "../../shared/board";
 import { api, goBoard, goCode, lastBoard, lastProject, lastView, nav, navigate, notify, remember, reloadProject } from "./nav";
 import { ProjectBar, useNav } from "./ProjectBar";
 import { ProjectsPage } from "./ProjectsPage";
-import { setViewSwitcher, setVoiceProject, VoiceEngine } from "./voice";
+import { setViewSwitcher, setVoiceProject, useVoiceApi, VoiceEngine } from "./voice";
+import { LOG_KEY, setActiveView, useLogOpen, useViewActive, ViewActive, type ViewKind } from "./view";
+import { TranscriptLog } from "../components/TranscriptLog";
 import "./shell.css";
 
 // Boards are their own bundle, loaded on the first visit to one.
@@ -15,7 +17,11 @@ const BoardApp = lazy(() => import("../board/BoardApp").then((m) => ({ default: 
  * The app: projects, each with a Code view (the map of one of its repos)
  * and its boards. The address says where you are (/p/<project>/code,
  * /p/<project>/board/<board>); addresses from before projects (/, /board/…)
- * find their project and move there. One voice runs above both views.
+ * find their project and move there.
+ *
+ * The two views are one app, not two pages: once opened, a view stays
+ * mounted, and switching shows the other one as it was left (web/shell/view.ts).
+ * One voice and one transcript run above both.
  */
 export function Shell() {
   useNav();
@@ -92,24 +98,50 @@ export function Shell() {
     if (pid && (route.kind === "code" || (route.kind === "board" && boardId))) remember(pid, route.kind, boardId);
   }, [pid, route.kind, boardId]);
 
-  let page: React.ReactNode = null;
-  if (route.kind === "projects") page = <ProjectsPage />;
-  else if (route.kind === "code" && detail) page = <CodeView key={`code:${pid}`} detail={detail} />;
-  else if (route.kind === "board" && detail && boardId && flatTree(detail.tree).some((x) => x.node.id === boardId))
-    page = (
-      <Suspense fallback={<Loading text="Powering up the board" />}>
-        <BoardApp key={`board:${pid}`} projectId={pid!} boardId={boardId} />
-      </Suspense>
-    );
-  else page = <Loading text="" />;
+  // Which view is on screen, and which have been opened: those stay, as they were left.
+  const boards = detail ? flatTree(detail.tree).map((x) => x.node.id) : undefined;
+  const view: ViewKind | null = route.kind === "code" && detail ? "code" : route.kind === "board" && boardId && boards?.includes(boardId) ? "board" : null;
+  const keptRef = useRef<KeptViews>({ code: false });
+  const kept = (keptRef.current = keepViews(keptRef.current, { pid, view, boardId, boards }));
+  setActiveView(view);
 
   return (
     <>
-      {page}
+      {pid && detail && kept.code && (
+        <View kind="code" on={view === "code"}>
+          <CodeView key={`code:${pid}`} detail={detail} />
+        </View>
+      )}
+      {pid && detail && kept.boardId && (
+        <View kind="board" on={view === "board"}>
+          <Suspense fallback={<Loading text="Powering up the board" />}>
+            <BoardApp key={`board:${pid}`} projectId={pid} boardId={kept.boardId} />
+          </Suspense>
+        </View>
+      )}
+      {!view && (route.kind === "projects" ? <ProjectsPage /> : <Loading text="" />)}
       <VoiceEngine />
+      {view && <Transcript />}
       <Warp />
     </>
   );
+}
+
+/** One of the project's views. Off screen it stays as it is: not drawn, not reachable, not listening. */
+function View({ kind, on, children }: { kind: ViewKind; on: boolean; children: React.ReactNode }) {
+  return (
+    <div id={`view-${kind}`} className="shell-view" data-off={on ? undefined : ""} inert={!on} aria-hidden={!on}>
+      <ViewActive.Provider value={on}>{children}</ViewActive.Provider>
+    </div>
+  );
+}
+
+/** The voice's transcript, over whichever view is on screen. */
+function Transcript() {
+  const [open, setOpen] = useLogOpen();
+  const voice = useVoiceApi();
+  if (!open || !voice) return null;
+  return <TranscriptLog log={voice.log} heard={voice.heard} caption={voice.caption} onClear={voice.clearLog} onClose={() => setOpen(false)} storageKey={LOG_KEY} />;
 }
 
 function Loading({ text }: { text: string }) {
@@ -197,7 +229,23 @@ function CodeView({ detail }: { detail: ProjectDetail }) {
       .catch(() => {});
   }, [open?.root, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Back on screen: if the server has moved on to a repo that isn't this project's (another tab, another project), bring ours back.
+  const active = useViewActive();
+  const up = useRef(false);
+  useEffect(() => {
+    if (!active || !up.current || new URLSearchParams(location.search).get("root")) return;
+    void api<RepoStatus>("/api/repo")
+      .then((s) => {
+        const ours = p.activeRepo ?? p.repos[0]?.root;
+        if (ours && s.root && !p.repos.some((r) => r.root === s.root)) return api("/api/open-root", { root: ours });
+      })
+      .catch(() => {});
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!want) return <NoRepo detail={detail} server={server} />;
+  // Once the map is up it stays: it follows the server to other repos itself.
+  if (ready) up.current = true;
+  if (up.current) return <App />;
   if (error)
     return (
       <Center>
@@ -205,18 +253,15 @@ function CodeView({ detail }: { detail: ProjectDetail }) {
         <p className="shell-meta mt-2">{error}</p>
       </Center>
     );
-  if (!ready) {
-    const name = p.repos.find((r) => r.root === want)?.name ?? want.split("/").pop();
-    return (
-      <Center>
-        <p className="shell-meta">
-          <span className="shell-spin" />
-          Opening {name}…{server?.status === "error" && server.error ? ` (${server.error})` : ""}
-        </p>
-      </Center>
-    );
-  }
-  return <App />;
+  const name = p.repos.find((r) => r.root === want)?.name ?? want.split("/").pop();
+  return (
+    <Center>
+      <p className="shell-meta">
+        <span className="shell-spin" />
+        Opening {name}…{server?.status === "error" && server.error ? ` (${server.error})` : ""}
+      </p>
+    </Center>
+  );
 }
 
 function Center({ children }: { children: React.ReactNode }) {

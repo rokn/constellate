@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { viewOn } from "../shell/view";
 import { newId, type Vec3 } from "../../shared/board";
 import type { Ctl } from "./ctl";
 import { magnet } from "./magnet";
@@ -255,6 +256,7 @@ export function attachDesktop(scene: BoardScene, ctl: Ctl) {
   };
 
   const key = (e: KeyboardEvent) => {
+    if (!viewOn("board")) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     const sel = ctl.selected();

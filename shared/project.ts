@@ -139,3 +139,27 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (p === "/" && search && search !== "?") return { kind: "legacy-code" };
   return { kind: "home" };
 }
+
+/* ------------------------------ views kept ------------------------------ */
+
+/**
+ * The project's two views stay mounted once opened, so switching shows each
+ * as it was left. This is what's kept: for which project, whether the Code
+ * view has been opened, and the board the boards view is on.
+ */
+export type KeptViews = { pid?: string; code: boolean; boardId?: string };
+
+/**
+ * What's kept after the address moved. `view` is the view on screen (none
+ * while a project is loading, or on the projects page) and `boards` every
+ * board the project has, when known. Another project starts afresh; a kept
+ * board that's since been deleted is let go.
+ */
+export function keepViews(kept: KeptViews, now: { pid?: string; view: "code" | "board" | null; boardId?: string; boards?: string[] }): KeptViews {
+  const k: KeptViews = kept.pid === now.pid ? { ...kept } : { pid: now.pid, code: false };
+  if (!now.pid) return k;
+  if (now.view === "code") k.code = true;
+  if (now.view === "board" && now.boardId) k.boardId = now.boardId;
+  else if (k.boardId && now.boards && !now.boards.includes(k.boardId)) k.boardId = undefined;
+  return k;
+}

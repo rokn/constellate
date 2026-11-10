@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import { useVoice, type VoiceAudio } from "../lib/useVoice";
 import type { ScreenContext, UiCommand } from "../../shared/types";
 import type { BoardScreen } from "../../shared/board";
+import { useViewActive, type ViewKind } from "./view";
 
 /**
  * One voice for the whole app. It lives in the shell, above the views, so
@@ -9,10 +10,11 @@ import type { BoardScreen } from "../../shared/board";
  * conversation carries on, and the server always knows which view is on
  * screen. Each view hands over what it would have given useVoice — its
  * screen, how to carry out commands, its audio settings — with
- * useSharedVoice, and gets the same voice object back.
+ * useSharedVoice, and gets the same voice object back. Both views stay
+ * mounted; the voice listens to the one on screen.
  */
 
-export type ViewKind = "code" | "board";
+export type { ViewKind };
 export type VoiceApi = ReturnType<typeof useVoice>;
 
 type ViewVoice = {
@@ -75,30 +77,36 @@ function dispatch(cmd: UiCommand) {
 
 /** The voice, for a view: hand over what's on screen, get the shared voice back. */
 export function useSharedVoice(view: ViewKind, o: ViewVoice): VoiceApi {
+  const active = useViewActive();
   const mine = useRef(o);
   mine.current = o;
-  // Only once mounted: a view on its way in renders before the one leaving lets go.
-  if (bus.active === view) bus.views[view] = o;
-  const key = JSON.stringify([o.screen, o.volume, o.idleMinutes, o.settings, o.interrupt, o.audioOptions, !!o.ready]);
+  // Only once on screen: a view on its way in renders before the one leaving lets go.
+  if (active && bus.active === view) bus.views[view] = o;
+  const key = JSON.stringify([active, o.screen, o.volume, o.idleMinutes, o.settings, o.interrupt, o.audioOptions, !!o.ready]);
   useLayoutEffect(() => {
+    if (!active) return;
     bus.active = view;
     bus.views[view] = mine.current;
     bumpEngine();
     return () => {
-      if (bus.views[view] !== mine.current) return;
       if (bus.active === view) bus.active = null;
       delete bus.views[view];
     };
-  }, [view]);
+  }, [view, active]);
   useEffect(() => {
+    if (!active) return;
     bumpEngine();
     flushQueued();
-  }, [key]);
-  const voice = useSyncExternalStore(
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return useVoiceApi() ?? FALLBACK;
+}
+
+/** The voice as it is now, for the shell's own parts (the transcript). */
+export function useVoiceApi(): VoiceApi | null {
+  return useSyncExternalStore(
     (f) => (bus.watchers.add(f), () => bus.watchers.delete(f)),
     () => bus.voice,
   );
-  return voice ?? FALLBACK;
 }
 
 const noop = () => {};

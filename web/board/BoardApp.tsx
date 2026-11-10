@@ -17,7 +17,7 @@ import {
   type Vec3,
 } from "../../shared/board";
 import { useSharedVoice } from "../shell/voice";
-import { ProjectBar } from "../shell/ProjectBar";
+import { ProjectBar, useNav } from "../shell/ProjectBar";
 import { goBoard, goCode, navigate, reloadProject } from "../shell/nav";
 import { takeSession } from "../shell/xrHandoff";
 import { boardUrl } from "../../shared/project";
@@ -34,7 +34,7 @@ import { GesturesXR } from "./gestures";
 import { GuideXR } from "./guide";
 import { inside } from "./items";
 import { TranscriptXR } from "./transcript";
-import { TranscriptLog, useTranscriptOpen } from "../components/TranscriptLog";
+import { useLogOpen, useViewActive, viewOn } from "../shell/view";
 import { TypeXR } from "./typing";
 import { ShelfXR } from "./shelf";
 import "./board.css";
@@ -176,7 +176,7 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
   });
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
-  const [logOpen, setLogOpen] = useTranscriptOpen("workshop.log");
+  const [logOpen, setLogOpen] = useLogOpen();
 
   const sendAsk = useCallback(
     (text: string, images?: Picture[]) => {
@@ -199,18 +199,17 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
   const reloadRef = useRef(reloadBoards);
   reloadRef.current = reloadBoards;
   // Arrived from the code map (/board/<id>?item=<item>): that item, selected and in view.
-  const wantItem = useRef(new URLSearchParams(location.search).get("item"));
+  // (The boards stay mounted while the Code view is up, so it's read each time they come back on screen.)
+  const active = useViewActive();
+  useNav();
+  const wantItem = active ? new URLSearchParams(location.search).get("item") : null;
   useEffect(() => {
-    wantItem.current = new URLSearchParams(location.search).get("item");
-  }, [boardId]);
-  useEffect(() => {
-    const id = wantItem.current;
+    const id = wantItem;
     if (!id || !board || board.id !== boardId || !board.items.some((i) => i.id === id)) return;
-    wantItem.current = null;
     setSelected([id]);
     setTimeout(() => sceneRef.current?.focus([id]), 300);
     history.replaceState(history.state, "", location.pathname);
-  }, [board, boardId, setSelected]);
+  }, [board, boardId, setSelected, wantItem]);
 
   // The markers on items with a board inside say how much is in there: counts from the board list,
   // fetched again on every switch (coming back up, what was made inside shows).
@@ -329,9 +328,6 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
       if (m === "flat") xrRef.current?.left();
       else xrRef.current?.entered();
     };
-    // Come over from the Code view in the headset: carry on in the same session.
-    const handed = takeSession();
-    if (handed) void enter(handed.mode, handed.session);
     // Where they're looking, now and then, for the voice and the builder.
     const t = setInterval(() => {
       const f = s.focusPoint();
@@ -472,11 +468,26 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
     }
   };
 
+  // On screen: the scene draws, and a headset session the Code view handed over carries on here.
+  // Off screen (the Code view is up) the board stays as it is: it stops drawing, and a session goes back for the Code view to take.
+  useEffect(() => {
+    if (!active) return;
+    let here = true;
+    sceneRef.current?.setPaused(false);
+    const handed = takeSession();
+    if (handed) void enter(handed.mode, handed.session).then(() => !here && sceneRef.current?.release());
+    return () => {
+      here = false;
+      sceneRef.current?.release();
+      sceneRef.current?.setPaused(true);
+    };
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // "/" to ask, from anywhere but a text field.
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
+      if (!viewOn("board") || t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
       if (e.key === "/" || (e.key === "k" && (e.metaKey || e.ctrlKey))) {
         e.preventDefault();
         askRef.current?.focus();
@@ -1208,9 +1219,6 @@ function Workshop({ projectId, boardId, boards, open, reloadBoards }: { projectI
           </div>
 
           {help && <Help onClose={() => setHelp(false)} />}
-          {logOpen && on("transcriptLog") && (
-            <TranscriptLog log={voice.log} heard={voice.heard} caption={voice.caption} onClear={voice.clearLog} onClose={() => setLogOpen(false)} storageKey="workshop.log" />
-          )}
           {tuneOpen && <TunePanel presets={presets} onPresets={setPresets} onClose={() => setTuneOpen(false)} />}
         </>
       )}

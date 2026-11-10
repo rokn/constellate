@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { viewOn } from "../shell/view";
 
 /**
  * The ring that opens under a held finger: actions on what it's holding,
@@ -81,7 +82,7 @@ export function TouchRing({
       if (i !== null) choose(i);
       // Lifted in the middle: the ring stays for a tap.
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && viewOn("code") && onClose();
     window.addEventListener("pointermove", onMove, true);
     window.addEventListener("pointerup", onUp, true);
     window.addEventListener("keydown", onKey);
