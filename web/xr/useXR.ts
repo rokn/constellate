@@ -4,6 +4,7 @@ import { fetchFile, post, type FileData } from "../lib/api";
 import type { Mode } from "./engine";
 import { goBoard } from "../shell/nav";
 import { takeSession } from "../shell/xrHandoff";
+import { useViewActive } from "../shell/view";
 import type { MapHit, MapInput, MapStyle } from "./map";
 import { splitList } from "../../shared/filter";
 import type { Actions, AppActions, AppModel, BranchRow, FocusDir, Model } from "./model";
@@ -384,12 +385,18 @@ export function useXR(feed: XRFeed) {
     [actions],
   );
 
-  // Come over from a board in the headset: carry on in the same session.
+  // Come over from a board in the headset: carry on in the same session. And leaving for one
+  // (the view stays, off screen), the session goes on, for the board to take.
+  const active = useViewActive();
+  const enterRef = useRef(enter);
+  enterRef.current = enter;
   useEffect(() => {
+    if (!active) return;
     const h = takeSession();
-    if (h) void enter(h.mode, h.session);
-  }, [enter]);
-  // Leaving the Code view (for a board) while in the headset: the session goes on, for the board to take.
+    if (h) void enterRef.current(h.mode, h.session);
+    return () => roomRef.current?.engine.release();
+  }, [active]);
+  // The view itself going (another project): the same, should anything take it.
   useEffect(
     () => () => {
       roomRef.current?.dispose();

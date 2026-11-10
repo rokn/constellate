@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { viewOn } from "../shell/view";
 import type { Item } from "../../shared/board";
 import { sfx } from "../xr/sound";
 import { cond, sans, withAlpha } from "../xr/ui";
@@ -126,7 +127,7 @@ export class TypeXR implements XRPlugin {
 
   private key = (e: KeyboardEvent) => {
     const scene = this.xr.scene;
-    if (scene.mode === "flat" || !on("keyboard") || e.isComposing) return;
+    if (scene.mode === "flat" || !viewOn("board") || !on("keyboard") || e.isComposing) return;
     // In the headset every key is ours: the desktop's single-letter shortcuts would fight the typing.
     e.stopImmediatePropagation();
     // Hands on the keys: they rest a moment.

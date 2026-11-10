@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { viewOn, viewRoot } from "../shell/view";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -332,7 +333,7 @@ function FullView({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || !viewOn("code")) return;
       // Captured first, so the app's own Esc (closing the panel) doesn't also fire.
       e.stopImmediatePropagation();
       e.preventDefault();
@@ -374,7 +375,7 @@ function FullView({
         </div>
       </div>
     </div>,
-    document.body,
+    viewRoot("code"),
   );
 }
 

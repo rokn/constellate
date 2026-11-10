@@ -6,7 +6,7 @@ import type { LogEntry } from "../lib/useVoice";
  * happened along the way (talked over, a sound it ignored, reconnecting), so
  * when it cuts off you can see why. A floating panel: drag it by its title
  * to wherever you want it; pinned, it stays open (and there) across reloads.
- * Used by the code map and the workshop alike.
+ * One for the whole app: the shell shows it over whichever view is on screen.
  */
 
 type Place = { x: number; y: number; pinned: boolean };
@@ -20,10 +20,8 @@ function load(key: string): Place | null {
   }
 }
 
-export function useTranscriptOpen(key: string) {
-  const [open, setOpen] = useState(() => !!load(key)?.pinned);
-  return [open, setOpen] as const;
-}
+/** Where it was before the code map's and the workshop's became one. */
+const OLD_KEYS = ["workshop.log", "codemap.log"];
 
 const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
@@ -43,7 +41,7 @@ export function TranscriptLog({
   onClose: () => void;
   storageKey?: string;
 }) {
-  const [place, setPlace] = useState<Place>(() => load(storageKey) ?? { x: 24, y: 120, pinned: false });
+  const [place, setPlace] = useState<Place>(() => load(storageKey) ?? OLD_KEYS.map(load).find(Boolean) ?? { x: 24, y: 120, pinned: false });
   const [notes, setNotes] = useState(true);
   const body = useRef<HTMLDivElement>(null);
   const stick = useRef(true);

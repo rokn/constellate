@@ -475,3 +475,13 @@
     opacity: 0.25;
   }
 }
+
+/* The project's views, side by side: the one on screen, and the other kept as it was. */
+.shell-view {
+  position: absolute;
+  inset: 0;
+}
+.shell-view[data-off] {
+  visibility: hidden;
+  pointer-events: none;
+}

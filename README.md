@@ -47,6 +47,12 @@ in every view) switches between its two kinds of view:
   boards nested in it, whether it's an item's inside (◈) or a board filed under it (▣). Drag
   one onto another in the drawer to nest it, ⤒ to bring it back to the top.
 
+The two views are one app: once you've opened one it stays as you left it while you're in
+the other (the camera, the filter, the open panels, a board's selection), so switching is
+immediate and nothing starts over. The view that's off screen goes quiet: it stops drawing
+and doesn't hear the keyboard. In the headset the same session carries across, and the
+voice and its transcript (**Log**) are one for both.
+
 Click the project's name for the drawer: its repos, its boards (new, nested, renamed,
 deleted), and the other projects; `/projects` lists them all and starts new ones. The
 address says where you are (`/p/<project>/code`, `/p/<project>/board/<board>`), and the

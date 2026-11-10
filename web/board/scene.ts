@@ -187,13 +187,23 @@ export class BoardScene {
     if (changed.length) for (const v of this.views.values()) v.update(v.item, true);
   }
 
+  /**
+   * Leaving for the Code view in the headset: the session goes on, for it to
+   * take. To this scene it has ended (it's back to flat, ready to be entered
+   * again when the boards return); the headset never notices.
+   */
+  release() {
+    if (this.session && this.mode !== "flat") handOff(this.session, this.mode);
+  }
+
+  /** Off screen (the Code view is up), the board stays as it is and stops drawing. */
+  setPaused(paused: boolean) {
+    this.last = performance.now();
+    this.renderer.setAnimationLoop(paused ? null : this.frame);
+  }
+
   dispose() {
-    // Leaving for the Code view in the headset: the session goes on, for it to take.
-    if (this.session && this.mode !== "flat") {
-      const s = this.session;
-      this.session = null;
-      handOff(s, this.mode);
-    }
+    this.release();
     this.renderer.setAnimationLoop(null);
     window.removeEventListener("resize", this.onResize);
     this.offTune();

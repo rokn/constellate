@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { viewOn } from "../shell/view";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Story, View } from "../../shared/types";
@@ -167,6 +168,7 @@ export function StoryPlayer({
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!viewOn("code")) return;
       // Text fields keep their keys (and the speed menu its arrows); a checkbox or button doesn't.
       const t = e.target;
       const typing = t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLInputElement && !["checkbox", "radio", "range", "button"].includes(t.type));

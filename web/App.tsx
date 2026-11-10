@@ -13,9 +13,9 @@ import { checkedKeys, countChecked, fullyChecked, linkKey, linksOf, type LinkDir
 import { renameInFilter, renamer } from "../shared/renames";
 import { ask, clearFileCache, config, post, useGraph, useSession } from "./lib/api";
 import { useSharedVoice } from "./shell/voice";
-import { ProjectBar } from "./shell/ProjectBar";
+import { ProjectBar, useNav } from "./shell/ProjectBar";
 import { expectRepo, goBoard, goCode, reportRepo } from "./shell/nav";
-import { TranscriptLog, useTranscriptOpen } from "./components/TranscriptLog";
+import { useLogOpen, useViewActive, viewOn } from "./shell/view";
 import { territoryColors } from "./lib/colors";
 import { Space, type Grouping, type Overlay, type SpaceHandle, type TouchHit, type TouchGesture } from "./components/Space";
 import { FilterPanel, GroupsPanel, Legend, OTHER, OrganizeBar } from "./components/MapControls";
@@ -51,6 +51,9 @@ const NO_ACTIVITY: never[] = [];
 const NO_PRESETS: TunePreset[] = [];
 
 export function App() {
+  // The Code view stays mounted while a board is on screen (shell/view.ts): it keeps its place, and goes quiet.
+  const active = useViewActive();
+  useNav();
   const { state } = useSession();
   const status = state?.status ?? "idle";
   const graph = useGraph(state?.graphVersion, status !== "idle" && status !== "scanning");
@@ -259,6 +262,8 @@ export function App() {
   const [allCommits, setAllCommits] = useState(false);
   /** Where a Shift-selection started, and where its moving end is. */
   const anchor = useRef<string | null>(null);
+  /** A story a link asked for (?story=<id>), until it's there to play. */
+  const linked = useRef<string | null>(null);
   /** Opening one left-hand panel closes the other; they share the column. */
   const openPanel = (which: "filter" | "groups" | "notes" | "stories" | "answers" | "agents" | null) => {
     setAgentsOpen(which === "agents");
@@ -932,13 +937,15 @@ export function App() {
   useEffect(() => {
     const at = (s: unknown) => (s as { constellate?: string } | null)?.constellate;
     const arm = () => {
-      if (at(window.history.state) === "here") return;
+      // Each time the view comes back on screen it's on a new entry: armed again on the next click or key there.
+      if (!viewOn("code") || at(window.history.state) === "here") return;
       window.history.replaceState({ constellate: "back" }, "");
       window.history.pushState({ constellate: "here" }, "");
       window.history.pushState({ constellate: "forward" }, "");
       window.history.back();
     };
     const onPop = (e: PopStateEvent) => {
+      if (!viewOn("code")) return;
       const where = at(e.state);
       if (where === "back") {
         window.history.forward();
@@ -948,8 +955,8 @@ export function App() {
         travelRef.current(1);
       }
     };
-    window.addEventListener("pointerdown", arm, { capture: true, once: true });
-    window.addEventListener("keydown", arm, { capture: true, once: true });
+    window.addEventListener("pointerdown", arm, true);
+    window.addEventListener("keydown", arm, true);
     window.addEventListener("popstate", onPop);
     return () => {
       window.removeEventListener("pointerdown", arm, true);
@@ -975,23 +982,30 @@ export function App() {
    * switch to the board's repo if another is open, then fly to the module (or
    * the paths). The way back is kept for the focus bar.
    */
-  const boardLink = useRef(
-    (() => {
-      const q = new URLSearchParams(location.search);
-      const root = q.get("root");
-      const module = q.get("module");
-      const paths = (q.get("paths") ?? "").split(",").filter(Boolean);
-      // From a board item: `only` filters the map to its code (named for the item); `ask` has the navigator find it.
-      const only = q.get("only") === "1";
-      const label = q.get("label") ?? undefined;
-      const request = q.get("ask") ?? undefined;
-      return root || module || paths.length || request ? { root, module, paths, only, label, request, asked: false } : null;
-    })(),
-  );
-  const [fromBoard] = useState(() => {
-    const [boardId, itemId] = (new URLSearchParams(location.search).get("from") ?? "").split(":");
-    return boardId ? { boardId, itemId } : null;
-  });
+  type BoardLink = { root: string | null; module: string | null; paths: string[]; only: boolean; label?: string; request?: string; asked: boolean };
+  const boardLink = useRef<BoardLink | null>(null);
+  const [fromBoard, setFromBoard] = useState<{ boardId: string; itemId?: string } | null>(null);
+  /** A link arrived: the effects that follow it look again. */
+  const [linkTick, setLinkTick] = useState(0);
+  // The address is read whenever this view comes on screen or is sent somewhere new while it is
+  // (it stays mounted, so the link may arrive long after the map did).
+  const search = location.search;
+  useEffect(() => {
+    if (!active || !search) return;
+    const q = new URLSearchParams(search);
+    const root = q.get("root");
+    const module = q.get("module");
+    const paths = (q.get("paths") ?? "").split(",").filter(Boolean);
+    // From a board item: `only` filters the map to its code (named for the item); `ask` has the navigator find it.
+    const request = q.get("ask") ?? undefined;
+    if (root || module || paths.length || request) boardLink.current = { root, module, paths, only: q.get("only") === "1", label: q.get("label") ?? undefined, request, asked: false };
+    const [boardId, itemId] = (q.get("from") ?? "").split(":");
+    if (boardId) setFromBoard({ boardId, itemId });
+    const branch = q.get("diff");
+    if (branch) setBranchMap((b) => (b?.branch === branch ? b : { branch, base: q.get("base") || undefined, agent: q.get("agent") || undefined }));
+    if (q.get("story")) linked.current = q.get("story");
+    setLinkTick((n) => n + 1);
+  }, [active, search]);
   // The shell keeps the project's repos in step with what's open (Switch repo adds to the project).
   useEffect(() => {
     if (state?.repo?.root) reportRepo(state.repo.root, state.repo.name);
@@ -1254,14 +1268,13 @@ export function App() {
   }, [introStories, playStory]);
 
   // A link to a story (/?story=<id>, as the branch-story API hands out) opens it.
-  const linked = useRef(new URLSearchParams(location.search).get("story"));
   useEffect(() => {
     const id = linked.current;
     if (!id || !stories.some((s) => s.id === id)) return;
     linked.current = null;
     window.history.replaceState(window.history.state, "", location.pathname);
     playStory(id);
-  }, [stories, playStory]);
+  }, [stories, playStory, linkTick]);
 
   // A story you just asked for opens as it's being written, and plays once it's voiced.
   const storiesSeen = useRef(new Set<string>());
@@ -1422,7 +1435,7 @@ export function App() {
 
   // The project's one voice (it carries on across views): this view hands it the map's screen.
   const voice = useSharedVoice("code", { screen, onCommand: (c) => runRef.current(c), volume: xrSettings.voiceVolume, idleMinutes: xrSettings.voiceIdleMinutes, ready: !!graph && !!state?.repo });
-  const [logOpen, setLogOpen] = useTranscriptOpen("codemap.log");
+  const [logOpen, setLogOpen] = useLogOpen();
 
   // Talking over a story pauses it, so you and the voice can hear each other.
   useEffect(() => {
@@ -1514,6 +1527,12 @@ export function App() {
       return;
     }
     if (!graph) return;
+    // Only a repo to open (the drawer's): it's open.
+    if (!l.module && !l.paths.length && !l.request) {
+      boardLink.current = null;
+      if (new URLSearchParams(location.search).has("root")) window.history.replaceState(window.history.state, "", location.pathname);
+      return;
+    }
     const m = l.module ? legend?.groups.find((x) => x.id === l.module) ?? overview?.modules.find((x) => x.id === l.module) : null;
     const files = graph.files.map((f) => f.path).filter((p) => l.paths.some((q) => p === q || p.startsWith(`${q.replace(/\/$/, "")}/`)));
     // The module needs the overview; wait for it unless the paths will do.
@@ -1538,7 +1557,7 @@ export function App() {
       if (m && l.module) focusModule(l.module);
       else if (files.length) focus(files, l.label ?? l.paths.join(", "));
     }, 900);
-  }, [state?.repo?.root, graph, overview, legend, focusModule, focus]);
+  }, [state?.repo?.root, graph, overview, legend, focusModule, focus, linkTick]);
 
 
   /* --------------------------------- play --------------------------------- */
@@ -1599,6 +1618,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!viewOn("code")) return;
       const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if ((e.key === "k" && (e.metaKey || e.ctrlKey)) || (e.key === "/" && !typing)) {
         e.preventDefault();
@@ -2004,10 +2024,18 @@ export function App() {
   // whatever you were on in there, so the desktop picks up where you were.
   const wasPresenting = useRef(false);
   useEffect(() => {
-    desk.current?.setPaused(xr.presenting);
-    if (wasPresenting.current && !xr.presenting) setTimeout(() => recenterRef.current(), 150);
+    // Nor while a board is on screen: the map waits as it was.
+    desk.current?.setPaused(xr.presenting || !active);
+    if (wasPresenting.current && !xr.presenting && active) setTimeout(() => recenterRef.current(), 150);
     wasPresenting.current = xr.presenting;
-  }, [xr.presenting]);
+  }, [xr.presenting, active]);
+  // Off screen, nothing plays on: a story pauses, the tour and the walk through history stop.
+  useEffect(() => {
+    if (active) return;
+    storyCtl.current?.pause();
+    setPlaying(false);
+    setTour(null);
+  }, [active]);
 
   if (!state) return <div className="h-full bg-night" />;
 
@@ -2980,7 +3008,6 @@ export function App() {
               onLog={() => setLogOpen((o) => !o)}
               logOpen={logOpen}
             />
-            {logOpen && <TranscriptLog log={voice.log} heard={voice.heard} caption={voice.caption} onClear={voice.clearLog} onClose={() => setLogOpen(false)} storageKey="codemap.log" />}
           </div>
         </div>
       </div>

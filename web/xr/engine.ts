@@ -351,16 +351,17 @@ export class Engine {
     this.renderer.setAnimationLoop(this.frame);
   }
 
+  /**
+   * Leaving for a board in the headset: the session goes on, for the board to
+   * take. To this engine it has ended (it's back to flat, ready to be entered
+   * again when the view returns); the headset never notices.
+   */
+  release() {
+    if (this.session && this.mode !== "flat") handOff(this.session, this.mode);
+  }
+
   dispose() {
-    // Leaving for a board in the headset: the session goes on, for it to take.
-    if (this.session && this.mode !== "flat") {
-      const s = this.session;
-      this.session = null;
-      for (const r of this.resting) if (r.source) this.restingOff(r);
-      this.hitSource?.cancel();
-      this.hitSource = null;
-      handOff(s, this.mode);
-    }
+    this.release();
     this.renderer.setAnimationLoop(null);
     window.removeEventListener("resize", this.onResize);
     this.map.dispose();

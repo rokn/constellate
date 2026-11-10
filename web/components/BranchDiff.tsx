@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { viewOn, viewRoot } from "../shell/view";
 import { createPortal } from "react-dom";
 import { DiffStat, DiffView } from "./DiffView";
 
@@ -113,6 +114,7 @@ export function BranchDiff({
   keys.current = { shown, sel, onClose };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!viewOn("code")) return;
       const k = keys.current;
       const typing = e.target instanceof HTMLInputElement && e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Escape";
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -265,7 +267,7 @@ export function BranchDiff({
         )}
       </div>
     </div>,
-    document.body,
+    viewRoot("code"),
   );
 }
 
